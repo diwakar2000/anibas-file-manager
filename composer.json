@@ -1,0 +1,12 @@
+{
+    "name": "diwakar/anibas-file-manager",
+    "authors": [
+        {
+            "name": "diwakar",
+            "email": "diwakardhl2000@gmail.com"
+        }
+    ],
+    "require": {
+        "phpseclib/phpseclib": "~3.0"
+    }
+}
