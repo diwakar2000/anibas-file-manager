@@ -340,11 +340,11 @@ class SFTPPhpseclibBackend
         }
 
         // Ensure chunk size is within limits
-        if ($chunk_size < 262144) { // Min 256KB
-            $chunk_size = 262144;
+        if ($chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN) {
+            $chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
         }
-        if ($chunk_size > 10485760) { // Max 10MB
-            $chunk_size = 10485760;
+        if ($chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX) {
+            $chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
         }
 
         try {
@@ -521,8 +521,8 @@ class SFTPPhpseclibBackend
     public function download_to_local_chunked(string $remote_path, string $local_path, int $offset = 0, int $chunk_size = 2097152): array
     {
         $chunk_size = intval(anibas_fm_get_option('chunk_size', ANIBAS_FM_DEFAULT_CHUNK_SIZE));
-        if ($chunk_size < 262144) $chunk_size = 262144;
-        if ($chunk_size > 10485760) $chunk_size = 10485760;
+        if ($chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN) $chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
+        if ($chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX) $chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
 
         try {
             $file_size = $this->sftp->filesize($remote_path);
@@ -568,8 +568,8 @@ class SFTPPhpseclibBackend
     public function upload_from_local_chunked(string $local_path, string $remote_path, int $offset = 0, int $chunk_size = 2097152): array
     {
         $chunk_size = intval(anibas_fm_get_option('chunk_size', ANIBAS_FM_DEFAULT_CHUNK_SIZE));
-        if ($chunk_size < 262144) $chunk_size = 262144;
-        if ($chunk_size > 10485760) $chunk_size = 10485760;
+        if ($chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN) $chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
+        if ($chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX) $chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
 
         $file_size = filesize($local_path);
         if ($file_size === false) {
@@ -866,11 +866,11 @@ class SFTPCurlBackend
         }
 
         // Ensure chunk size is within limits
-        if ($chunk_size < 262144) { // Min 256KB
-            $chunk_size = 262144;
+        if ($chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN) {
+            $chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
         }
-        if ($chunk_size > 10485760) { // Max 10MB
-            $chunk_size = 10485760;
+        if ($chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX) {
+            $chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
         }
 
         try {
@@ -1306,8 +1306,8 @@ class SFTPCurlBackend
     public function download_to_local_chunked(string $remote_path, string $local_path, int $offset = 0, int $chunk_size = 2097152): array
     {
         $chunk_size = intval(anibas_fm_get_option('chunk_size', ANIBAS_FM_DEFAULT_CHUNK_SIZE));
-        if ($chunk_size < 262144) $chunk_size = 262144;
-        if ($chunk_size > 10485760) $chunk_size = 10485760;
+        if ($chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN) $chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
+        if ($chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX) $chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
 
         try {
             // Get file size
@@ -1391,8 +1391,8 @@ class SFTPCurlBackend
     public function upload_from_local_chunked(string $local_path, string $remote_path, int $offset = 0, int $chunk_size = 2097152): array
     {
         $chunk_size = intval(anibas_fm_get_option('chunk_size', ANIBAS_FM_DEFAULT_CHUNK_SIZE));
-        if ($chunk_size < 262144) $chunk_size = 262144;
-        if ($chunk_size > 10485760) $chunk_size = 10485760;
+        if ($chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN) $chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
+        if ($chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX) $chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
 
         $file_size = filesize($local_path);
         if ($file_size === false) {

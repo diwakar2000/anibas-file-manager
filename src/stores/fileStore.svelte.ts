@@ -321,6 +321,21 @@ export class AnibasFileStore {
         }
     }
 
+    // Like navigateTo, but always re-fetches the listing (ignores cache) and
+    // recovers to root if the destination no longer exists.
+    async navigateAndRefresh(path: string) {
+        if (this.deletingPaths.includes(path)) return;
+        this.currentPath = path;
+        this.clearSelection();
+        this.renamingPath = null;
+        await this.loadDirectory(path);
+        // loadDirectory resets currentPath to '/' on PathInvalid but doesn't
+        // load it — finish the fallback here.
+        if (this.currentPath !== path) {
+            await this.loadDirectory(this.currentPath);
+        }
+    }
+
     async toggleFolder(path: string) {
         const isExpanded = this.expandedFolders.includes(path);
         if (isExpanded) {
@@ -987,6 +1002,15 @@ export class AnibasFileStore {
         this.error = null;
         const name = path.split('/').pop() || 'Archive';
         this.currentOperation = `Preparing to extract "${name}"...`;
+
+        // Snapshot existing entries so we can highlight whatever extraction adds.
+        const destPath = this.currentPath;
+        const beforePaths = new Set(
+            Object.values(this.directoryCache[destPath]?.items || {})
+                .map((it: any) => it?.path)
+                .filter(Boolean) as string[]
+        );
+
         try {
             const init = await apiArchiveRestore(path, 'init', password, this.currentStorage);
             this.archiveProgress = { phase: 'ready', info: init.info };
@@ -1001,7 +1025,16 @@ export class AnibasFileStore {
                 }
             }
 
-            await this.loadDirectory(this.currentPath);
+            await this.loadDirectory(destPath);
+
+            const afterItems = Object.values(this.directoryCache[destPath]?.items || {}) as any[];
+            const newPaths = afterItems
+                .map(it => it?.path)
+                .filter((p: string | undefined): p is string => !!p && !beforePaths.has(p));
+            if (newPaths.length > 0 && this.currentPath === destPath) {
+                this.selectAll(newPaths);
+            }
+
             toast.success(`"${name}" extracted successfully`);
         } catch (err: any) {
             this.error = err.message;

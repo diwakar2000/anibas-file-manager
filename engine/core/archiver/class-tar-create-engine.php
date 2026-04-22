@@ -76,9 +76,9 @@ class TarCreateEngine {
         $this->time_budget = max( 10, $max_time > 0 ? (int) ( $max_time * 0.6 ) : 20 );
 
         // Read chunk size for streaming file data
-        $this->chunk_size = intval( anibas_fm_get_option( 'chunk_size', defined( 'ANIBAS_FM_DEFAULT_CHUNK_SIZE' ) ? ANIBAS_FM_DEFAULT_CHUNK_SIZE : 1048576 ) );
-        if ( $this->chunk_size < 262144 ) $this->chunk_size = 262144;
-        if ( $this->chunk_size > 10485760 ) $this->chunk_size = 10485760;
+        $this->chunk_size = intval( anibas_fm_get_option( 'chunk_size', ANIBAS_FM_DEFAULT_CHUNK_SIZE ) );
+        if ( $this->chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN ) $this->chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
+        if ( $this->chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX ) $this->chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
     }
 
     /* ------------------------------------- */

@@ -72,11 +72,6 @@ class S3FileSystemAdapter extends FileSystemAdapter
 
     public function exists($path)
     {
-        // One ListObjectsV2 call covers both file and folder cases. S3 returns
-        // keys lexicographically and '/' (0x2F) sorts before any letter, so any
-        // "key/..." child appears before sibling keys like "keybar". MaxKeys=1
-        // is enough; we then verify the returned key is either an exact match
-        // (file) or starts with "key/" (folder, including the marker).
         $key = $this->get_key($path);
         if ($key === '') {
             return true; // bucket root always exists
@@ -266,11 +261,6 @@ class S3FileSystemAdapter extends FileSystemAdapter
             $key .= '/';
         }
 
-        // S3 has no real directories — delete all objects under this prefix.
-        // Loop handles pagination (max 1000 per listing). Each pass must make
-        // progress (delete at least one new key); otherwise we'd spin forever on
-        // an object that refuses to be removed (denied policy, eventual-consistency
-        // quirk, etc.). Hard iteration cap is a final safety net.
         $max_iterations = 10000; // up to ~10M objects at 1000/page
         $iterations     = 0;
         $last_first_key = null;
@@ -696,8 +686,8 @@ class S3FileSystemAdapter extends FileSystemAdapter
     public function download_to_local_chunked(string $remote_path, string $local_path, int $offset = 0, int $chunk_size = 2097152): array
     {
         $chunk_size = intval(anibas_fm_get_option('chunk_size', ANIBAS_FM_DEFAULT_CHUNK_SIZE));
-        if ($chunk_size < 262144) $chunk_size = 262144;
-        if ($chunk_size > 10485760) $chunk_size = 10485760;
+        if ($chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN) $chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
+        if ($chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX) $chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
 
         try {
             // Get file size via HEAD

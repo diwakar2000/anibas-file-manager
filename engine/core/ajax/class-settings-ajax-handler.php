@@ -53,11 +53,11 @@ class SettingsAjaxHandler extends AjaxHandler
         } ) );
 
         $chunk_size = intval(anibas_fm_fetch_request_variable('post', 'chunk_size', ANIBAS_FM_DEFAULT_CHUNK_SIZE));
-        if ($chunk_size < 262144) { // Min 256KB
-            $chunk_size = 262144;
+        if ($chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN) {
+            $chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
         }
-        if ($chunk_size > 10485760) { // Max 10MB
-            $chunk_size = 10485760;
+        if ($chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX) {
+            $chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
         }
 
         $updates = array(

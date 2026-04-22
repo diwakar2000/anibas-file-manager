@@ -547,7 +547,7 @@
 {#if showTrashDialog}
 	<TrashBin
 		onClose={() => (showTrashDialog = false)}
-		onRestore={(path) => { showTrashDialog = false; fileStore.navigateTo(path); }}
+		onRestore={(path) => { showTrashDialog = false; fileStore.navigateAndRefresh(path); }}
 	/>
 {/if}
 

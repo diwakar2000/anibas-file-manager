@@ -51,8 +51,10 @@ define( 'ANIBAS_FM_ROOT_PATH_PLACEHOLDER', '/' );
 define( 'ANIBAS_FM_OPERATION_DELAY', 2 ); // seconds
 define( 'ANIBAS_FM_LOCK_DURATION', 3 ); // seconds
 
-// Upload
-define( 'ANIBAS_FM_DEFAULT_CHUNK_SIZE', 1048576 ); // 1MB in bytes
+// Upload / chunked transfer
+define( 'ANIBAS_FM_CHUNK_SIZE_MIN',     1048576 );  // 1 MB
+define( 'ANIBAS_FM_CHUNK_SIZE_MAX',     20971520 ); // 20 MB
+define( 'ANIBAS_FM_DEFAULT_CHUNK_SIZE', 10485760 );  // 1 MB
 define( 'ANIBAS_FM_UPLOAD_TOKEN_EXPIRY', 300 ); // 5 minutes
 
 // Trash

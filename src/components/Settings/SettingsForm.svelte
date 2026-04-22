@@ -3,6 +3,10 @@
     import BackupModal from "../Shared/BackupModal.svelte";
     import BackupsList from "./BackupsList.svelte";
 
+    const CHUNK_SIZE_MIN = 1048576;   // 1 MB — must match ANIBAS_FM_CHUNK_SIZE_MIN
+    const CHUNK_SIZE_MAX = 20971520;  // 20 MB — must match ANIBAS_FM_CHUNK_SIZE_MAX
+    const CHUNK_SIZE_STEP = 1048576;  // 1 MB
+
     let { authToken = null, onPasswordChanged } = $props<{
         authToken: string | null;
         onPasswordChanged: () => void;
@@ -39,11 +43,43 @@
         null,
     );
 
+    // Baseline snapshot for dirty-tracking. Reset after each successful save.
+    let baseline = $state({
+        chunkSize: config.chunkSize || 1048576,
+        excludedPaths: JSON.stringify(config.excludedPaths || []),
+        deleteToTrash: config.deleteToTrash ?? false,
+        remoteFileBackupsEnabled: config.remoteFileBackupsEnabled ?? false,
+        debugMode: config.debugMode ?? false,
+        fmRefreshRequired: config.fmPasswordRefreshRequired ?? true,
+    });
+
+    const isDirty = $derived(
+        chunkSize !== baseline.chunkSize ||
+        deleteToTrash !== baseline.deleteToTrash ||
+        remoteFileBackupsEnabled !== baseline.remoteFileBackupsEnabled ||
+        debugMode !== baseline.debugMode ||
+        fmRefreshRequired !== baseline.fmRefreshRequired ||
+        JSON.stringify(excludedPaths) !== baseline.excludedPaths ||
+        !!newPassword || !!deletePassword || !!fmPassword ||
+        removeSettingsPassword
+    );
+
+    function resetBaseline() {
+        baseline = {
+            chunkSize,
+            excludedPaths: JSON.stringify(excludedPaths),
+            deleteToTrash,
+            remoteFileBackupsEnabled,
+            debugMode,
+            fmRefreshRequired,
+        };
+    }
+
     async function handleSubmit(e: Event) {
         e.preventDefault();
 
-        if (chunkSize < 262144 || chunkSize > 10485760) {
-            message = { type: "error", text: "Chunk size must be between 256 KB and 10 MB" };
+        if (chunkSize < CHUNK_SIZE_MIN || chunkSize > CHUNK_SIZE_MAX) {
+            message = { type: "error", text: "Chunk size must be between 1 MB and 20 MB" };
             return;
         }
 
@@ -158,6 +194,7 @@
                 fmPassword = "";
                 confirmFmPassword = "";
                 removeSettingsPassword = false;
+                resetBaseline();
                 if (didChangePassword || didRemovePassword) {
                     onPasswordChanged();
                 }
@@ -188,29 +225,48 @@
 </script>
 
 <div class="settings-form">
-    <div class="tabs">
-        <button 
-            class="tab-button" 
-            class:active={activeTab === "general"}
-            onclick={() => activeTab = "general"}
-        >
-            General
-        </button>
-        <button 
-            class="tab-button" 
-            class:active={activeTab === "security"}
-            onclick={() => activeTab = "security"}
-        >
-            Security
-        </button>
-    </div>
-
     <form onsubmit={handleSubmit} autocomplete="off">
+        <div class="sticky-bar">
+            <div class="tabs">
+                <button
+                    type="button"
+                    class="tab-button"
+                    class:active={activeTab === "general"}
+                    onclick={() => activeTab = "general"}
+                >
+                    General
+                </button>
+                <button
+                    type="button"
+                    class="tab-button"
+                    class:active={activeTab === "security"}
+                    onclick={() => activeTab = "security"}
+                >
+                    Security
+                </button>
+            </div>
+            <button
+                type="submit"
+                disabled={loading || !isDirty}
+                class="btn btn-primary save-btn"
+                class:dirty={isDirty}
+            >
+                {loading ? "Saving..." : isDirty ? "Save Changes" : "Saved"}
+            </button>
+        </div>
+
+        {#if message}
+            <div class="message message-{message.type}">
+                {message.text}
+            </div>
+        {/if}
+
+        <div class="form-content">
         {#if activeTab === "general"}
             <div class="card">
                 <h3>Upload Settings</h3>
                 <p class="description">
-                    Configure file upload chunk size (256 KB - 10 MB).
+                    Configure file upload chunk size (1 MB - 20 MB).
                 </p>
 
                 <div class="form-group">
@@ -221,14 +277,14 @@
                         id="chunk-size"
                         type="range"
                         bind:value={chunkSize}
-                        min="262144"
-                        max="10485760"
-                        step="262144"
+                        min={CHUNK_SIZE_MIN}
+                        max={CHUNK_SIZE_MAX}
+                        step={CHUNK_SIZE_STEP}
                         class="slider"
                     />
                     <div class="slider-labels">
-                        <span>256 KB</span>
-                        <span>10 MB</span>
+                        <span>1 MB</span>
+                        <span>20 MB</span>
                     </div>
                 </div>
             </div>
@@ -627,16 +683,7 @@
                 {/if}
             </div>
         {/if}
-
-        {#if message}
-            <div class="message message-{message.type}">
-                {message.text}
-            </div>
-        {/if}
-
-        <button type="submit" disabled={loading} class="btn btn-primary">
-            {loading ? "Saving..." : "Save Settings"}
-        </button>
+        </div>
     </form>
 </div>
 
@@ -662,10 +709,30 @@
         border: 1px solid #ccd0d4;
     }
 
+    .sticky-bar {
+        position: sticky;
+        top: 32px; /* WP admin bar height on desktop */
+        z-index: 10;
+        display: flex;
+        align-items: stretch;
+        justify-content: space-between;
+        gap: 12px;
+        background: #f6f7f7;
+        border-bottom: 1px solid #ccd0d4;
+        padding-right: 16px;
+        border-radius: 4px 4px 0 0;
+    }
+
+    @media screen and (max-width: 782px) {
+        .sticky-bar {
+            top: 46px; /* WP admin bar height on mobile */
+        }
+    }
+
     .tabs {
         display: flex;
-        border-bottom: 1px solid #ccd0d4;
-        background: #f6f7f7;
+        flex: 1;
+        min-width: 0;
     }
 
     .tab-button {
@@ -690,8 +757,32 @@
         border-bottom-color: #2271b1;
     }
 
-    form {
+    .save-btn {
+        align-self: center;
+        white-space: nowrap;
+    }
+
+    .save-btn.dirty {
+        background: #d63638;
+        box-shadow: 0 0 0 3px rgba(214, 54, 56, 0.2);
+        animation: dirtyPulse 1.6s ease-in-out infinite;
+    }
+
+    .save-btn.dirty:hover:not(:disabled) {
+        background: #b32d2e;
+    }
+
+    @keyframes dirtyPulse {
+        0%, 100% { box-shadow: 0 0 0 3px rgba(214, 54, 56, 0.2); }
+        50%      { box-shadow: 0 0 0 6px rgba(214, 54, 56, 0.0); }
+    }
+
+    .form-content {
         padding: 20px;
+    }
+
+    .message {
+        margin: 16px 20px 0;
     }
 
     .card {

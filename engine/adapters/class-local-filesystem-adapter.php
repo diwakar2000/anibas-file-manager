@@ -854,11 +854,11 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         }
 
         // Ensure chunk size is within limits
-        if ($chunk_size < 262144) { // Min 256KB
-            $chunk_size = 262144;
+        if ($chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN) {
+            $chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
         }
-        if ($chunk_size > 10485760) { // Max 10MB
-            $chunk_size = 10485760;
+        if ($chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX) {
+            $chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
         }
 
         // Ensure destination directory exists

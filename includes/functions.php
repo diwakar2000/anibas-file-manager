@@ -434,8 +434,7 @@ if ( ! function_exists( 'anibas_fm_get_trash_dir' ) ) {
      * @return string Absolute path to the trash directory.
      */
     function anibas_fm_get_trash_dir(): string {
-        $upload_dir = wp_upload_dir();
-        $trash_dir  = $upload_dir['basedir'] . '/' . ANIBAS_FM_TRASH_DIR_NAME;
+        $trash_dir  = untrailingslashit( ABSPATH ) . '/' . ANIBAS_FM_TRASH_DIR_NAME;
 
         if ( ! is_dir( $trash_dir ) ) {
             wp_mkdir_p( $trash_dir );
@@ -466,8 +465,7 @@ if ( ! function_exists( 'anibas_fm_purge_trash' ) ) {
      * directory exists we clean it.
      */
     function anibas_fm_purge_trash(): void {
-        $upload_dir = wp_upload_dir();
-        $trash_dir  = $upload_dir['basedir'] . '/' . ANIBAS_FM_TRASH_DIR_NAME;
+        $trash_dir  = untrailingslashit( ABSPATH ) . '/' . ANIBAS_FM_TRASH_DIR_NAME;
 
         if ( ! is_dir( $trash_dir ) ) {
             return;
