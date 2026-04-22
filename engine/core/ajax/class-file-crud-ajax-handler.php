@@ -153,8 +153,6 @@ class FileCrudAjaxHandler extends AjaxHandler
             wp_send_json_error(array('error' => esc_html__('Invalid folder path', 'anibas-file-manager')));
         }
 
-        sleep(ANIBAS_FM_OPERATION_DELAY);
-
         $fm = new LocalFileSystemAdapter();
         if ($fm->createFolder($new_folder_path)) {
             delete_transient($lock_key);
@@ -484,7 +482,22 @@ class FileCrudAjaxHandler extends AjaxHandler
             $filename = basename($full_path);
             $filename = preg_replace('/[\r\n"\\\\]/', '', $filename);
             $filesize = filesize($full_path);
-            $mime     = mime_content_type($full_path) ?: 'application/octet-stream';
+
+            // Robust MIME detection with fallback chain to avoid PHP warnings
+            // corrupting the output buffer when fileinfo extension is unavailable.
+            $mime = 'application/octet-stream';
+            if (function_exists('finfo_open')) {
+                $finfo = finfo_open(FILEINFO_MIME_TYPE);
+                $detected = finfo_file($finfo, $full_path);
+                if ($detected) {
+                    $mime = $detected;
+                }
+            } elseif (function_exists('mime_content_type')) {
+                $detected = @mime_content_type($full_path);
+                if ($detected) {
+                    $mime = $detected;
+                }
+            }
 
             if (ob_get_level()) ob_end_clean();
             header('Content-Type: ' . $mime);

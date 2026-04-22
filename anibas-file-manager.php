@@ -16,7 +16,7 @@
  * Plugin Name:       Anibas File Manager
  * Plugin URI:        https://diwakar2000.com.np/anibas-file-manager/
  * Description:       Advanced File Manager plugin for WordPress. Create, read, update and delete files, manage folders directly from your admin dashboard.
- * Version:           0.3.0
+ * Version:           0.4.0
  * Author:            Diwakar Dahal
  * Author URI:        https://diwakar2000.com.np/
  * License:           GPL-2.0+

@@ -169,8 +169,19 @@ class FinalizeAssemblyPhase extends OperationPhase
         global $wp_filesystem;
 
         $temp_file = $job['temp_dir'] . '/' . $job['file_name'];
-        $root_path = realpath(ABSPATH);
-        $dest_path = $root_path . $job['destination'];
+
+        // Use the adapter's path resolution to avoid trailing-slash / OS issues
+        // that plague raw string concatenation with realpath(ABSPATH).
+        $fm = new LocalFileSystemAdapter();
+        $dest_path = $fm->frontendPathToReal($job['destination']);
+
+        // Security: ensure the resolved destination is within the allowed root
+        $validated = $fm->validate_path($job['destination']);
+        if (! $validated || ! is_dir($validated)) {
+            throw new \Exception(esc_html__('Destination directory does not exist or is outside allowed root: ', 'anibas-file-manager') . esc_html($job['destination']));
+        }
+        $dest_path = $validated;
+
         $target = $dest_path . DIRECTORY_SEPARATOR . $job['file_name'];
 
         if (! file_exists($temp_file)) {

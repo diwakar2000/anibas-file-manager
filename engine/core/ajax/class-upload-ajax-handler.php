@@ -69,6 +69,17 @@ class UploadAjaxHandler extends AjaxHandler
             if (! $validated_abs) {
                 wp_send_json_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid destination path', 'anibas-file-manager')));
             }
+        } else {
+            // Validate remote destination through the storage adapter to prevent
+            // path traversal (e.g. ../../) escaping the bounded remote root.
+            $adapter = $this->get_storage_adapter($storage);
+            if (! $adapter) {
+                wp_send_json_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
+            }
+            $validated_remote = $adapter->validate_path($destination);
+            if (! $validated_remote) {
+                wp_send_json_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid remote destination path', 'anibas-file-manager')));
+            }
         }
         $upload_token = sanitize_text_field(wp_unslash($_POST['upload_token'] ?? ''));
 

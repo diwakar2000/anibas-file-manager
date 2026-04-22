@@ -29,6 +29,7 @@ export default defineConfig(() => {
   const isWatch = process.argv.includes('--watch') || process.argv.includes('-w')
 
   return {
+    clearScreen: false,
     plugins: [
       svelte({
         compilerOptions: {

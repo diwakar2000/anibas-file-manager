@@ -443,6 +443,7 @@ export class AnibasFileStore {
         } finally {
             if (!originalOperation) {
                 this.currentOperation = null;
+                this.clearSelection();
                 await this.loadDirectory(this.currentPath);
             }
         }
@@ -490,6 +491,7 @@ export class AnibasFileStore {
         }
         
         this.currentOperation = null;
+        this.clearSelection();
         await this.loadDirectory(this.currentPath);
         
         if (requiresPassword && !password) {
@@ -723,6 +725,7 @@ export class AnibasFileStore {
             await this.loadDirectory(this.currentPath);
             throw err;
         } finally {
+            this.clearSelection();
             if (Object.keys(this.activeJobs).length === 0) {
                 this.currentOperation = null;
             }
@@ -776,6 +779,7 @@ export class AnibasFileStore {
                     if (job.status === 'completed' || job.status === 'failed') {
                         delete this.activeJobs[jobId];
                         this.currentOperation = null;
+                        this.clearSelection();
 
                         if (job.status === 'failed') {
                             this.error = 'Job failed: ' + (job.errors?.[0] || 'Unknown error');
