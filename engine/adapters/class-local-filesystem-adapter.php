@@ -652,11 +652,11 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         $basename  = basename($validated);
         
         $trash_id = time() . '_' . uniqid() . '_' . $basename;
-        $dest     = $trash_dir . '/' . $trash_id;
+        $dest     = $trash_dir . DIRECTORY_SEPARATOR . $trash_id;
 
         $result = rename($validated, $dest);
         if ($result) {
-            $index_file = $trash_dir . '/index.json';
+            $index_file = $trash_dir . DIRECTORY_SEPARATOR . 'index.json';
             $index = [];
             if (file_exists($index_file)) {
                 $content = file_get_contents($index_file);
@@ -679,6 +679,10 @@ class LocalFileSystemAdapter extends FileSystemAdapter
             file_put_contents($index_file, wp_json_encode($index), LOCK_EX);
 
             ActivityLogger::get_instance()->log('trashed', $basename, dirname($validated));
+        } else {
+            $error_msg = sprintf("Failed to move %s to trash. Reason: %s", $path, print_r(error_get_last(), true));
+            ActivityLogger::get_instance()->log('error', basename($validated), dirname($validated), $error_msg);
+            error_clear_last();
         }
         return $result;
     }

@@ -4,9 +4,6 @@ namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-require_once __DIR__ . '/../operations/class-phase-executor.php';
-require_once __DIR__ . '/../core/class-storage-manager.php';
-
 /**
  * Simplified background processor - processes files as discovered
  */
@@ -17,33 +14,14 @@ class BackgroundProcessor {
     private static $shutdown_active = false;
 
     public static function init() {
-        add_action( 'anibas_file_worker_cron', [ __CLASS__, 'run_worker' ] );
-        add_action( 'admin_init', [ __CLASS__, 'maybe_run_worker' ] );
-    }
-
-    public static function maybe_run_worker() {
-        // Only run for admin users
-        if ( ! current_user_can( 'manage_options' ) ) {
-            return;
-        }
-
-        // Check if there are pending jobs
-        $queue = anibas_fm_get_option( self::$option_name, [] );
-        if ( empty( $queue ) ) {
-            return;
-        }
-
-        // Run worker if there are pending/processing jobs
-        foreach ( $queue as $job ) {
-            if ( in_array( $job['status'], [ 'pending', 'processing', 'retrying' ] ) ) {
-                self::run_worker();
-                break;
-            }
-        }
+        // Initialization handled by Anibas_File_Manager_Main instantiating the WorkerAjaxHandler
+        ActivityLogger::log_message('[BackgroundProcessor] init() called.');
     }
 
     public static function enqueue_job( $source, $destination, $action, $conflict_mode = 'skip', $storage = 'local', $dest_is_final = false ) {
+        ActivityLogger::log_message('[BackgroundProcessor] enqueue_job called: action=' . $action . ', source=' . $source);
         if ( ! in_array( $action, [ 'copy', 'move' ], true ) ) {
+            ActivityLogger::log_message('[BackgroundProcessor] enqueue_job failed: Invalid action ' . $action);
             return new \WP_Error( 'invalid_action', sprintf( 'Invalid action "%s" for background job', $action ) );
         }
 
@@ -115,7 +93,9 @@ class BackgroundProcessor {
         $queue[] = $job;
         anibas_fm_update_option( self::$option_name, $queue );
 
-        do_action( 'anibas_file_worker_cron' );
+        ActivityLogger::log_message('[BackgroundProcessor] Job enqueued successfully. Job ID: ' . $job['id'] . '. Dispatching AsyncWorker.');
+
+        AsyncWorkerDispatcher::dispatch();
 
         return $job['id'];
     }
@@ -184,7 +164,7 @@ class BackgroundProcessor {
         $queue[] = $job;
         anibas_fm_update_option( self::$option_name, $queue );
 
-        do_action( 'anibas_file_worker_cron' );
+        AsyncWorkerDispatcher::dispatch();
 
         return $job['id'];
     }
@@ -235,21 +215,26 @@ class BackgroundProcessor {
         $queue[] = $job;
         anibas_fm_update_option( self::$option_name, $queue );
 
-        do_action( 'anibas_file_worker_cron' );
+        AsyncWorkerDispatcher::dispatch();
 
         return $job['id'];
     }
 
     public static function run_worker() {
+        ActivityLogger::log_message('[BackgroundProcessor] run_worker() triggered.');
         if ( ! self::acquire_lock() ) {
+            ActivityLogger::log_message('[BackgroundProcessor] run_worker() could not acquire lock. Exiting.');
             return;
         }
 
         $queue = self::load_and_clean_queue();
         if ( ! $queue ) {
+            ActivityLogger::log_message('[BackgroundProcessor] run_worker() found no jobs in queue. Releasing lock and exiting.');
             self::release_lock();
             return;
         }
+
+        ActivityLogger::log_message('[BackgroundProcessor] run_worker() loaded queue, top job ID: ' . $queue[0]['id'] . ' with status: ' . $queue[0]['status']);
 
         $job = &$queue[0];
 
@@ -288,6 +273,11 @@ class BackgroundProcessor {
         $queue[0] = $job;
         self::save_queue( $queue );
 
+        // Set 5-minute heartbeat to prevent zombie jobs if the worker crashes
+        set_transient( 'anibas_fm_worker_heartbeat_' . $job['id'], time(), 300 );
+
+        ActivityLogger::log_message('[BackgroundProcessor] run_worker() beginning process_job() for Job ID: ' . $job['id']);
+
         try {
             $is_complete = self::process_job( $job, $work_queue );
             
@@ -308,19 +298,43 @@ class BackgroundProcessor {
             self::save_queue( $queue );
             self::release_lock();
             self::log_job_state( $job, 'failed' );
+            ActivityLogger::log_message('[BackgroundProcessor] run_worker() fatal exception for Job ID ' . $job['id'] . ': ' . $e->getMessage());
         }
     }
 
     private static function acquire_lock() {
-        if ( get_transient( self::$lock_key ) ) {
+        $lock_time = get_option( self::$lock_key );
+        if ( $lock_time ) {
+            // Check if lock has expired (e.g. 32 seconds)
+            if ( time() - (int)$lock_time > 32 ) {
+                // Expired. Atomically steal it by deleting and attempting to re-add.
+                delete_option( self::$lock_key );
+                $acquired = add_option( self::$lock_key, time(), '', 'no' );
+                if ( $acquired ) ActivityLogger::log_message('[BackgroundProcessor] Lock was expired, stolen and acquired successfully.');
+                return $acquired;
+            }
             return false;
         }
-        set_transient( self::$lock_key, true, 32 );
-        return true;
+
+        // Try to atomically acquire the lock
+        $acquired = add_option( self::$lock_key, time(), '', 'no' );
+        if ( $acquired ) {
+            ActivityLogger::log_message('[BackgroundProcessor] Lock acquired successfully.');
+        }
+        return $acquired;
+    }
+
+    public static function is_worker_locked() {
+        $lock_time = get_option( self::$lock_key );
+        if ( $lock_time && ( time() - (int)$lock_time <= 32 ) ) {
+            return true;
+        }
+        return false;
     }
 
     private static function release_lock() {
-        delete_transient( self::$lock_key );
+        delete_option( self::$lock_key );
+        ActivityLogger::log_message('[BackgroundProcessor] Lock released.');
     }
 
     private static function load_and_clean_queue() {
@@ -329,23 +343,46 @@ class BackgroundProcessor {
             return null;
         }
 
-        $queue = array_filter( $queue, function( $job ) {
-            if ( $job['status'] === 'completed' && isset( $job['completed_at'] ) && $job['completed_at'] < time() - 30 ) {
-                return false;
+        $modified = false;
+        $now = time();
+
+        // Pass 1: Heartbeat check for zombie jobs
+        foreach ( $queue as &$job ) {
+            if ( $job['status'] === 'processing' ) {
+                $heartbeat = get_transient( 'anibas_fm_worker_heartbeat_' . $job['id'] );
+                if ( ! $heartbeat ) {
+                    $job['status'] = 'failed';
+                    $job['errors'][] = esc_html__( 'Job timed out or worker crashed (Heartbeat lost).', 'anibas-file-manager' );
+                    $job['created_at'] = $now; // Reset time so the frontend has 30s to read the failure state
+                    $modified = true;
+                }
             }
-            if ( $job['status'] === 'failed' && isset( $job['created_at'] ) && $job['created_at'] < time() - 30 ) {
-                return false;
+        }
+        unset( $job );
+
+        // Pass 2: Filter out old completed/failed jobs
+        $filtered = [];
+        foreach ( $queue as $job ) {
+            if ( $job['status'] === 'completed' && isset( $job['completed_at'] ) && $job['completed_at'] < $now - 30 ) {
+                $modified = true;
+                continue;
             }
-            return true;
-        });
-        $queue = array_values( $queue );
-        
-        if ( empty( $queue ) ) {
-            anibas_fm_update_option( self::$option_name, [] );
+            if ( $job['status'] === 'failed' && isset( $job['created_at'] ) && $job['created_at'] < $now - 30 ) {
+                $modified = true;
+                continue;
+            }
+            $filtered[] = $job;
+        }
+
+        if ( $modified ) {
+            anibas_fm_update_option( self::$option_name, $filtered );
+        }
+
+        if ( empty( $filtered ) ) {
             return null;
         }
 
-        return $queue;
+        return $filtered;
     }
 
     private static function save_queue( $queue ) {
@@ -393,6 +430,7 @@ class BackgroundProcessor {
     }
 
     private static function process_job( &$job, &$work_queue ) {
+        ActivityLogger::log_message('[BackgroundProcessor] process_job() called for Job ID: ' . $job['id']);
         if ( isset( $job['type'] ) && $job['type'] === 'assembly' ) {
             return self::process_assembly_job( $job );
         }
@@ -416,6 +454,8 @@ class BackgroundProcessor {
             $executor    = new PhaseExecutor( $adapter, null, 'delete' );
             $is_complete = $executor->execute_with_time_limit( $job, $work_queue, $adapter );
 
+            ActivityLogger::log_message('[BackgroundProcessor] Delete phase executor returned is_complete: ' . ($is_complete ? 'true' : 'false'));
+
             if ( ! $is_complete ) {
                 update_option( $job['work_queue_id'], $work_queue, false );
             }
@@ -438,6 +478,8 @@ class BackgroundProcessor {
 
             $executor    = new PhaseExecutor( $source_adapter, $dest_adapter );
             $is_complete = $executor->execute_with_time_limit( $job, $work_queue, $source_adapter );
+
+            ActivityLogger::log_message('[BackgroundProcessor] Cross-storage phase executor returned is_complete: ' . ($is_complete ? 'true' : 'false'));
 
             if ( ! $is_complete ) {
                 update_option( $job['work_queue_id'], $work_queue, false );
@@ -465,6 +507,8 @@ class BackgroundProcessor {
         $executor = new PhaseExecutor( $manager );
 
         $is_complete = $executor->execute_with_time_limit( $job, $work_queue, $manager );
+
+        ActivityLogger::log_message('[BackgroundProcessor] Standard phase executor returned is_complete: ' . ($is_complete ? 'true' : 'false'));
 
         if ( ! $is_complete ) {
             update_option( $job['work_queue_id'], $work_queue, false );
@@ -544,6 +588,13 @@ class BackgroundProcessor {
     }
 
     public static function get_job_status( $job_id ) {
+        // Fallback: If loopback HTTP requests fail (e.g. Docker port mappings, basic auth),
+        // we use the frontend's status polling to process a chunk of work synchronously.
+        if ( ! self::is_worker_locked() ) {
+            ActivityLogger::log_message('[BackgroundProcessor] Inline fallback triggered from get_job_status.');
+            self::run_worker();
+        }
+
         $queue = anibas_fm_get_option( self::$option_name, [] );
         foreach ( $queue as $job ) {
             if ( $job['id'] === $job_id ) {

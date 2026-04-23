@@ -20,6 +20,7 @@ use Anibas\SettingsAjaxHandler;
 use Anibas\TransferAjaxHandler;
 use Anibas\TrashAjaxHandler;
 use Anibas\UploadAjaxHandler;
+use Anibas\WorkerAjaxHandler;
 
 /**
  * The main-specific functionality of the plugin.
@@ -55,6 +56,7 @@ class Anibas_File_Manager_Main
 		new TransferAjaxHandler();
 		new TrashAjaxHandler();
 		new UploadAjaxHandler();
+		new WorkerAjaxHandler();
 
 	}
 

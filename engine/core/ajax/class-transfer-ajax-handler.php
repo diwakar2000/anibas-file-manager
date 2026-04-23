@@ -321,6 +321,16 @@ class TransferAjaxHandler extends AjaxHandler
         $job = BackgroundProcessor::get_job_status($job_id);
 
         if ($job) {
+            // Fallback safety net: if the job is active but the worker lock is free,
+            // the async HTTP loopback likely failed (e.g., due to firewall or basic auth).
+            // This polling request kickstarts the worker again.
+            if (in_array($job['status'], ['pending', 'processing', 'retrying'], true)) {
+                if (! BackgroundProcessor::is_worker_locked()) {
+                    require_once __DIR__ . '/../../handlers/class-async-worker-dispatcher.php';
+                    AsyncWorkerDispatcher::dispatch();
+                }
+            }
+
             wp_send_json_success($job);
         } else {
             wp_send_json_error(array('error' => esc_html__('Job not found', 'anibas-file-manager')));

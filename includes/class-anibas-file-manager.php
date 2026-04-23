@@ -98,6 +98,16 @@ class Anibas_File_Manager {
 	 */
 	private function load_dependencies() {
 		/**
+		 * Contains constants.
+		 */
+		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'includes/constants.php';
+
+		/**
+		 * Contains functions.
+		 */
+		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'includes/functions.php';
+
+		/**
 		 * The class responsible for orchestrating the actions and filters of the
 		 * core plugin.
 		 */
@@ -123,6 +133,7 @@ class Anibas_File_Manager {
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/ajax/class-upload-ajax-handler.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/ajax/class-archive-ajax-handler.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/ajax/class-backup-ajax-handler.php';
+		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/ajax/class-worker-ajax-handler.php';
 
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/class-editor-page.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/class-editor-ajax.php';
@@ -138,15 +149,16 @@ class Anibas_File_Manager {
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/class-backup-engine.php';
 
 		/**
-		 * Handlers.
-		 */
-		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/handlers/class-background-processor.php';
-
-		/**
 		 * Utilities.
 		 */
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/utilities/class-activity-logger.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/utilities/class-remote-storage-tester.php';
+
+		/**
+		 * Handlers.
+		 */
+		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/handlers/class-background-processor.php';
+		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/handlers/class-async-worker-dispatcher.php';
 
 		/**
 		 * Filesystem adapters.
@@ -171,16 +183,6 @@ class Anibas_File_Manager {
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/operations/phases/class-cross-storage-transfer-phase.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/operations/phases/class-wrapup-phase.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/operations/phases/class-delete-phase.php';
-
-		/**
-		 * Contains constants.
-		 */
-		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'includes/constants.php';
-
-		/**
-		 * Contains functions.
-		 */
-		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'includes/functions.php';
 
 		$this->loader = new Anibas_File_Manager_Loader();
 	}

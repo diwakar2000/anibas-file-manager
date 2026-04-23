@@ -2,7 +2,7 @@
 
 A full-featured file manager for WordPress with multi-storage support, a built-in code editor, archive management, trash system, site backups, chunked uploads, and background processing for large operations.
 
-**Version:** 0.4.0  
+**Version:** 0.5.0  
 **Author:** Diwakar Dahal  
 **License:** GPL-2.0+  
 **Requires:** WordPress 6.0+, PHP 8.0+

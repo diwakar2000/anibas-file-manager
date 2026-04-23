@@ -753,6 +753,13 @@ export class AnibasFileStore {
             const poll = async () => {
                 try {
                     const job = await apiGetJobStatus(jobId);
+                    
+                    // If the job was cancelled/deleted from activeJobs while we were polling, terminate the poll loop cleanly
+                    if (!this.activeJobs[jobId]) {
+                        resolve();
+                        return;
+                    }
+
                     consecutiveFailures = 0;
                     const effectiveAction = (frontendAction === 'rename' ? 'rename' : job.action) as 'copy' | 'move' | 'delete' | 'rename';
 

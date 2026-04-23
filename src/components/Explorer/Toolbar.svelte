@@ -132,11 +132,15 @@
 
 	async function handlePaste(mode?: string) {
 		isPasting = true;
+		const destination = fileStore.pendingPasteDestination || fileStore.currentPath;
+		
+		// Hide the dialog immediately so the user isn't blocked while the background worker processes
+		fileStore.showPasteDialog = false;
+		fileStore.pendingPasteDestination = null;
+		
 		try {
 			const resolvedMode = mode || conflictMode;
-			await fileStore.paste(fileStore.pendingPasteDestination || fileStore.currentPath, resolvedMode);
-			fileStore.showPasteDialog = false;
-			fileStore.pendingPasteDestination = null;
+			await fileStore.paste(destination, resolvedMode);
 			conflictMode = "skip";
 		} catch {
 			// fileStore.paste already toasts the error

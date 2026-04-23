@@ -434,13 +434,13 @@ if ( ! function_exists( 'anibas_fm_get_trash_dir' ) ) {
      * @return string Absolute path to the trash directory.
      */
     function anibas_fm_get_trash_dir(): string {
-        $trash_dir  = untrailingslashit( ABSPATH ) . '/' . ANIBAS_FM_TRASH_DIR_NAME;
+        $trash_dir  = untrailingslashit( WP_CONTENT_DIR ) . DIRECTORY_SEPARATOR . ANIBAS_FM_TRASH_DIR_NAME;
 
         if ( ! is_dir( $trash_dir ) ) {
             wp_mkdir_p( $trash_dir );
             // Prevent direct web access
-            @file_put_contents( $trash_dir . '/.htaccess', "Deny from all\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
-            @file_put_contents( $trash_dir . '/index.php', "<?php\n// Silence is golden\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
+            @file_put_contents( $trash_dir . DIRECTORY_SEPARATOR . '.htaccess', "Deny from all\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
+            @file_put_contents( $trash_dir . DIRECTORY_SEPARATOR . 'index.php', "<?php\n// Silence is golden\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
         }
 
         return $trash_dir;
