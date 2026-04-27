@@ -38,6 +38,12 @@ class UploadAjaxHandler extends AjaxHandler
         set_transient($token_key, $upload_token, ANIBAS_FM_UPLOAD_TOKEN_EXPIRY);
 
         $chunk_size = intval(anibas_fm_get_option('chunk_size', ANIBAS_FM_DEFAULT_CHUNK_SIZE));
+        if ($chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN) {
+            $chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
+        }
+        if ($chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX) {
+            $chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
+        }
 
         // Ensure chunk size doesn't exceed PHP upload limits
         $upload_max = wp_max_upload_size();

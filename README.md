@@ -2,7 +2,7 @@
 
 A full-featured, secure, and modern file manager for WordPress. Manage local files and remote storage, edit code, create archives, and run site backups—all directly from your WordPress dashboard.
 
-**Version:** 0.6.0  
+**Version:** 1.0.0  
 **Author:** Diwakar Dahal  
 **License:** GPL-2.0+  
 **Requires:** WordPress 6.0+, PHP 8.0+
@@ -120,9 +120,14 @@ You can define these in `wp-config.php` to override default limits:
 ```php
 // Rate limiting & Uploads
 define('ANIBAS_FM_OPERATION_DELAY', 2);
+define('ANIBAS_FM_LOCK_DURATION', 15);
+define('ANIBAS_FM_CHUNK_SIZE_MIN', 1 * 1024 * 1024);
+define('ANIBAS_FM_DEFAULT_CHUNK_SIZE', 10 * 1024 * 1024);
 define('ANIBAS_FM_CHUNK_SIZE_MAX', 20 * 1024 * 1024);
+define('ANIBAS_FM_UPLOAD_TOKEN_EXPIRY', 15 * MINUTE_IN_SECONDS);
 
-// Trash & Backups
+// Listing, Trash & Backups
+define('ANIBAS_FILE_MANAGER_DEFAULT_FILELIST_PAGE_SIZE', 100);
 define('ANIBAS_FM_TRASH_MAX_AGE', 30 * DAY_IN_SECONDS);
 define('ANIBAS_FM_BACKUP_MAX_AGE', 7 * DAY_IN_SECONDS);
 define('ANIBAS_FM_FILE_BACKUP_KEEP', 5);

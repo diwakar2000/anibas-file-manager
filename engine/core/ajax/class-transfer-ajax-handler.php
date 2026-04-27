@@ -240,6 +240,13 @@ class TransferAjaxHandler extends AjaxHandler
         $is_dir        = is_dir($source_path);
         $dest_is_final = false;
 
+        if ($action === 'move' && $is_dir && $fm->containsProtectedDescendant($source_path)) {
+            $this->send_error(array(
+                'error'   => 'ProtectedDescendant',
+                'message' => esc_html__('Folder contains protected file-manager paths and cannot be moved as a whole.', 'anibas-file-manager'),
+            ));
+        }
+
         if ($is_dir) {
             $final_dest = $dest_path;
         } else {
@@ -292,6 +299,17 @@ class TransferAjaxHandler extends AjaxHandler
 
         if (! $source_adapter || ! $dest_adapter) {
             $this->send_error(array('error' => esc_html__('Invalid storage adapter.', 'anibas-file-manager')));
+        }
+
+        if ($action === 'move'
+            && $source_storage === 'local'
+            && method_exists($source_adapter, 'containsProtectedDescendant')
+            && $source_adapter->is_dir($source)
+            && $source_adapter->containsProtectedDescendant($source)) {
+            $this->send_error(array(
+                'error'   => 'ProtectedDescendant',
+                'message' => esc_html__('Folder contains protected file-manager paths and cannot be moved as a whole.', 'anibas-file-manager'),
+            ));
         }
 
         // Always enqueue as a background job — this ensures chunked I/O for large files

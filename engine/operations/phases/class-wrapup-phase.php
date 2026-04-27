@@ -79,7 +79,7 @@ class WrapupPhase extends OperationPhase
 
         try {
             $rm = method_exists($fs, 'queuedRmdir')
-                ? $fs->queuedRmdir($folder_path, (string) ($job['source_root'] ?? ''))
+                ? $fs->queuedRmdir($folder_path, (string) ($job['source_root'] ?? ''), ! empty($job['allow_trash_root']))
                 : ($fs->is_dir($folder_path) ? $fs->rmdir($folder_path) : true);
             if ($rm === false) {
                 $message = basename($folder_path) . esc_html__('/: Failed to remove source folder after move', 'anibas-file-manager');

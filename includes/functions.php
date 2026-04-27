@@ -49,6 +49,16 @@ if ( ! function_exists( 'anibas_fm_safe_move' ) ) {
             );
         }
 
+        $allow_trash_root = false;
+        if ( function_exists( 'anibas_fm_get_trash_dir' ) ) {
+            $trash_dir   = anibas_fm_get_trash_dir();
+            $source_norm = untrailingslashit( wp_normalize_path( realpath( $source ) ?: $source ) );
+            $trash_norm  = untrailingslashit( wp_normalize_path( realpath( $trash_dir ) ?: $trash_dir ) );
+            $allow_trash_root = $trash_norm !== ''
+                && $source_norm !== $trash_norm
+                && strpos( trailingslashit( $source_norm ), trailingslashit( $trash_norm ) ) === 0;
+        }
+
         if ( class_exists( '\\Anibas\\BackgroundProcessor' ) ) {
             $job_id = \Anibas\BackgroundProcessor::enqueue_job(
                 $source,
@@ -57,8 +67,9 @@ if ( ! function_exists( 'anibas_fm_safe_move' ) ) {
                 'overwrite',
                 'local',
                 [
-                    'dest_is_final' => true,
-                    'remove_source' => true,
+                    'dest_is_final'    => true,
+                    'remove_source'    => true,
+                    'allow_trash_root' => $allow_trash_root,
                 ]
             );
             if ( ! is_wp_error( $job_id ) ) {

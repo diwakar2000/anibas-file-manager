@@ -85,11 +85,11 @@
     }
   }
 
-  function handlePasswordChanged() {
+  function handlePasswordChanged(hasPassword = true) {
     sessionStorage.removeItem(TOKEN_KEY)
     authToken = null
-    config.hasPassword = true
-    authenticated = false
+    config.hasPassword = hasPassword
+    authenticated = !hasPassword
   }
 </script>
 

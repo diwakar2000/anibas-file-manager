@@ -1,7 +1,9 @@
 <?php
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-define( 'ANIBAS_FILE_MANAGER_DEFAULT_FILE_SIZE', 100 );
+if ( ! defined( 'ANIBAS_FILE_MANAGER_DEFAULT_FILELIST_PAGE_SIZE' ) ) {
+    define( 'ANIBAS_FILE_MANAGER_DEFAULT_FILELIST_PAGE_SIZE', 100 );
+}
 
 // AJAX Actions
 define( 'ANIBAS_FM_GET_FILE_LIST', 'anibas_fm_get_file_list' );
@@ -48,18 +50,32 @@ define( 'ANIBAS_FM_ROOT_PATH', realpath( ABSPATH ) );
 define( 'ANIBAS_FM_ROOT_PATH_PLACEHOLDER', '/' );
 
 // Rate Limiting
-define( 'ANIBAS_FM_OPERATION_DELAY', 2 ); // seconds
-define( 'ANIBAS_FM_LOCK_DURATION', 3 ); // seconds
+if ( ! defined( 'ANIBAS_FM_OPERATION_DELAY' ) ) {
+    define( 'ANIBAS_FM_OPERATION_DELAY', 2 );
+}
+if ( ! defined( 'ANIBAS_FM_LOCK_DURATION' ) ) {
+    define( 'ANIBAS_FM_LOCK_DURATION', 15 );
+}
 
 // Upload / chunked transfer
-define( 'ANIBAS_FM_CHUNK_SIZE_MIN',     1048576 );  // 1 MB
-define( 'ANIBAS_FM_CHUNK_SIZE_MAX',     20971520 ); // 20 MB
-define( 'ANIBAS_FM_DEFAULT_CHUNK_SIZE', 10485760 );  // 1 MB
-define( 'ANIBAS_FM_UPLOAD_TOKEN_EXPIRY', 300 ); // 5 minutes
+if ( ! defined( 'ANIBAS_FM_CHUNK_SIZE_MIN' ) ) {
+    define( 'ANIBAS_FM_CHUNK_SIZE_MIN', 1048576 );
+}
+if ( ! defined( 'ANIBAS_FM_CHUNK_SIZE_MAX' ) ) {
+    define( 'ANIBAS_FM_CHUNK_SIZE_MAX', 20971520 );
+}
+if ( ! defined( 'ANIBAS_FM_DEFAULT_CHUNK_SIZE' ) ) {
+    define( 'ANIBAS_FM_DEFAULT_CHUNK_SIZE', 10485760 );
+}
+if ( ! defined( 'ANIBAS_FM_UPLOAD_TOKEN_EXPIRY' ) ) {
+    define( 'ANIBAS_FM_UPLOAD_TOKEN_EXPIRY', 15 * MINUTE_IN_SECONDS );
+}
 
 // Trash
 define( 'ANIBAS_FM_TRASH_DIR_NAME', '.trash' );
-define( 'ANIBAS_FM_TRASH_MAX_AGE', 30 * DAY_IN_SECONDS ); // 30 days
+if ( ! defined( 'ANIBAS_FM_TRASH_MAX_AGE' ) ) {
+    define( 'ANIBAS_FM_TRASH_MAX_AGE', 30 * DAY_IN_SECONDS );
+}
 define( 'ANIBAS_FM_TRASH_CRON_HOOK', 'anibas_fm_trash_cleanup' );
 define( 'ANIBAS_FM_EMPTY_FOLDER', 'anibas_fm_empty_folder' );
 define( 'ANIBAS_FM_LIST_TRASH', 'anibas_fm_list_trash' );
@@ -83,10 +99,14 @@ define( 'ANIBAS_FM_BACKUP_POLL',        'anibas_fm_backup_poll' );
 define( 'ANIBAS_FM_BACKUP_CANCEL',      'anibas_fm_backup_cancel' );
 define( 'ANIBAS_FM_BACKUP_STATUS',      'anibas_fm_backup_status' );
 define( 'ANIBAS_FM_BACKUP_DIR_NAME',    'anibas-backups' );
-define( 'ANIBAS_FM_BACKUP_MAX_AGE',     7 * DAY_IN_SECONDS ); // 7 days
+if ( ! defined( 'ANIBAS_FM_BACKUP_MAX_AGE' ) ) {
+    define( 'ANIBAS_FM_BACKUP_MAX_AGE', 7 * DAY_IN_SECONDS );
+}
 define( 'ANIBAS_FM_BACKUP_CRON_HOOK',   'anibas_fm_backup_cleanup' );
 define( 'ANIBAS_FM_BACKUP_LOCK_KEY',    'anibas_fm_backup_running' );
-define( 'ANIBAS_FM_FILE_BACKUP_KEEP',   5 ); // per-file rolling window size
+if ( ! defined( 'ANIBAS_FM_FILE_BACKUP_KEEP' ) ) {
+    define( 'ANIBAS_FM_FILE_BACKUP_KEEP', 5 );
+}
 
 // Editor
 define( 'ANIBAS_FM_GENERATE_EDITOR_TOKEN', 'anibas_fm_generate_editor_token' );
@@ -96,7 +116,9 @@ define( 'ANIBAS_FM_SAVE_FILE',             'anibas_fm_save_file' );
 define( 'ANIBAS_FM_NONCE_EDITOR',          'anibas-fm-editor' );
 define( 'ANIBAS_FM_EDITOR_TOKEN_TTL',      300 );           // seconds — window to open the tab
 define( 'ANIBAS_FM_EDITOR_SESSION_TTL',    7200 );          // seconds — how long the edit session lasts (2 hrs)
-define( 'ANIBAS_FM_EDITOR_MAX_BYTES',      10485760 );      // 10 MB
+if ( ! defined( 'ANIBAS_FM_EDITOR_MAX_BYTES' ) ) {
+    define( 'ANIBAS_FM_EDITOR_MAX_BYTES', 10485760 );
+}
 define( 'ANIBAS_FM_EDITOR_CHUNK_BYTES',    2097152 );       // 2 MB read chunk
 
 define( 'ANIBAS_FM_EDITOR_EXTENSIONS', [

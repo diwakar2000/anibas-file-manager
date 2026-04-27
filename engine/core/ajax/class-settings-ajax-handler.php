@@ -29,6 +29,8 @@ class SettingsAjaxHandler extends AjaxHandler
         $password = anibas_fm_fetch_request_variable('post', 'password', '');
         $stored_hash = anibas_fm_get_option('settings_password_hash', '');
         $stored_token = get_transient('anibas_fm_auth_' . get_current_user_id());
+        $new_password = anibas_fm_fetch_request_variable('post', 'new_password', '');
+        $remove_settings_password = anibas_fm_fetch_request_variable('post', 'remove_settings_password', '');
 
         $valid_token = $token && is_string($stored_token) && hash_equals($stored_token, $token);
         $valid_password = ! empty($stored_hash) && wp_check_password($password, $stored_hash);
@@ -37,7 +39,11 @@ class SettingsAjaxHandler extends AjaxHandler
             $this->send_error(esc_html__('Invalid authentication', 'anibas-file-manager'), 401);
         }
 
-        $new_password = anibas_fm_fetch_request_variable('post', 'new_password', '');
+        $is_changing_settings_password = ! empty($new_password) || ($remove_settings_password === '1' && ! empty($stored_hash));
+        if ($is_changing_settings_password && ! empty($stored_hash) && ! $valid_password) {
+            $this->send_error(esc_html__('Current settings password is required to change or remove password protection.', 'anibas-file-manager'), 401);
+        }
+
         $delete_password = anibas_fm_fetch_request_variable('post', 'delete_password', '');
         $excluded_paths = anibas_fm_fetch_request_variable('post', 'excluded_paths', array());
         if (! is_array($excluded_paths)) {
@@ -65,12 +71,10 @@ class SettingsAjaxHandler extends AjaxHandler
             'chunk_size' => $chunk_size
         );
 
-        $remove_settings_password = anibas_fm_fetch_request_variable('post', 'remove_settings_password', '');
         if (! empty($new_password)) {
             $updates['settings_password_hash'] = wp_hash_password($new_password);
             delete_transient('anibas_fm_auth_' . get_current_user_id());
         } elseif ($remove_settings_password === '1' && ! empty($stored_hash)) {
-            // Removing settings password — auth was already validated above
             $updates['settings_password_hash'] = '';
             delete_transient('anibas_fm_auth_' . get_current_user_id());
         }
@@ -89,10 +93,10 @@ class SettingsAjaxHandler extends AjaxHandler
             delete_transient('anibas_fm_delete_auth_' . get_current_user_id());
         }
 
-        // FM page password
-        $fm_password_isset = isset($_POST['fm_password']);
-        if ($fm_password_isset) {
-            // Require current FM password when one is already set
+        $fm_password = anibas_fm_fetch_request_variable('post', 'fm_password', '');
+        $remove_fm_password = anibas_fm_fetch_request_variable('post', 'remove_fm_password', '');
+        $is_changing_fm_password = $fm_password !== '' || $remove_fm_password === '1';
+        if ($is_changing_fm_password) {
             $existing_fm_hash = anibas_fm_get_option('fm_password_hash', '');
             if (! empty($existing_fm_hash)) {
                 $fm_current = anibas_fm_fetch_request_variable('post', 'fm_current_password', '');
@@ -100,9 +104,7 @@ class SettingsAjaxHandler extends AjaxHandler
                     $this->send_error(esc_html__('Current file manager password is incorrect.', 'anibas-file-manager'));
                 }
             }
-            $fm_password = anibas_fm_fetch_request_variable('post', 'fm_password', '');
-            $updates['fm_password_hash'] = ! empty($fm_password) ? wp_hash_password($fm_password) : '';
-            // Invalidate all active FM tokens when password changes or is removed
+            $updates['fm_password_hash'] = $remove_fm_password === '1' ? '' : wp_hash_password($fm_password);
             delete_transient('anibas_fm_fm_token_' . get_current_user_id());
         }
 

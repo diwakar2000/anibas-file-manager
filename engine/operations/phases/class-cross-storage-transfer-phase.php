@@ -334,7 +334,7 @@ class CrossStorageTransferPhase extends OperationPhase
     {
         try {
             $deleted = method_exists($adapter, 'queuedUnlink')
-                ? $adapter->queuedUnlink($path, (string) ($job['source_root'] ?? ''))
+                ? $adapter->queuedUnlink($path, (string) ($job['source_root'] ?? ''), ! empty($job['allow_trash_root']))
                 : $adapter->unlink($path);
             if (! $deleted) {
                 $job['failed_count']++;

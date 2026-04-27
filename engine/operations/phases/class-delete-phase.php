@@ -15,6 +15,10 @@ class DeletePhase extends OperationPhase
         $job_id = $job['id'] ?? null;
         $work_queue['_job_id'] = $job_id;
         $trash_mode = ! empty($job['trash_mode']) && method_exists($fs, 'moveToTrash');
+        $allow_trash_root = ! empty($job['allow_trash_root']);
+        if (! empty($job['recreate_trash_root'])) {
+            $work_queue['must_recreate_trash_root'] = true;
+        }
 
         if (! isset($work_queue['files_to_process'])) {
             $work_queue['files_to_process'] = [];
@@ -30,7 +34,7 @@ class DeletePhase extends OperationPhase
         while (! empty($work_queue['files_to_process']) && ((microtime(true) - $start_time) < $time_limit)) {
             $file = array_shift($work_queue['files_to_process']);
             $entry = is_array($file) ? $file : ['source' => $file];
-            $this->process_entry($entry, $fs, $job, $trash_mode);
+            $this->process_entry($entry, $fs, $job, $trash_mode, $allow_trash_root);
         }
         if (! empty($work_queue['files_to_process'])) {
             return;
@@ -46,7 +50,7 @@ class DeletePhase extends OperationPhase
                 if ($entry === null) {
                     continue;
                 }
-                $this->process_entry($entry, $fs, $job, $trash_mode);
+                $this->process_entry($entry, $fs, $job, $trash_mode, $allow_trash_root);
             }
             if (! JobQueueSpool::is_eof($job_id, 'files', $work_queue['files_cursor'])) {
                 return;
@@ -88,10 +92,15 @@ class DeletePhase extends OperationPhase
                 }
                 $this->delete_folder($entry['path'], $fs, $job);
             }
+            if (! empty($work_queue['folders_reverse_cursor'])) {
+                return;
+            }
         }
+
+        $this->recreate_trash_root_if_needed($job, $work_queue);
     }
 
-    private function process_entry(array $entry, $fs, array &$job, bool $trash_mode): void
+    private function process_entry(array $entry, $fs, array &$job, bool $trash_mode, bool $allow_trash_root): void
     {
         $path = $entry['source'] ?? '';
         if ($path === '') {
@@ -138,10 +147,10 @@ class DeletePhase extends OperationPhase
             $is_folder = ! empty($entry['is_folder']);
             $result = $is_folder
                 ? (method_exists($fs, 'queuedRmdir')
-                    ? $fs->queuedRmdir($path, (string) ($job['source_root'] ?? ''))
+                    ? $fs->queuedRmdir($path, (string) ($job['source_root'] ?? ''), $allow_trash_root)
                     : $fs->rmdir($path))
                 : (method_exists($fs, 'queuedUnlink')
-                    ? $fs->queuedUnlink($path, (string) ($job['source_root'] ?? ''))
+                    ? $fs->queuedUnlink($path, (string) ($job['source_root'] ?? ''), $allow_trash_root)
                     : $fs->unlink($path));
             if ($result === false) {
                 $job['failed_count']++;
@@ -181,7 +190,7 @@ class DeletePhase extends OperationPhase
         $job['current_file'] = basename($path) . '/';
         try {
             $result = method_exists($fs, 'queuedRmdir')
-                ? $fs->queuedRmdir($path, (string) ($job['source_root'] ?? ''))
+                ? $fs->queuedRmdir($path, (string) ($job['source_root'] ?? ''), ! empty($job['allow_trash_root']))
                 : $fs->rmdir($path);
             if ($result === false) {
                 $job['failed_count']++;
@@ -214,7 +223,46 @@ class DeletePhase extends OperationPhase
                 return false;
             }
         }
+        if (! empty($work_queue['must_recreate_trash_root']) && empty($work_queue['trash_root_recreated'])) {
+            return false;
+        }
         return true;
+    }
+
+    private function recreate_trash_root_if_needed(array &$job, array &$work_queue): void
+    {
+        if (empty($job['recreate_trash_root']) || ! empty($work_queue['trash_root_recreated'])) {
+            return;
+        }
+
+        try {
+            $trash_dir = function_exists('anibas_fm_get_trash_dir')
+                ? anibas_fm_get_trash_dir()
+                : (string) ($job['source_root'] ?? '');
+
+            if (! is_dir($trash_dir) && ! wp_mkdir_p($trash_dir)) {
+                throw new \RuntimeException(esc_html__('Unable to create trash folder.', 'anibas-file-manager'));
+            }
+            if (function_exists('anibas_fm_protect_dir')) {
+                anibas_fm_protect_dir($trash_dir);
+            }
+
+            $index_file = rtrim($trash_dir, '/\\') . DIRECTORY_SEPARATOR . 'index.json';
+            if (! file_exists($index_file)) {
+                $wrote = @file_put_contents($index_file, wp_json_encode([]), LOCK_EX); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
+                if ($wrote === false) {
+                    throw new \RuntimeException(esc_html__('Unable to initialize trash index.', 'anibas-file-manager'));
+                }
+            }
+
+            ActivityLogger::get_instance()->log_message('DeletePhase: trash root recreated');
+        } catch (\Throwable $e) {
+            $job['failed_count']++;
+            $job['errors'][] = esc_html__('Trash folder could not be recreated: ', 'anibas-file-manager') . $e->getMessage();
+            ActivityLogger::get_instance()->log_message('DeletePhase: trash root recreate failed: ' . $e->getMessage());
+        }
+
+        $work_queue['trash_root_recreated'] = true;
     }
 
     public function next_phase()

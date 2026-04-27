@@ -31,6 +31,7 @@ class FileCrudAjaxHandler extends AjaxHandler
         $dir = anibas_fm_fetch_request_variable('get', 'dir', '/');
         $page = intval(anibas_fm_fetch_request_variable('get', 'page', 1));
         $storage = anibas_fm_fetch_request_variable('get', 'storage', 'local');
+        $page_size = min(500, max(1, (int) ANIBAS_FILE_MANAGER_DEFAULT_FILELIST_PAGE_SIZE));
         $this->check_file_list_privilege($storage);
 
         if ($storage !== 'local') {
@@ -44,7 +45,7 @@ class FileCrudAjaxHandler extends AjaxHandler
                 $this->send_success(array(
                     'path' => $dir,
                     'page' => $page,
-                    'page_size' => ANIBAS_FILE_MANAGER_DEFAULT_FILE_SIZE,
+                    'page_size' => $page_size,
                     'total_items' => $result['total_items'],
                     'has_more' => false,
                     'items' => $result['items']
@@ -55,7 +56,7 @@ class FileCrudAjaxHandler extends AjaxHandler
         } else {
             if ($path = $this->validate_path($dir)) {
                 $fm = new LocalFileSystemAdapter();
-                $this->send_success($fm->listDirectory($path, $page, ANIBAS_FILE_MANAGER_DEFAULT_FILE_SIZE));
+                $this->send_success($fm->listDirectory($path, $page, $page_size));
             } else {
                 $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Path does not exist', 'anibas-file-manager')));
             }

@@ -3,24 +3,27 @@
     import BackupModal from "../Shared/BackupModal.svelte";
     import BackupsList from "./BackupsList.svelte";
 
-    const CHUNK_SIZE_MIN = 1048576;   // 1 MB — must match ANIBAS_FM_CHUNK_SIZE_MIN
-    const CHUNK_SIZE_MAX = 20971520;  // 20 MB — must match ANIBAS_FM_CHUNK_SIZE_MAX
-    const CHUNK_SIZE_STEP = 1048576;  // 1 MB
+    const config = (window as any).AnibasFMSettings;
+    const CHUNK_SIZE_MIN = Number(config.chunkSizeMin ?? 1048576);
+    const CHUNK_SIZE_MAX = Number(config.chunkSizeMax ?? 20971520);
+    const CHUNK_SIZE_STEP = Number(config.chunkSizeStep ?? 1048576);
+    const TRASH_MAX_AGE_DAYS = Number(config.trashMaxAgeDays ?? 30);
+    const BACKUP_MAX_AGE_DAYS = Number(config.backupMaxAgeDays ?? 7);
+    const FILE_BACKUP_KEEP = Number(config.fileBackupKeep ?? 5);
 
     let { authToken = null, onPasswordChanged } = $props<{
         authToken: string | null;
-        onPasswordChanged: () => void;
+        onPasswordChanged: (hasPassword: boolean) => void;
     }>();
 
     let showBackupModal = $state(false);
     let backupRunning = $state(false);
 
-    const config = (window as any).AnibasFMSettings;
-
     let activeTab = $state<"general" | "security">("general");
     let currentPassword = $state("");
     let newPassword = $state("");
     let confirmPassword = $state("");
+    let settingsPasswordEnabled = $state<boolean>(!!config.hasPassword);
     let deletePassword = $state("");
     let confirmDeletePassword = $state("");
     let showPasswordFields = $state(false);
@@ -30,6 +33,8 @@
     let fmCurrentPassword = $state("");
     let fmPassword = $state("");
     let confirmFmPassword = $state("");
+    let fmPasswordEnabled = $state<boolean>(!!config.hasFmPassword);
+    let removeFmPassword = $state(false);
     let fmRefreshRequired = $state<boolean>(config.fmPasswordRefreshRequired ?? true);
     let excludedPaths = $state<string[]>(config.excludedPaths || []);
     let chunkSize = $state<number>(config.chunkSize || 1048576);
@@ -61,7 +66,7 @@
         fmRefreshRequired !== baseline.fmRefreshRequired ||
         JSON.stringify(excludedPaths) !== baseline.excludedPaths ||
         !!newPassword || !!deletePassword || !!fmPassword ||
-        removeSettingsPassword
+        removeSettingsPassword || removeFmPassword
     );
 
     function resetBaseline() {
@@ -79,11 +84,17 @@
         e.preventDefault();
 
         if (chunkSize < CHUNK_SIZE_MIN || chunkSize > CHUNK_SIZE_MAX) {
-            message = { type: "error", text: "Chunk size must be between 1 MB and 20 MB" };
+            message = {
+                type: "error",
+                text: `Chunk size must be between ${formatBytes(CHUNK_SIZE_MIN)} and ${formatBytes(CHUNK_SIZE_MAX)}`,
+            };
             return;
         }
 
-        if (newPassword && newPassword !== confirmPassword) {
+        const settingsPasswordChangeRequested = showPasswordFields && newPassword !== "";
+        const settingsPasswordRemoveRequested = removeSettingsPassword && settingsPasswordEnabled;
+
+        if (settingsPasswordChangeRequested && newPassword !== confirmPassword) {
             message = { type: "error", text: "Passwords do not match" };
             return;
         }
@@ -93,12 +104,15 @@
             return;
         }
 
-        if (fmPassword && fmPassword !== confirmFmPassword) {
+        const fmPasswordChangeRequested = showFmPasswordFields && fmPassword !== "";
+        const fmPasswordRemoveRequested = removeFmPassword && fmPasswordEnabled;
+
+        if (fmPasswordChangeRequested && fmPassword !== confirmFmPassword) {
             message = { type: "error", text: "File manager passwords do not match" };
             return;
         }
 
-        if (showFmPasswordFields && config.hasFmPassword && !fmCurrentPassword) {
+        if ((fmPasswordChangeRequested || fmPasswordRemoveRequested) && fmPasswordEnabled && !fmCurrentPassword) {
             message = { type: "error", text: "Current file manager password is required" };
             return;
         }
@@ -108,18 +122,10 @@
             return;
         }
 
-        if (showPasswordFields && !removeSettingsPassword && newPassword && !currentPassword && !authToken && config.hasPassword) {
+        if ((settingsPasswordChangeRequested || settingsPasswordRemoveRequested) && settingsPasswordEnabled && !currentPassword) {
             message = {
                 type: "error",
-                text: "Current password is required to change password",
-            };
-            return;
-        }
-
-        if (removeSettingsPassword && !currentPassword && !authToken) {
-            message = {
-                type: "error",
-                text: "Current password is required to remove password",
+                text: "Current settings password is required",
             };
             return;
         }
@@ -132,19 +138,18 @@
             formData.append("action", "anibas_fm_save_settings");
             formData.append("nonce", config.nonce);
 
-            if (newPassword) {
-                // Always require current password for password change
+            if ((settingsPasswordChangeRequested || settingsPasswordRemoveRequested) && settingsPasswordEnabled) {
                 formData.append("password", currentPassword);
             } else if (authToken) {
                 formData.append("token", authToken);
-            } else {
+            } else if (currentPassword) {
                 formData.append("password", currentPassword);
             }
 
-            if (newPassword) {
+            if (settingsPasswordChangeRequested) {
                 formData.append("new_password", newPassword);
             }
-            if (removeSettingsPassword) {
+            if (settingsPasswordRemoveRequested) {
                 formData.append("remove_settings_password", "1");
             }
             if (showDeletePasswordFields) {
@@ -153,12 +158,18 @@
                     formData.append("current_delete_password", currentDeletePassword);
                 }
             }
-            if (showFmPasswordFields) {
+            if (fmPasswordChangeRequested) {
                 formData.append("fm_password", fmPassword);
-                formData.append("fm_password_refresh_required", fmRefreshRequired ? "1" : "0");
-                if (config.hasFmPassword) {
+                if (fmPasswordEnabled) {
                     formData.append("fm_current_password", fmCurrentPassword);
                 }
+            }
+            if (fmPasswordRemoveRequested) {
+                formData.append("remove_fm_password", "1");
+                formData.append("fm_current_password", fmCurrentPassword);
+            }
+            if (fmPasswordChangeRequested || fmRefreshRequired !== baseline.fmRefreshRequired) {
+                formData.append("fm_password_refresh_required", fmRefreshRequired ? "1" : "0");
             }
             excludedPaths.forEach((path) => {
                 formData.append("excluded_paths[]", path);
@@ -178,8 +189,9 @@
             const json = await res.json();
 
             if (json.success) {
-                const didChangePassword = !!newPassword;
-                const didRemovePassword = removeSettingsPassword;
+                const didChangePassword = settingsPasswordChangeRequested;
+                const didRemovePassword = settingsPasswordRemoveRequested;
+                const didChangeFmPassword = fmPasswordChangeRequested || fmPasswordRemoveRequested;
                 message = { type: "success", text: json.data.message };
                 currentPassword = "";
                 newPassword = "";
@@ -193,10 +205,19 @@
                 fmCurrentPassword = "";
                 fmPassword = "";
                 confirmFmPassword = "";
+                removeFmPassword = false;
                 removeSettingsPassword = false;
                 resetBaseline();
+                if (didChangeFmPassword) {
+                    const hasFmPassword = !fmPasswordRemoveRequested;
+                    fmPasswordEnabled = hasFmPassword;
+                    config.hasFmPassword = hasFmPassword;
+                }
                 if (didChangePassword || didRemovePassword) {
-                    onPasswordChanged();
+                    const hasSettingsPassword = !didRemovePassword;
+                    settingsPasswordEnabled = hasSettingsPassword;
+                    config.hasPassword = hasSettingsPassword;
+                    onPasswordChanged(hasSettingsPassword);
                 }
             } else {
                 message = {
@@ -221,6 +242,19 @@
 
     function removePath(path: string) {
         excludedPaths = excludedPaths.filter((p) => p !== path);
+    }
+
+    function formatBytes(bytes: number) {
+        const mb = bytes / 1048576;
+        return `${Number.isInteger(mb) ? mb.toFixed(0) : mb.toFixed(2)} MB`;
+    }
+
+    function formatDays(days: number) {
+        return `${days} ${days === 1 ? "day" : "days"}`;
+    }
+
+    function formatVersions(count: number) {
+        return `${count} ${count === 1 ? "version" : "versions"}`;
     }
 </script>
 
@@ -266,7 +300,7 @@
             <div class="card">
                 <h3>Upload Settings</h3>
                 <p class="description">
-                    Configure file upload chunk size (1 MB - 20 MB).
+                    Configure file upload chunk size ({formatBytes(CHUNK_SIZE_MIN)} - {formatBytes(CHUNK_SIZE_MAX)}).
                 </p>
 
                 <div class="form-group">
@@ -283,8 +317,8 @@
                         class="slider"
                     />
                     <div class="slider-labels">
-                        <span>1 MB</span>
-                        <span>20 MB</span>
+                        <span>{formatBytes(CHUNK_SIZE_MIN)}</span>
+                        <span>{formatBytes(CHUNK_SIZE_MAX)}</span>
                     </div>
                 </div>
             </div>
@@ -305,7 +339,7 @@
                     </label>
                     {#if deleteToTrash}
                         <div class="form-text">
-                            Deleted files will be kept for 30 days in a hidden <code>.trash</code> folder inside <code>wp-content/uploads</code>, then automatically purged.
+                            Deleted files will be kept for {formatDays(TRASH_MAX_AGE_DAYS)} in a hidden <code>.trash</code> folder inside <code>wp-content/uploads</code>, then automatically purged.
                         </div>
                     {:else}
                         <div class="warning-inline" style="margin-top: 8px;">
@@ -352,7 +386,7 @@
                 <h3>Site Backup</h3>
                 <p class="description">
                     Create a full backup of your site's wp-content directory and essential root files.
-                    Backups are kept for 7 days before automatic cleanup.
+                    Backups are kept for {formatDays(BACKUP_MAX_AGE_DAYS)} before automatic cleanup.
                 </p>
 
                 <button
@@ -384,7 +418,7 @@
                     </label>
                     {#if remoteFileBackupsEnabled}
                         <div class="form-text">
-                            The last 5 versions of each edited file are kept per source path. Adds bandwidth overhead since each save downloads the current file first.
+                            The last {formatVersions(FILE_BACKUP_KEEP)} of each edited file are kept per source path. Adds bandwidth overhead since each save downloads the current file first.
                         </div>
                     {:else}
                         <div class="form-text">
@@ -422,59 +456,24 @@
                 <h3>Settings Password Protection</h3>
                 <p class="description">Set a password to protect these settings.</p>
 
-                {#if config.hasPassword && !authToken}
-                    <div class="form-group">
-                        <label for="current-password">Current Password</label>
-                        <div class="d-flex gap-2 align-items-start">
-                            <input
-                                id="current-password"
-                                type="password"
-                                bind:value={currentPassword}
-                                class="form-control"
-                                style="max-width: 400px;"
-                                autocomplete="off"
-                                required
-                            />
-                            <button
-                                type="button"
-                                onclick={() => {
-                                    showPasswordFields = !showPasswordFields;
-                                    removeSettingsPassword = false;
-                                }}
-                                class="btn btn-sm btn-outline-secondary"
-                            >
-                                {showPasswordFields ? "Cancel" : "Change Password"}
-                            </button>
-                            <button
-                                type="button"
-                                onclick={() => {
-                                    removeSettingsPassword = !removeSettingsPassword;
-                                    showPasswordFields = false;
-                                    newPassword = "";
-                                    confirmPassword = "";
-                                }}
-                                class="btn btn-sm btn-outline-danger"
-                            >
-                                {removeSettingsPassword ? "Cancel Removal" : "Remove Password"}
-                            </button>
-                        </div>
-                    </div>
-                {:else if config.hasPassword && authToken}
-                    <div class="alert alert-info">
-                        You are authenticated.
-                        <button
-                            type="button"
-                            onclick={() => {
-                                showPasswordFields = !showPasswordFields;
-                                removeSettingsPassword = false;
-                            }}
-                            class="btn btn-sm btn-link p-0"
-                        >
-                            {showPasswordFields
-                                ? "Cancel password change"
-                                : "Change password"}
-                        </button>
-                        &nbsp;|&nbsp;
+                <div class="d-flex gap-2 align-items-start">
+                    {#if settingsPasswordEnabled}
+                        <span class="form-text" style="line-height: 30px;">Settings password is enabled.</span>
+                    {/if}
+                    <button
+                        type="button"
+                        onclick={() => {
+                            showPasswordFields = !showPasswordFields;
+                            removeSettingsPassword = false;
+                            currentPassword = "";
+                            newPassword = "";
+                            confirmPassword = "";
+                        }}
+                        class="btn btn-sm btn-outline-secondary"
+                    >
+                        {showPasswordFields ? "Cancel" : (settingsPasswordEnabled ? "Change Settings Password" : "Set Settings Password")}
+                    </button>
+                    {#if settingsPasswordEnabled}
                         <button
                             type="button"
                             onclick={() => {
@@ -482,25 +481,34 @@
                                 showPasswordFields = false;
                                 newPassword = "";
                                 confirmPassword = "";
+                                currentPassword = "";
                             }}
-                            class="btn btn-sm btn-link p-0"
-                            style="color: #d63638;"
+                            class="btn btn-sm btn-outline-danger"
                         >
-                            {removeSettingsPassword
-                                ? "Cancel removal"
-                                : "Remove password"}
+                            {removeSettingsPassword ? "Cancel Removal" : "Remove Password"}
                         </button>
-                    </div>
-                {/if}
+                    {/if}
+                </div>
 
                 {#if removeSettingsPassword}
                     <div class="alert alert-warning" style="margin-top: 15px;">
-                        ⚠ This will remove settings password protection. You must provide your current password to confirm.
+                        This will remove settings password protection. Enter the current settings password to confirm.
+                    </div>
+                    <div class="form-group">
+                        <label for="current-password-remove">Current Password</label>
+                        <input
+                            id="current-password-remove"
+                            type="password"
+                            bind:value={currentPassword}
+                            class="form-control"
+                            autocomplete="current-password"
+                            required
+                        />
                     </div>
                 {/if}
 
-                {#if showPasswordFields || !config.hasPassword}
-                    {#if config.hasPassword}
+                {#if showPasswordFields}
+                    {#if settingsPasswordEnabled}
                         <div class="form-group">
                             <label for="current-password-change"
                                 >Current Password</label
@@ -510,15 +518,15 @@
                                 type="password"
                                 bind:value={currentPassword}
                                 class="form-control"
-                                autocomplete="off"
-                                required
+                                autocomplete="current-password"
+                                required={!!newPassword}
                             />
                         </div>
                     {/if}
 
                     <div class="form-group">
                         <label for="new-password"
-                            >{config.hasPassword
+                            >{settingsPasswordEnabled
                                 ? "New Password"
                                 : "Set Password"}</label
                         >
@@ -528,23 +536,24 @@
                             bind:value={newPassword}
                             class="form-control"
                             autocomplete="new-password"
-                            required={!config.hasPassword}
                         />
                     </div>
 
-                    <div class="form-group">
-                        <label for="confirm-password"
-                            >Confirm {config.hasPassword ? "New" : ""} Password</label
-                        >
-                        <input
-                            id="confirm-password"
-                            type="password"
-                            bind:value={confirmPassword}
-                            class="form-control"
-                            autocomplete="new-password"
-                            required={!config.hasPassword}
-                        />
-                    </div>
+                    {#if newPassword}
+                        <div class="form-group">
+                            <label for="confirm-password"
+                                >Confirm {settingsPasswordEnabled ? "New" : ""} Password</label
+                            >
+                            <input
+                                id="confirm-password"
+                                type="password"
+                                bind:value={confirmPassword}
+                                class="form-control"
+                                autocomplete="new-password"
+                                required
+                            />
+                        </div>
+                    {/if}
                 {/if}
             </div>
 
@@ -612,16 +621,59 @@
                 <h3>File Manager Password Protection</h3>
                 <p class="description">Require a password to access the file manager page.</p>
 
-                <button
-                    type="button"
-                    onclick={() => (showFmPasswordFields = !showFmPasswordFields)}
-                    class="btn btn-sm btn-outline-secondary"
-                >
-                    {showFmPasswordFields ? "Cancel" : (config.hasFmPassword ? "Change File Manager Password" : "Set File Manager Password")}
-                </button>
+                <div class="d-flex gap-2 align-items-start">
+                    {#if fmPasswordEnabled}
+                        <span class="form-text" style="line-height: 30px;">File manager password is enabled.</span>
+                    {/if}
+                    <button
+                        type="button"
+                        onclick={() => {
+                            showFmPasswordFields = !showFmPasswordFields;
+                            removeFmPassword = false;
+                            fmCurrentPassword = "";
+                            fmPassword = "";
+                            confirmFmPassword = "";
+                        }}
+                        class="btn btn-sm btn-outline-secondary"
+                    >
+                        {showFmPasswordFields ? "Cancel" : (fmPasswordEnabled ? "Change File Manager Password" : "Set File Manager Password")}
+                    </button>
+                    {#if fmPasswordEnabled}
+                        <button
+                            type="button"
+                            onclick={() => {
+                                removeFmPassword = !removeFmPassword;
+                                showFmPasswordFields = false;
+                                fmCurrentPassword = "";
+                                fmPassword = "";
+                                confirmFmPassword = "";
+                            }}
+                            class="btn btn-sm btn-outline-danger"
+                        >
+                            {removeFmPassword ? "Cancel Removal" : "Remove Password"}
+                        </button>
+                    {/if}
+                </div>
+
+                {#if removeFmPassword}
+                    <div class="alert alert-warning" style="margin-top: 15px;">
+                        This will remove file manager password protection. Enter the current file manager password to confirm.
+                    </div>
+                    <div class="form-group">
+                        <label for="fm-current-password-remove">Current File Manager Password</label>
+                        <input
+                            id="fm-current-password-remove"
+                            type="password"
+                            bind:value={fmCurrentPassword}
+                            class="form-control"
+                            autocomplete="current-password"
+                            required
+                        />
+                    </div>
+                {/if}
 
                 {#if showFmPasswordFields}
-                    {#if config.hasFmPassword}
+                    {#if fmPasswordEnabled}
                         <div class="form-group" style="margin-top: 15px;">
                             <label for="fm-current-password">Current File Manager Password</label>
                             <input
@@ -629,27 +681,21 @@
                                 type="password"
                                 bind:value={fmCurrentPassword}
                                 class="form-control"
-                                autocomplete="off"
-                                required
+                                autocomplete="current-password"
+                                required={!!fmPassword}
                             />
                         </div>
                     {/if}
 
-                    <div class="form-group" style={!config.hasFmPassword ? "margin-top: 15px;" : ""}>
-                        <label for="fm-password">{config.hasFmPassword ? "New File Manager Password" : "File Manager Password"}</label>
+                    <div class="form-group" style={!fmPasswordEnabled ? "margin-top: 15px;" : ""}>
+                        <label for="fm-password">{fmPasswordEnabled ? "New File Manager Password" : "File Manager Password"}</label>
                         <input
                             id="fm-password"
                             type="password"
                             bind:value={fmPassword}
                             class="form-control"
-                            placeholder={config.hasFmPassword ? "Leave empty to remove password" : ""}
                             autocomplete="new-password"
                         />
-                        {#if config.hasFmPassword}
-                            <small style="color: #666; display: block; margin-top: 5px;">
-                                Leave empty to remove file manager password protection
-                            </small>
-                        {/if}
                     </div>
 
                     {#if fmPassword}
@@ -667,6 +713,21 @@
                     {/if}
 
                     <div class="form-group">
+                        <label class="checkbox-label">
+                            <input
+                                type="checkbox"
+                                bind:checked={fmRefreshRequired}
+                            />
+                            Require password on every page refresh
+                        </label>
+                        {#if !fmRefreshRequired}
+                            <div class="warning-inline">
+                                &#9888; Less secure. Your session token will survive page refreshes but is cleared when the tab closes.
+                            </div>
+                        {/if}
+                    </div>
+                {:else if fmPasswordEnabled}
+                    <div class="form-group" style="margin-top: 15px;">
                         <label class="checkbox-label">
                             <input
                                 type="checkbox"

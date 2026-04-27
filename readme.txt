@@ -4,7 +4,7 @@ Donate link: https://diwakar2000.com.np/
 Tags: file manager, editor, archive, cloud storage, s3 compatible
 Requires at least: 6.0
 Tested up to: 6.9
-Stable tag: 0.6.0
+Stable tag: 1.0.0
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 Requires PHP: 8.0
@@ -57,5 +57,5 @@ https://github.com/diwakar2000/anibas-file-manager
 
 == Changelog ==
 
-= 0.6.0 =
+= 1.0.0 =
 * Initial release.

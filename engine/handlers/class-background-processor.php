@@ -31,6 +31,7 @@ class BackgroundProcessor {
 
         $dest_is_final = ! empty( $options['dest_is_final'] );
         $remove_source = ! empty( $options['remove_source'] ) || $action === 'move';
+        $allow_trash_root = ! empty( $options['allow_trash_root'] );
 
         // Get appropriate adapter for storage type
         $original_destination = $destination;
@@ -85,6 +86,7 @@ class BackgroundProcessor {
                 $existing_job['dest_root'] === $destination && 
                 $existing_job['action'] === $action &&
                 (bool) ( $existing_job['remove_source'] ?? false ) === $remove_source &&
+                (bool) ( $existing_job['allow_trash_root'] ?? false ) === $allow_trash_root &&
                 in_array( $existing_job['status'], [ 'pending', 'processing', 'retrying' ] ) ) {
                 return $existing_job['id']; // Return existing job ID
             }
@@ -100,6 +102,7 @@ class BackgroundProcessor {
             'failed_count'    => 0,
             'action'          => $action,
             'remove_source'   => $remove_source,
+            'allow_trash_root' => $allow_trash_root,
             'conflict_mode'   => $conflict_mode,
             'storage'         => $storage,
             'dest_is_final'   => (bool) $dest_is_final,
@@ -262,9 +265,11 @@ class BackgroundProcessor {
         return $job['id'];
     }
 
-    public static function enqueue_delete_job( $path, $storage, $keep_root = false ) {
+    public static function enqueue_delete_job( $path, $storage, $keep_root = false, array $options = [] ) {
         $sm      = StorageManager::get_instance();
         $adapter = $sm->get_adapter( $storage );
+        $allow_trash_root = ! empty( $options['allow_trash_root'] );
+        $recreate_trash_root = ! empty( $options['recreate_trash_root'] );
 
         if ( ! $adapter ) {
             return new \WP_Error( 'invalid_storage', sprintf( 'Invalid storage adapter: %s', $storage ) );
@@ -278,6 +283,8 @@ class BackgroundProcessor {
             if ( ( $existing_job['action'] ?? '' ) === 'delete'
                 && $existing_job['source_root'] === $path
                 && ( $existing_job['keep_root'] ?? false ) === (bool) $keep_root
+                && ( $existing_job['allow_trash_root'] ?? false ) === $allow_trash_root
+                && ( $existing_job['recreate_trash_root'] ?? false ) === $recreate_trash_root
                 && in_array( $existing_job['status'], [ 'pending', 'processing', 'retrying' ] ) ) {
                 return $existing_job['id'];
             }
@@ -296,6 +303,8 @@ class BackgroundProcessor {
             'storage'         => $storage,
             'is_delete'       => true,
             'keep_root'       => (bool) $keep_root,
+            'allow_trash_root' => $allow_trash_root,
+            'recreate_trash_root' => $recreate_trash_root,
             'status'          => 'pending',
             'created_at'      => time(),
             'errors'          => [],

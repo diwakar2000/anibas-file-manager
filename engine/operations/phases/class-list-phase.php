@@ -246,7 +246,10 @@ class ListPhase extends OperationPhase
             return [];
         }
 
-        return ['recursive_root' => (string) ($job['source_root'] ?? '')];
+        return [
+            'recursive_root'    => (string) ($job['source_root'] ?? ''),
+            'allow_trash_root'  => ! empty($job['allow_trash_root']),
+        ];
     }
 
     /**

@@ -57,7 +57,7 @@
 
         const content = cmView.state.doc.toString();
         const byteSize = new TextEncoder().encode(content).length;
-        const maxBytes = ANIBAS_FM_EDITOR_MAX_BYTES ?? 10485760;
+        const maxBytes = Number(cfg.editorMaxBytes ?? 10485760);
         if (byteSize > maxBytes) {
             toast.error(`File exceeds the ${Math.round(maxBytes / 1048576)} MB save limit.`);
             return;
@@ -177,9 +177,6 @@
         window.removeEventListener('beforeunload', handleBeforeUnload);
         cmView?.destroy();
     });
-
-    // Resolve max bytes from PHP constant exposed via config
-    const ANIBAS_FM_EDITOR_MAX_BYTES = 10485760;
 </script>
 
 <div class="inline-editor">

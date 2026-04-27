@@ -177,7 +177,7 @@ class TransferPhase extends OperationPhase
             if ($result === 9 || $result === 0) {
                 $removed = ! $remove_source
                     || (method_exists($fs, 'queuedUnlink')
-                        ? $fs->queuedUnlink($file['source'], (string) ($job['source_root'] ?? ''))
+                        ? $fs->queuedUnlink($file['source'], (string) ($job['source_root'] ?? ''), ! empty($job['allow_trash_root']))
                         : $fs->unlink($file['source']));
                 if (! $removed) {
                     $this->cleanup_partial_file($fs, $target);

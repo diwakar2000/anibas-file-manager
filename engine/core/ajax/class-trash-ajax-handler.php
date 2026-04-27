@@ -164,9 +164,8 @@ class TrashAjaxHandler extends AjaxHandler
                 wp_mkdir_p($restore_dir);
             }
         } else {
-            // ── Legacy fallback: restore to ABSPATH ──
-            $parts = explode('_', $trash_name, 2);
-            $original_name = isset($parts[1]) ? $parts[1] : $trash_name;
+            $parts = explode('_', $trash_name, 3);
+            $original_name = $parts[2] ?? ($parts[1] ?? $trash_name);
             $restore_path  = untrailingslashit(ABSPATH) . DIRECTORY_SEPARATOR . $original_name;
         }
 
@@ -232,63 +231,28 @@ class TrashAjaxHandler extends AjaxHandler
         }
 
         $trash_dir = anibas_fm_get_trash_dir();
+        $real_trash_dir = realpath($trash_dir);
 
-        if (! is_dir($trash_dir)) {
-            $this->send_success(array('message' => esc_html__('Trash is already empty', 'anibas-file-manager')));
+        if (! $real_trash_dir || ! is_dir($real_trash_dir)) {
+            $this->send_error(array('error' => esc_html__('Trash folder could not be prepared', 'anibas-file-manager')));
         }
 
-        $iterator = new \DirectoryIterator($trash_dir);
-        $deleted = 0;
-        $job_ids = [];
+        $job_id = BackgroundProcessor::enqueue_delete_job($real_trash_dir, 'local', false, [
+            'allow_trash_root'    => true,
+            'recreate_trash_root' => true,
+        ]);
 
-        foreach ($iterator as $item) {
-            if ($item->isDot()) continue;
-            $name = $item->getFilename();
-            if ($name === '.htaccess' || $name === 'index.php' || $name === 'index.json') continue;
-
-            $real_path = $item->getRealPath();
-            if ($item->isDir() && ! $item->isLink()) {
-                $job_id = BackgroundProcessor::enqueue_delete_job($real_path, 'local');
-                if (! is_wp_error($job_id)) {
-                    $job_ids[] = $job_id;
-                }
-            } else {
-                if (@unlink($real_path)) {
-                    $deleted++;
-                }
-            }
+        if (is_wp_error($job_id)) {
+            $this->send_error(array('error' => $job_id->get_error_message()));
         }
 
-        // Always wipe the index — all items are gone from the user's perspective
-        $index_file = $trash_dir . '/index.json';
-        if (file_exists($index_file)) {
-            $fp = @fopen($index_file, 'c+');
-            if ($fp) {
-                if (flock($fp, LOCK_EX)) {
-                    ftruncate($fp, 0);
-                    fwrite($fp, wp_json_encode([]));
-                    fflush($fp);
-                    flock($fp, LOCK_UN);
-                }
-                fclose($fp);
-            }
-        }
-
-        if (! empty($job_ids)) {
-            ActivityLogger::log('emptied', 'Trash (background jobs: ' . count($job_ids) . ')', 'Trash');
-            $this->send_success(array(
-                'message' => esc_html__('Emptying trash in the background…', 'anibas-file-manager'),
-                'job_ids' => $job_ids,
-                'deleted' => $deleted,
-            ));
-        } else {
-            ActivityLogger::log('emptied', $deleted . ' items', 'Trash');
-            $this->send_success(array(
-                'message' => esc_html__('Trash emptied', 'anibas-file-manager'),
-                'job_ids' => [],
-                'deleted' => $deleted,
-            ));
-        }
+        ActivityLogger::log('emptied', 'Trash (background job)', 'Trash');
+        $this->send_success(array(
+            'message' => esc_html__('Emptying trash in the background…', 'anibas-file-manager'),
+            'job_id'  => $job_id,
+            'job_ids' => [$job_id],
+            'deleted' => 0,
+        ));
     }
 
     public function delete_trash_item()
@@ -342,7 +306,7 @@ class TrashAjaxHandler extends AjaxHandler
         // but can represent an arbitrarily large subtree on the way out — a
         // sync recursive delete here would time out on big folders.
         if (is_dir($real_trash) && ! is_link($real_trash)) {
-            $job_id = BackgroundProcessor::enqueue_delete_job($real_trash, 'local');
+            $job_id = BackgroundProcessor::enqueue_delete_job($real_trash, 'local', false, ['allow_trash_root' => true]);
             if (is_wp_error($job_id)) {
                 $this->send_error(array('error' => $job_id->get_error_message()));
             }

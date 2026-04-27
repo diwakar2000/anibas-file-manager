@@ -201,7 +201,7 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         return true;
     }
 
-    private function assertQueuedPath(string $path, string $root): string|false
+    private function assertQueuedPath(string $path, string $root, bool $allow_trash_root = false): string|false
     {
         $path = str_replace(chr(0), '', $path);
         $root = str_replace(chr(0), '', $root);
@@ -232,11 +232,22 @@ class LocalFileSystemAdapter extends FileSystemAdapter
             return false;
         }
 
+        if ($allow_trash_root && $this->is_trash_job_root($root_norm)) {
+            return $real;
+        }
+
         if ($this->is_job_protected_path($real_norm)) {
             return false;
         }
 
         return $real;
+    }
+
+    private function is_trash_job_root(string $root_norm): bool
+    {
+        $trash_dir = $this->trashDirPath();
+        $trash_real = realpath($trash_dir) ?: $this->normalizePath($trash_dir);
+        return $trash_real && $this->path_is_inside_or_same($root_norm, untrailingslashit(wp_normalize_path($trash_real)));
     }
 
     private function is_job_protected_path(string $real_norm): bool
@@ -274,9 +285,9 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         return $candidate === $root || strpos(trailingslashit($candidate), trailingslashit($root)) === 0;
     }
 
-    public function queuedUnlink(string $path, string $root): bool
+    public function queuedUnlink(string $path, string $root, bool $allow_trash_root = false): bool
     {
-        $validated = $this->assertQueuedPath($path, $root);
+        $validated = $this->assertQueuedPath($path, $root, $allow_trash_root);
         if (! $validated) {
             return false;
         }
@@ -290,9 +301,9 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         return @unlink($validated);
     }
 
-    public function queuedRmdir(string $path, string $root): bool
+    public function queuedRmdir(string $path, string $root, bool $allow_trash_root = false): bool
     {
-        $validated = $this->assertQueuedPath($path, $root);
+        $validated = $this->assertQueuedPath($path, $root, $allow_trash_root);
         if (! $validated) {
             return false;
         }
@@ -319,8 +330,39 @@ class LocalFileSystemAdapter extends FileSystemAdapter
             }
         }
 
+        if ($this->has_private_backup_descendant($root)) {
+            return true;
+        }
+
         $trash_dir = $this->trashDirPath();
         return $this->path_is_inside($trash_dir, $root);
+    }
+
+    public function containsProtectedDescendant(string $path): bool
+    {
+        return $this->has_protected_descendant($path);
+    }
+
+    private function has_private_backup_descendant(string $root): bool
+    {
+        $content_root = realpath(WP_CONTENT_DIR) ?: $this->normalizePath(WP_CONTENT_DIR);
+        if (! $content_root) {
+            return false;
+        }
+
+        $candidates = [untrailingslashit($content_root) . DIRECTORY_SEPARATOR . ANIBAS_FM_BACKUP_DIR_NAME];
+        $private_dirs = glob(untrailingslashit($content_root) . DIRECTORY_SEPARATOR . '.anibas-backups-*', GLOB_NOSORT);
+        if (is_array($private_dirs)) {
+            $candidates = array_merge($candidates, $private_dirs);
+        }
+
+        foreach ($candidates as $candidate) {
+            if (file_exists($candidate) && $this->path_is_inside($candidate, $root)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function path_is_inside(string $candidate, string $root): bool
@@ -521,9 +563,10 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         $recursive_root = isset($options['recursive_root']) && is_string($options['recursive_root'])
             ? $options['recursive_root']
             : '';
+        $allow_trash_root = ! empty($options['allow_trash_root']);
 
         $root = $recursive_root !== ''
-            ? $this->assertQueuedPath($path, $recursive_root)
+            ? $this->assertQueuedPath($path, $recursive_root, $allow_trash_root)
             : $this->assertAllowed($path);
         if (! $root) {
             return $empty;
@@ -564,7 +607,7 @@ class LocalFileSystemAdapter extends FileSystemAdapter
                     continue;
                 }
                 $validated = $recursive_root !== ''
-                    ? $this->assertQueuedPath($fullPath, $recursive_root)
+                    ? $this->assertQueuedPath($fullPath, $recursive_root, $allow_trash_root)
                     : $this->assertAllowed($fullPath);
                 if (! $validated) {
                     continue;
