@@ -2,6 +2,133 @@
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+if ( ! function_exists( 'anibas_fm_safe_move' ) ) {
+    /**
+     * Move a file or directory with cross-filesystem awareness.
+     *
+     * Always tries @rename() first — it's atomic and O(1) on the same FS,
+     * which is the common case. When rename fails (typically EXDEV under
+     * Docker bind-mounts where wp-content lives on a separate filesystem
+     * from the rest of /var/www/html), the work is handed to
+     * BackgroundProcessor as a chunked move job — copy+delete needs to be
+     * chunked to avoid timing out on large files or deep trees.
+     *
+     * Worker flows do not call this helper for copy/delete fallback; they use
+     * TransferPhase chunking directly.
+     *
+     * Return shape:
+     *   true            — rename succeeded synchronously (fast path)
+     *   string          — job_id of the enqueued background move
+     *   false           — rename failed AND fallback failed (or couldn't enqueue)
+     *
+     * Callers that want to surface job_id to the UI: check is_string($result).
+     * Callers that just need success/failure: a truthy $result means the
+     * work either succeeded or is enqueued.
+     *
+     * @return bool|string
+     */
+    function anibas_fm_safe_move( $source, $dest ) {
+        if ( ! file_exists( $source ) ) {
+            return false;
+        }
+
+        error_clear_last();
+        if ( @rename( $source, $dest ) ) {
+            return true;
+        }
+
+        // Diagnostic — cross-device path makes a "move" suddenly O(n).
+        $err = error_get_last();
+        $msg = is_array( $err ) ? (string) ( $err['message'] ?? '' ) : '';
+        $is_xdev = ( stripos( $msg, 'cross-device' ) !== false );
+        if ( class_exists( '\\Anibas\\ActivityLogger' ) ) {
+            \Anibas\ActivityLogger::log_message(
+                '[safe_move] ' . ( $is_xdev ? 'cross-device' : 'rename failed' )
+                . ' — falling back to chunked copy+delete: '
+                . $source . ' -> ' . $dest . ' (' . $msg . ')'
+            );
+        }
+
+        if ( class_exists( '\\Anibas\\BackgroundProcessor' ) ) {
+            $job_id = \Anibas\BackgroundProcessor::enqueue_job(
+                $source,
+                $dest,
+                'copy',
+                'overwrite',
+                'local',
+                [
+                    'dest_is_final' => true,
+                    'remove_source' => true,
+                ]
+            );
+            if ( ! is_wp_error( $job_id ) ) {
+                return $job_id; // string
+            }
+        }
+
+        return false;
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_recursive_rmdir' ) ) {
+    /**
+     * Remove a directory tree bottom-up.
+     */
+    function anibas_fm_recursive_rmdir( $dir ) {
+        if ( ! is_dir( $dir ) ) {
+            return false;
+        }
+        try {
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator( $dir, \RecursiveDirectoryIterator::SKIP_DOTS ),
+                \RecursiveIteratorIterator::CHILD_FIRST
+            );
+        } catch ( \Throwable $e ) {
+            return false;
+        }
+        foreach ( $iterator as $entry ) {
+            if ( $entry->isDir() ) {
+                @rmdir( $entry->getPathname() );
+            } else {
+                @unlink( $entry->getPathname() );
+            }
+        }
+        return @rmdir( $dir );
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_protect_dir' ) ) {
+    /**
+     * Drop .htaccess (Deny from all) + index.php (silence) into a
+     * plugin-managed directory so its contents can't be served directly.
+     * Idempotent — only writes files that don't already exist.
+     *
+     * ONLY use on private plugin state (logs, trash, backups, temp chunks,
+     * cross-storage staging). Do NOT call on user-visible folders under
+     * wp-content/uploads — a .htaccess there would block legitimate HTTP
+     * access to user assets.
+     *
+     * @param string $dir Absolute path to an existing directory.
+     * @return void
+     */
+    function anibas_fm_protect_dir( $dir ) {
+        if ( ! is_string( $dir ) || $dir === '' || ! is_dir( $dir ) ) {
+            return;
+        }
+        $dir = rtrim( $dir, '/\\' );
+
+        $htaccess = $dir . '/.htaccess';
+        if ( ! file_exists( $htaccess ) ) {
+            @file_put_contents( $htaccess, "Deny from all\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents -- WP_Filesystem isn't always initialized in call sites
+        }
+
+        $index = $dir . '/index.php';
+        if ( ! file_exists( $index ) ) {
+            @file_put_contents( $index, "<?php\n// Silence is golden\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
+        }
+    }
+}
+
 if ( ! function_exists( 'anibas_fm_fetch_request_variable' ) ) {
     function anibas_fm_fetch_request_variable( $from = 'request', $key = false, $default = null ) {
         if ( 'get' === $from ) {
@@ -34,6 +161,91 @@ if ( ! function_exists( 'anibas_fm_fetch_request_variable' ) ) {
         }
 
         return $default;
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_normalize_remote_path' ) ) {
+    /**
+     * Normalize a remote-storage path and keep it inside the configured base path.
+     *
+     * Returns a canonical absolute-style path using forward slashes, or false
+     * when the requested path would escape the configured base.
+     *
+     * @param string $path      User-supplied path.
+     * @param string $base_path Configured remote root path.
+     * @return string|false
+     */
+    function anibas_fm_normalize_remote_path( string $path, string $base_path = '/' ) {
+        $path      = str_replace( array( chr( 0 ), '\\' ), array( '', '/' ), $path );
+        $base_path = str_replace( array( chr( 0 ), '\\' ), array( '', '/' ), $base_path );
+
+        $normalize_segments = static function ( string $raw_path, array $initial_segments = array(), bool $allow_above_root = true ) {
+            $segments = $initial_segments;
+            $floor    = count( $initial_segments );
+
+            foreach ( explode( '/', $raw_path ) as $segment ) {
+                if ( $segment === '' || $segment === '.' ) {
+                    continue;
+                }
+                if ( $segment === '..' ) {
+                    if ( count( $segments ) <= $floor ) {
+                        if ( $allow_above_root ) {
+                            array_pop( $segments );
+                            continue;
+                        }
+                        return false;
+                    }
+                    array_pop( $segments );
+                    continue;
+                }
+                $segments[] = $segment;
+            }
+
+            return $segments;
+        };
+
+        $base_segments = $normalize_segments( $base_path, array(), true );
+        if ( $base_segments === false ) {
+            return false;
+        }
+
+        $starts_with_segments = static function ( array $segments, array $prefix ) {
+            if ( count( $segments ) < count( $prefix ) ) {
+                return false;
+            }
+
+            foreach ( $prefix as $index => $segment ) {
+                if ( ! isset( $segments[ $index ] ) || $segments[ $index ] !== $segment ) {
+                    return false;
+                }
+            }
+
+            return true;
+        };
+
+        $is_absolute = isset( $path[0] ) && $path[0] === '/';
+        if ( $is_absolute ) {
+            $absolute_segments = $normalize_segments( $path, array(), true );
+            if ( $absolute_segments === false ) {
+                return false;
+            }
+
+            if ( $starts_with_segments( $absolute_segments, $base_segments ) ) {
+                return '/' . implode( '/', $absolute_segments );
+            }
+        }
+
+        $path_segments = $normalize_segments( ltrim( $path, '/' ), $base_segments, false );
+
+        if ( $path_segments === false ) {
+            return false;
+        }
+
+        if ( ! $starts_with_segments( $path_segments, $base_segments ) ) {
+            return false;
+        }
+
+        return '/' . implode( '/', $path_segments );
     }
 }
 
@@ -138,12 +350,18 @@ if ( ! function_exists( 'anibas_fm_get_blocked_paths' ) ) {
             // Database & Backups
             'wp-content/backup-db',
             'wp-content/backups',
+            'wp-content/' . ANIBAS_FM_BACKUP_DIR_NAME,
             
             // Logs
             'error_log',
             'debug.log',
             'wp-content/debug.log',
         );
+
+        $backup_dir = get_option( 'anibas_file_manager_backup_dir' );
+        if ( ! empty( $backup_dir ) ) {
+            $paths[] = trim( anibas_fm_convert_to_relative_path( $backup_dir ), '/' );
+        }
 
         if ( ! anibas_fm_is_development_site() || ! (bool) anibas_fm_get_option( 'debug_mode', false ) ) {
             $log_dir = get_option( 'anibas_file_manager_log_dir' );
@@ -319,15 +537,8 @@ if ( ! function_exists( 'anibas_fm_create_log_file_path' ) ) {
 
             update_option( 'anibas_file_manager_log_dir', $log_dir );
         }
-		
-		// Protect directory from direct access
-		if ( ! file_exists( $log_dir . '/.htaccess' ) ) {
-			file_put_contents( $log_dir . '/.htaccess', 'Deny from all' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents -- called before WP_Filesystem is available
-		}
 
-		if ( ! file_exists( $log_dir . '/index.php' ) ) {
-			file_put_contents( $log_dir . '/index.php', "<?php\n// Silence is golden\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents -- called before WP_Filesystem is available
-		}
+        anibas_fm_protect_dir( $log_dir );
         return $log_dir;
     }
 }
@@ -342,9 +553,7 @@ if ( ! function_exists( 'anibas_fm_get_log_file_path' ) ) {
 
         if ( ! file_exists( $log_dir ) ) {
             wp_mkdir_p( $log_dir );
-            // Protect directory from direct access
-            file_put_contents( $log_dir . '/.htaccess', 'Deny from all' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents -- called before WP_Filesystem is available
-            file_put_contents( $log_dir . '/index.php', "<?php\n// Silence is golden\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents -- called before WP_Filesystem is available
+            anibas_fm_protect_dir( $log_dir );
         }
 
         return $log_dir;
@@ -421,6 +630,11 @@ if ( ! function_exists( 'anibas_fm_convert_paths_in_job_data' ) ) {
         if ( isset( $job_data['dest_root'] ) ) {
             $job_data['dest_root'] = anibas_fm_convert_to_relative_path( $job_data['dest_root'] );
         }
+
+        // Convert grouped UI source path if present
+        if ( isset( $job_data['ui_group_source'] ) ) {
+            $job_data['ui_group_source'] = anibas_fm_convert_to_relative_path( $job_data['ui_group_source'] );
+        }
         
         return $job_data;
     }
@@ -438,9 +652,7 @@ if ( ! function_exists( 'anibas_fm_get_trash_dir' ) ) {
 
         if ( ! is_dir( $trash_dir ) ) {
             wp_mkdir_p( $trash_dir );
-            // Prevent direct web access
-            @file_put_contents( $trash_dir . DIRECTORY_SEPARATOR . '.htaccess', "Deny from all\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
-            @file_put_contents( $trash_dir . DIRECTORY_SEPARATOR . 'index.php', "<?php\n// Silence is golden\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
+            anibas_fm_protect_dir( $trash_dir );
         }
 
         return $trash_dir;
@@ -586,13 +798,7 @@ if ( ! function_exists( 'anibas_fm_get_backup_dir' ) ) {
             wp_mkdir_p( $backup_dir );
         }
 
-        // Protect directory from direct web access
-        if ( ! file_exists( $backup_dir . '/.htaccess' ) ) {
-            @file_put_contents( $backup_dir . '/.htaccess', "Deny from all\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
-        }
-        if ( ! file_exists( $backup_dir . '/index.php' ) ) {
-            @file_put_contents( $backup_dir . '/index.php', "<?php\n// Silence is golden\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
-        }
+        anibas_fm_protect_dir( $backup_dir );
 
         return $backup_dir;
     }
@@ -695,8 +901,15 @@ if ( ! function_exists( 'anibas_fm_get_file_backups_dir' ) ) {
         $dir = anibas_fm_get_backup_dir() . '/file-backups';
         if ( ! is_dir( $dir ) ) {
             wp_mkdir_p( $dir );
+            anibas_fm_protect_dir( $dir );
         }
         return $dir;
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_is_file_backup_internal_name' ) ) {
+    function anibas_fm_is_file_backup_internal_name( $name ) {
+        return in_array( $name, array( '.source', '.htaccess', 'index.php' ), true );
     }
 }
 
@@ -729,7 +942,7 @@ if ( ! function_exists( 'anibas_fm_prepare_file_backup_target' ) ) {
         $versions = array();
         foreach ( new DirectoryIterator( $src_dir ) as $item ) {
             if ( $item->isDot() || ! $item->isFile() ) continue;
-            if ( $item->getFilename() === '.source' ) continue;
+            if ( anibas_fm_is_file_backup_internal_name( $item->getFilename() ) ) continue;
             $versions[] = array( 'path' => $item->getPathname(), 'mtime' => $item->getMTime() );
         }
         if ( count( $versions ) > $keep ) {
@@ -962,7 +1175,7 @@ if ( ! function_exists( 'anibas_fm_has_recent_file_backup' ) ) {
         $now = time();
         foreach ( new DirectoryIterator( $src_dir ) as $item ) {
             if ( $item->isDot() || ! $item->isFile() ) continue;
-            if ( $item->getFilename() === '.source' ) continue;
+            if ( anibas_fm_is_file_backup_internal_name( $item->getFilename() ) ) continue;
             if ( $now - $item->getMTime() < $max_age_seconds ) {
                 return true;
             }
@@ -1035,7 +1248,7 @@ if ( ! function_exists( 'anibas_fm_purge_old_backups' ) ) {
                 $versions = array();
                 foreach ( new DirectoryIterator( $src_path ) as $ver ) {
                     if ( $ver->isDot() || ! $ver->isFile() ) continue;
-                    if ( $ver->getFilename() === '.source' ) continue;
+                    if ( anibas_fm_is_file_backup_internal_name( $ver->getFilename() ) ) continue;
                     $versions[] = array( 'path' => $ver->getPathname(), 'mtime' => $ver->getMTime() );
                 }
 
@@ -1045,11 +1258,16 @@ if ( ! function_exists( 'anibas_fm_purge_old_backups' ) ) {
                     $wp_filesystem->delete( $v['path'], false );
                 }
 
-                $remaining = glob( $src_path . '/*' );
-                if ( is_array( $remaining ) && count( $remaining ) === 0 ) {
-                    $wp_filesystem->rmdir( $src_path );
-                } elseif ( is_array( $remaining ) && count( $remaining ) === 1 && basename( $remaining[0] ) === '.source' ) {
-                    $wp_filesystem->delete( $remaining[0], false );
+                $remaining = array_filter( glob( $src_path . '/*' ) ?: array(), function ( $path ) {
+                    return ! anibas_fm_is_file_backup_internal_name( basename( $path ) );
+                } );
+                if ( count( $remaining ) === 0 ) {
+                    foreach ( array( '.source', '.htaccess', 'index.php' ) as $internal ) {
+                        $internal_path = $src_path . '/' . $internal;
+                        if ( is_file( $internal_path ) ) {
+                            $wp_filesystem->delete( $internal_path, false );
+                        }
+                    }
                     $wp_filesystem->rmdir( $src_path );
                 }
             }

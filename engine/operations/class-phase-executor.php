@@ -97,10 +97,19 @@ class PhaseExecutor
                 return true;
             }
 
-            // When transitioning from list phase, snapshot the total file count
+            // When transitioning from list phase, snapshot the total file count.
+            // Files queued by the list phase live on disk (JSONL spool); legacy
+            // in-memory arrays may also carry items for jobs already in flight
+            // when this code shipped.
             if ($phase_name === 'list' && ! isset($job['total_files'])) {
-                $file_count   = count($work_queue['files_to_process'] ?? []);
+                $file_count = count($work_queue['files_to_process'] ?? []);
                 $folder_count = ($job['action'] ?? '') === 'delete' ? count($work_queue['folders_to_process'] ?? []) : 0;
+                if (isset($job['id'])) {
+                    $file_count += JobQueueSpool::count_lines($job['id'], 'files');
+                    if (($job['action'] ?? '') === 'delete') {
+                        $folder_count += JobQueueSpool::count_lines($job['id'], 'folders');
+                    }
+                }
                 $job['total_files'] = $file_count + $folder_count;
             }
 

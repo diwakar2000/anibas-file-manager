@@ -1,12 +1,12 @@
 <script lang="ts">
 	import ConnectionStatus from '../ConnectionStatus.svelte'
 	
-	let { settings = $bindable() } = $props<{ settings: any }>()
+	let { settings = $bindable(), authToken = null } = $props<{ settings: any, authToken?: string | null }>()
 </script>
 
 <div class="settings-section">
 	<div class="form-group">
-		<ConnectionStatus type="s3_compatible" {settings} bind:enabled={settings.enabled}>
+		<ConnectionStatus type="s3_compatible" {settings} {authToken} bind:enabled={settings.enabled}>
 			Enable S3 Compatible Storage
 		</ConnectionStatus>
 		<p class="help-text">Works with MinIO, DigitalOcean Spaces, Wasabi, and other S3-compatible services</p>

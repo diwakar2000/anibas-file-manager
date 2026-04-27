@@ -39,24 +39,24 @@ class TransferAjaxHandler extends AjaxHandler
         $storage = anibas_fm_fetch_request_variable('post', 'storage', 'local');
 
         if ($path === '') {
-            wp_send_json_error(array('error' => esc_html__('Path required', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Path required', 'anibas-file-manager')));
         }
 
         if ($storage === 'local') {
             $source = $this->validate_path($path);
             if (! $source || ! file_exists($source)) {
-                wp_send_json_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid path', 'anibas-file-manager')));
+                $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid path', 'anibas-file-manager')));
             }
             $exists_fn = static function ($p) { return file_exists($p); };
             $sep       = DIRECTORY_SEPARATOR;
         } else {
             $adapter = $this->get_storage_adapter($storage);
             if (! $adapter) {
-                wp_send_json_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
+                $this->send_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
             }
             $source = $adapter->validate_path($path);
             if (! $source || ! $adapter->exists($source)) {
-                wp_send_json_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid path', 'anibas-file-manager')));
+                $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid path', 'anibas-file-manager')));
             }
             $exists_fn = static function ($p) use ($adapter) { return $adapter->exists($p); };
             $sep       = '/';
@@ -65,15 +65,17 @@ class TransferAjaxHandler extends AjaxHandler
         $parent      = rtrim(dirname($source), '/' . DIRECTORY_SEPARATOR);
         $destination = $this->build_duplicate_path($parent . $sep . basename($source), $exists_fn, $sep);
 
-        $job_id = BackgroundProcessor::enqueue_job($source, $destination, 'copy', 'rename', $storage, true);
+        $job_id = BackgroundProcessor::enqueue_job($source, $destination, 'copy', 'rename', $storage, [
+            'dest_is_final' => true,
+        ]);
         if (is_wp_error($job_id)) {
-            wp_send_json_error(array(
+            $this->send_error(array(
                 'error'   => $job_id->get_error_code(),
                 'message' => $job_id->get_error_message(),
             ));
         }
 
-        wp_send_json_success(array(
+        $this->send_success(array(
             'job_id'      => $job_id,
             'destination' => basename($destination),
             /* translators: %s: source file or folder name */
@@ -104,7 +106,7 @@ class TransferAjaxHandler extends AjaxHandler
             }
         }
 
-        return $dir . $sep . $name . '_' . date('Y-m-d_His') . '_' . mt_rand(100000, 999999) . $ext;
+        return $dir . $sep . $name . '_' . gmdate('Y-m-d_His') . '_' . wp_rand(100000, 999999) . $ext;
     }
 
     public function transfer_file()
@@ -118,7 +120,7 @@ class TransferAjaxHandler extends AjaxHandler
             $action = 'copy';
         }
         if (empty($source) || empty($destination)) {
-            wp_send_json_error(array('error' => esc_html__('Source and destination required', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Source and destination required', 'anibas-file-manager')));
         }
 
         // Cross-storage: accept source_storage + dest_storage, fall back to legacy 'storage'
@@ -135,7 +137,7 @@ class TransferAjaxHandler extends AjaxHandler
             $sm = StorageManager::get_instance();
             $validation = $sm->validate_cross_storage_transfer($source_storage, $dest_storage);
             if (is_wp_error($validation)) {
-                wp_send_json_error(array('error' => $validation->get_error_message()));
+                $this->send_error(array('error' => $validation->get_error_message()));
             }
             $this->process_cross_storage_operation($source, $destination, $conflict_mode, $source_storage, $dest_storage, $action);
         } else {
@@ -157,11 +159,11 @@ class TransferAjaxHandler extends AjaxHandler
     {
         $adapter = $this->get_storage_adapter($storage);
         if (! $adapter) {
-            wp_send_json_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
         }
         try {
             if (! $adapter->exists($source)) {
-                wp_send_json_error(array('error' => esc_html__('Source not found', 'anibas-file-manager'), 'error_code' => 5));
+                $this->send_error(array('error' => esc_html__('Source not found', 'anibas-file-manager'), 'error_code' => 5));
             }
 
             $dest_dir      = rtrim($destination, '/');
@@ -175,7 +177,7 @@ class TransferAjaxHandler extends AjaxHandler
 
                 if ($source === $final_dest) {
                     if ($action === 'move') {
-                        wp_send_json_success(array('message' => esc_html__('File moved successfully', 'anibas-file-manager'), 'response' => 9, 'status' => 'complete'));
+                        $this->send_success(array('message' => esc_html__('File moved successfully', 'anibas-file-manager'), 'response' => 9, 'status' => 'complete'));
                     }
                     if ($action === 'copy' && $conflict_mode !== 'rename') {
                         $conflict_mode = 'rename';
@@ -189,28 +191,30 @@ class TransferAjaxHandler extends AjaxHandler
                         } else {
                             $path_info = pathinfo($final_dest);
                             $extension = isset($path_info['extension']) ? '.' . $path_info['extension'] : '';
-                            $final_dest = $path_info['dirname'] . '/' . $path_info['filename'] . '_' . date('Y-m-d_H-i-s') . '_' . mt_rand(100000, 999999) . $extension;
+                            $final_dest = $path_info['dirname'] . '/' . $path_info['filename'] . '_' .gmdate('Y-m-d_H-i-s') . '_' . wp_rand(100000, 999999) . $extension;
                         }
                     } elseif ($conflict_mode === 'skip') {
-                        wp_send_json_success(array('message' => esc_html__('File skipped', 'anibas-file-manager'), 'response' => 9, 'status' => 'complete', 'skipped' => true));
+                        $this->send_success(array('message' => esc_html__('File skipped', 'anibas-file-manager'), 'response' => 9, 'status' => 'complete', 'skipped' => true));
                     }
                 }
                 $dest_is_final = true;
             }
 
-            $job_id = BackgroundProcessor::enqueue_job($source, $final_dest, $action, $conflict_mode, $storage, $dest_is_final);
+            $job_id = BackgroundProcessor::enqueue_job($source, $final_dest, $action, $conflict_mode, $storage, [
+                'dest_is_final' => $dest_is_final,
+            ]);
             if (is_wp_error($job_id)) {
-                wp_send_json_error(array(
+                $this->send_error(array(
                     'error'      => $job_id->get_error_code(),
                     'message'    => $job_id->get_error_message(),
                     'error_code' => 1,
                 ));
             }
-            wp_send_json_success(array('job_id' => $job_id, /* translators: %s: action name */
+            $this->send_success(array('job_id' => $job_id, /* translators: %s: action name */
             'message' => sprintf(esc_html__('%s job started', 'anibas-file-manager'), esc_html(ucfirst($action)))));
         } catch (\Exception $e) {
             /* translators: 1: action name e.g. 'copy', 2: error message */
-            wp_send_json_error(array('error' => sprintf(esc_html__('Failed to start %1$s job: %2$s', 'anibas-file-manager'), esc_html($action), esc_html($e->getMessage()))));
+            $this->send_error(array('error' => sprintf(esc_html__('Failed to start %1$s job: %2$s', 'anibas-file-manager'), esc_html($action), esc_html($e->getMessage()))));
         }
     }
 
@@ -220,16 +224,16 @@ class TransferAjaxHandler extends AjaxHandler
         $source_path = $this->validate_path($source);
         $dest_path = $this->validate_path($destination);
         if (! $source_path) {
-            wp_send_json_error(array('error' => esc_html__('Invalid source path', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Invalid source path', 'anibas-file-manager')));
         }
         if (! $dest_path) {
-            wp_send_json_error(array('error' => esc_html__('Invalid destination path', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Invalid destination path', 'anibas-file-manager')));
         }
         if (! file_exists($source_path)) {
-            wp_send_json_error(array('error' => esc_html__('Source not found', 'anibas-file-manager'), 'error_code' => 5));
+            $this->send_error(array('error' => esc_html__('Source not found', 'anibas-file-manager'), 'error_code' => 5));
         }
         if (! is_dir($dest_path)) {
-            wp_send_json_error(array('error' => esc_html__('Destination must be a directory', 'anibas-file-manager'), 'error_code' => 1));
+            $this->send_error(array('error' => esc_html__('Destination must be a directory', 'anibas-file-manager'), 'error_code' => 1));
         }
 
         $fm            = new LocalFileSystemAdapter();
@@ -243,7 +247,7 @@ class TransferAjaxHandler extends AjaxHandler
 
             if ($source_path === $final_dest) {
                 if ($action === 'move') {
-                    wp_send_json_success(array('message' => esc_html__('File moved successfully', 'anibas-file-manager'), 'response' => 9, 'status' => 'complete'));
+                    $this->send_success(array('message' => esc_html__('File moved successfully', 'anibas-file-manager'), 'response' => 9, 'status' => 'complete'));
                 }
                 if ($action === 'copy' && $conflict_mode !== 'rename') {
                     $conflict_mode = 'rename';
@@ -254,21 +258,23 @@ class TransferAjaxHandler extends AjaxHandler
                 if ($conflict_mode === 'rename') {
                     $final_dest = $fm->resolveNameClash($final_dest);
                 } elseif ($conflict_mode === 'skip') {
-                    wp_send_json_success(array('message' => esc_html__('File skipped', 'anibas-file-manager'), 'response' => 9, 'status' => 'complete', 'skipped' => true));
+                    $this->send_success(array('message' => esc_html__('File skipped', 'anibas-file-manager'), 'response' => 9, 'status' => 'complete', 'skipped' => true));
                 }
             }
             $dest_is_final = true;
         }
 
-        $job_id = BackgroundProcessor::enqueue_job($source_path, $final_dest, $action, $conflict_mode, 'local', $dest_is_final);
+        $job_id = BackgroundProcessor::enqueue_job($source_path, $final_dest, $action, $conflict_mode, 'local', [
+            'dest_is_final' => $dest_is_final,
+        ]);
         if (is_wp_error($job_id)) {
-            wp_send_json_error(array(
+            $this->send_error(array(
                 'error'      => $job_id->get_error_code(),
                 'message'    => $job_id->get_error_message(),
                 'error_code' => 1,
             ));
         }
-        wp_send_json_success(array('job_id' => $job_id, /* translators: %s: action label */
+        $this->send_success(array('job_id' => $job_id, /* translators: %s: action label */
         'message' => sprintf(esc_html__('%s job started', 'anibas-file-manager'), esc_html($action_label))));
     }
 
@@ -285,7 +291,7 @@ class TransferAjaxHandler extends AjaxHandler
         $dest_adapter   = $sm->get_adapter($dest_storage);
 
         if (! $source_adapter || ! $dest_adapter) {
-            wp_send_json_error(array('error' => esc_html__('Invalid storage adapter.', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Invalid storage adapter.', 'anibas-file-manager')));
         }
 
         // Always enqueue as a background job — this ensures chunked I/O for large files
@@ -300,12 +306,12 @@ class TransferAjaxHandler extends AjaxHandler
         );
 
         if (is_wp_error($job_id)) {
-            wp_send_json_error(array(
+            $this->send_error(array(
                 'error'   => $job_id->get_error_code(),
                 'message' => $job_id->get_error_message(),
             ));
         }
-        wp_send_json_success(array('job_id' => $job_id, 'message' => esc_html__('Transfer started', 'anibas-file-manager')));
+        $this->send_success(array('job_id' => $job_id, 'message' => esc_html__('Transfer started', 'anibas-file-manager')));
     }
 
     public function get_job_status()
@@ -315,7 +321,7 @@ class TransferAjaxHandler extends AjaxHandler
         $job_id = anibas_fm_fetch_request_variable('get', 'job_id', '');
 
         if (empty($job_id)) {
-            wp_send_json_error(array('error' => esc_html__('Job ID required', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Job ID required', 'anibas-file-manager')));
         }
 
         $job = BackgroundProcessor::get_job_status($job_id);
@@ -331,9 +337,9 @@ class TransferAjaxHandler extends AjaxHandler
                 }
             }
 
-            wp_send_json_success($job);
+            $this->send_success($job);
         } else {
-            wp_send_json_error(array('error' => esc_html__('Job not found', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Job not found', 'anibas-file-manager')));
         }
     }
 
@@ -344,15 +350,15 @@ class TransferAjaxHandler extends AjaxHandler
         $job_id = anibas_fm_fetch_request_variable('post', 'job_id', '');
 
         if (empty($job_id)) {
-            wp_send_json_error(array('error' => esc_html__('Job ID required', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Job ID required', 'anibas-file-manager')));
         }
 
         $result = BackgroundProcessor::cancel_job($job_id);
 
         if ($result) {
-            wp_send_json_success(array('message' => esc_html__('Job cancelled', 'anibas-file-manager')));
+            $this->send_success(array('message' => esc_html__('Job cancelled', 'anibas-file-manager')));
         } else {
-            wp_send_json_error(array('error' => esc_html__('Job not found', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Job not found', 'anibas-file-manager')));
         }
     }
 
@@ -365,7 +371,7 @@ class TransferAjaxHandler extends AjaxHandler
         $storage = anibas_fm_fetch_request_variable('get', 'storage', 'local');
 
         if (empty($source) || empty($destination)) {
-            wp_send_json_error(array('error' => esc_html__('Source and destination required', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Source and destination required', 'anibas-file-manager')));
         }
 
         // Handle different storage types
@@ -374,7 +380,7 @@ class TransferAjaxHandler extends AjaxHandler
             $dest_path = $this->validate_path($destination);
 
             if (! $source_path || ! $dest_path) {
-                wp_send_json_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid path', 'anibas-file-manager')));
+                $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid path', 'anibas-file-manager')));
             }
 
             $basename = basename($source_path);
@@ -384,13 +390,13 @@ class TransferAjaxHandler extends AjaxHandler
             // Remote storage - use adapter
             $adapter = $this->get_storage_adapter($storage);
             if (! $adapter) {
-                wp_send_json_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
+                $this->send_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
             }
 
             try {
                 // Check if source exists
                 if (! $adapter->exists($source)) {
-                    wp_send_json_error(array('error' => esc_html__('Source not found', 'anibas-file-manager')));
+                    $this->send_error(array('error' => esc_html__('Source not found', 'anibas-file-manager')));
                 }
 
                 // Check for conflict at destination
@@ -398,11 +404,11 @@ class TransferAjaxHandler extends AjaxHandler
                 $target = rtrim($destination, '/') . '/' . $basename;
                 $has_conflict = $adapter->exists($target);
             } catch (\Exception $e) {
-                wp_send_json_error(array('error' => esc_html($e->getMessage())));
+                $this->send_error(array('error' => esc_html($e->getMessage())));
             }
         }
 
-        wp_send_json_success(array('has_conflict' => $has_conflict));
+        $this->send_success(array('has_conflict' => $has_conflict));
     }
 
     public function check_running_tasks()
@@ -414,7 +420,11 @@ class TransferAjaxHandler extends AjaxHandler
         $running_tasks = array_filter($queue, function ($job) {
             return in_array($job['status'], ['pending', 'processing']);
         });
-        $sanitized_tasks = array_map('anibas_fm_convert_paths_in_job_data', array_values($running_tasks));
+        $sanitized_tasks = array_map(function ($job) {
+            $task = anibas_fm_convert_paths_in_job_data($job);
+            $task['child_job_ids'] = array_values(array_filter(array_map('strval', $job['child_jobs'] ?? [])));
+            return $task;
+        }, array_values($running_tasks));
 
         // Archive jobs — return only display-safe fields (no absolute paths)
         $archive_jobs       = $this->get_archive_jobs();
@@ -431,7 +441,7 @@ class TransferAjaxHandler extends AjaxHandler
         // Backup status
         $backup_lock = anibas_fm_get_backup_lock();
 
-        wp_send_json_success([
+        $this->send_success([
             'tasks'        => $sanitized_tasks,
             'archive_jobs' => $sanitized_archives,
             'backup'       => $backup_lock ? [
@@ -452,7 +462,7 @@ class TransferAjaxHandler extends AjaxHandler
         $action = anibas_fm_fetch_request_variable('post', 'action_type', '');
 
         if (empty($job_id) || ! in_array($action, ['keep', 'delete'])) {
-            wp_send_json_error(array('error' => esc_html__('Invalid request', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Invalid request', 'anibas-file-manager')));
         }
 
         $queue = anibas_fm_get_option('anibas_fm_job_queue_v2', []);
@@ -469,11 +479,12 @@ class TransferAjaxHandler extends AjaxHandler
         }
 
         if (! $job) {
-            wp_send_json_error(array('error' => esc_html__('Job not found', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Job not found', 'anibas-file-manager')));
         }
 
-        // Delete assembly token
-        $token_key = 'anibas_fm_upload_' . md5($job['file_name'] . $job['file_size'] . $job['user_id']) . '_assembly';
+        $token_key = ! empty($job['upload_id'])
+            ? 'anibas_fm_upload_' . $job['upload_id'] . '_' . $job['user_id'] . '_assembly'
+            : 'anibas_fm_upload_' . md5($job['file_name'] . $job['file_size'] . $job['user_id']) . '_assembly';
         delete_transient($token_key);
 
         if ($action === 'delete') {
@@ -502,6 +513,6 @@ class TransferAjaxHandler extends AjaxHandler
         $queue[$job_index] = $job;
         anibas_fm_update_option('anibas_fm_job_queue_v2', $queue);
 
-        wp_send_json_success(array('message' => esc_html__('Action completed', 'anibas-file-manager')));
+        $this->send_success(array('message' => esc_html__('Action completed', 'anibas-file-manager')));
     }
 }

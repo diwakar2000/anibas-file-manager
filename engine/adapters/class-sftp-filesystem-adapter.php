@@ -13,12 +13,21 @@ require_once ANIBAS_FILE_MANAGER_PLUGIN_DIR . DIRECTORY_SEPARATOR . 'vendor/auto
  */
 class SFTPFileSystemAdapter extends FileSystemAdapter
 {
+    const COPY_ERROR_CREATING_FILE = 1;
+    const COPY_ERROR_APPENDING_TO_FILE = 2;
+    const COPY_ERROR_DOWNLOADING_CHUNK = 3;
+    const COPY_ERROR_UPLOADING_CHUNK = 4;
+    const COPY_ERROR_SOURCE_NOT_FOUND = 5;
+    const COPY_ERROR_SOURCE_EMPTY = 6;
+    const COPY_ERROR_NO_DATA_RECEIVED = 7;
+    const COPY_ERROR_VERIFICATION_FAILED = 8;
+
     private $backend;
     private $base_path;
 
-    public function __construct($host, $username, $password = null, $private_key = null, $base_path = '/', $port = 22)
+    public function __construct($host, $username, $password = null, $private_key = null, $base_path = DIRECTORY_SEPARATOR, $port = 22)
     {
-        $this->base_path = rtrim($base_path, '/');
+        $this->base_path = is_string($base_path) && $base_path !== '' ? $base_path : DIRECTORY_SEPARATOR;
 
         // Try phpseclib first
         if (class_exists('\phpseclib3\Net\SFTP')) {
@@ -28,102 +37,152 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function validate_path($path)
+    public function validate_path($path): string|false
     {
-        // SFTP server handles path constraints, return as-is
-        return $path;
+        return anibas_fm_normalize_remote_path((string) $path, $this->base_path);
     }
 
-    public function exists($path)
+    public function exists(string $path): bool
     {
-        return $this->backend->exists($this->normalize_path($path));
+        $normalized = $this->normalize_path($path);
+        return $normalized !== false && $this->backend->exists($normalized);
     }
 
-    public function is_file($path)
+    public function is_file(string $path): bool
     {
-        return $this->backend->is_file($this->normalize_path($path));
+        $normalized = $this->normalize_path($path);
+        return $normalized !== false && $this->backend->is_file($normalized);
     }
 
-    public function is_dir($path)
+    public function is_dir(string $path): bool
     {
-        return $this->backend->is_dir($this->normalize_path($path));
+        $normalized = $this->normalize_path($path);
+        return $normalized !== false && $this->backend->is_dir($normalized);
     }
 
-    public function mkdir($path)
+    public function mkdir(string $path): bool
     {
-        return $this->backend->mkdir($this->normalize_path($path));
+        $normalized = $this->normalize_path($path);
+        return $normalized !== false && $this->backend->mkdir($normalized);
     }
 
-    public function scandir($path)
+    public function scandir(string $path): array
     {
         $norm_path = $this->normalize_path($path);
+        if ($norm_path === false) {
+            return ['items' => [], 'total' => 0];
+        }
         $data      = $this->backend->listDirectory($norm_path);
         $items     = [];
         foreach ($data['items'] as $item) {
+            $item['path'] = $this->to_virtual_path($item['path']);
             $items[$item['path']] = $item;
         }
         return ['items' => $items, 'total' => count($items)];
     }
 
-    public function listDirectory($path)
+    public function listDirectory(string $path): array
     {
-        return $this->backend->listDirectory($this->normalize_path($path));
+        $normalized = $this->normalize_path($path);
+        if ($normalized === false) {
+            return ['items' => [], 'total_items' => 0];
+        }
+        $data = $this->backend->listDirectory($normalized);
+        foreach ($data['items'] as &$item) {
+            if (isset($item['path'])) {
+                $item['path'] = $this->to_virtual_path($item['path']);
+            }
+        }
+        unset($item);
+        return $data;
     }
 
-    public function rmdir($path)
+    public function rmdir(string $path): bool
     {
-        return $this->backend->rmdir($this->normalize_path($path));
+        $normalized = $this->normalize_path($path);
+        return $normalized !== false && $this->backend->rmdir($normalized);
     }
 
-    public function copy($source, $target)
+    public function copy(string $source, string $target): bool
     {
-        return $this->backend->copyFileInChunks($this->normalize_path($source), $this->normalize_path($target));
+        $normalized_source = $this->normalize_path($source);
+        $normalized_target = $this->normalize_path($target);
+        if ($normalized_source === false || $normalized_target === false) {
+            return false;
+        }
+        return $this->backend->copyFileInChunks($normalized_source, $normalized_target);
     }
 
     public function copyFileInChunks($source, $target, ?int $chunk_size = null, $bytes_copied = 0): int
     {
-        return $this->backend->copyFileInChunks($this->normalize_path($source), $this->normalize_path($target), $chunk_size, $bytes_copied);
+        $normalized_source = $this->normalize_path($source);
+        $normalized_target = $this->normalize_path($target);
+        if ($normalized_source === false || $normalized_target === false) {
+            return self::COPY_ERROR_SOURCE_NOT_FOUND;
+        }
+        return $this->backend->copyFileInChunks($normalized_source, $normalized_target, $chunk_size, $bytes_copied);
     }
 
     public function getCopyProgress($source, $target): array
     {
+        $normalized_source = $this->normalize_path($source);
+        $normalized_target = $this->normalize_path($target);
+        if ($normalized_source === false || $normalized_target === false) {
+            return ['bytes_copied' => 0, 'next_bytes_copied' => 0];
+        }
         if (method_exists($this->backend, 'getCopyProgress')) {
-            return $this->backend->getCopyProgress($this->normalize_path($source), $this->normalize_path($target));
+            return $this->backend->getCopyProgress($normalized_source, $normalized_target);
         }
         return ['bytes_copied' => 0, 'next_bytes_copied' => 0];
     }
 
-    public function move($source, $target)
+    public function move(string $source, string $target): bool
     {
-        return $this->backend->move($this->normalize_path($source), $this->normalize_path($target));
+        $normalized_source = $this->normalize_path($source);
+        $normalized_target = $this->normalize_path($target);
+        if ($normalized_source === false || $normalized_target === false) {
+            return false;
+        }
+        return $this->backend->move($normalized_source, $normalized_target);
     }
 
-    public function unlink($path)
+    public function unlink(string $path): bool
     {
-        return $this->backend->unlink($this->normalize_path($path));
+        $normalized = $this->normalize_path($path);
+        return $normalized !== false && $this->backend->unlink($normalized);
     }
 
-    public function get_contents($path)
+    public function get_contents(string $path): string|false
     {
-        return $this->backend->get_contents($this->normalize_path($path));
+        $normalized = $this->normalize_path($path);
+        if ($normalized === false) {
+            return false;
+        }
+        return $this->backend->get_contents($normalized);
     }
 
-    public function get_size($path)
+    public function get_size(string $path): int|false
     {
+        $normalized = $this->normalize_path($path);
+        if ($normalized === false) {
+            return false;
+        }
         if (method_exists($this->backend, 'get_size')) {
-            return $this->backend->get_size($this->normalize_path($path));
+            return $this->backend->get_size($normalized);
         }
         return false;
     }
 
-    public function put_contents($path, $content)
+    public function put_contents(string $path, string $content): bool
     {
-        return $this->backend->put_contents($this->normalize_path($path), $content);
+        $normalized = $this->normalize_path($path);
+        return $normalized !== false && $this->backend->put_contents($normalized, $content);
     }
 
-    public function append_contents($path, $content)
+    public function append_contents(string $path, string $content): bool
     {
-        return $this->backend->append_contents($this->normalize_path($path), $content);
+        $normalized = $this->normalize_path($path);
+        return $normalized !== false && $this->backend->append_contents($normalized, $content);
     }
 
     public function download_to_local(string $remote_path, string $local_path): bool
@@ -132,12 +191,14 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
         if (! is_dir($dir)) {
             wp_mkdir_p($dir);
         }
-        return $this->backend->download_to_local($this->normalize_path($remote_path), $local_path);
+        $normalized = $this->normalize_path($remote_path);
+        return $normalized !== false && $this->backend->download_to_local($normalized, $local_path);
     }
 
     public function upload_from_local(string $local_path, string $remote_path): bool
     {
-        return $this->backend->upload_from_local($local_path, $this->normalize_path($remote_path));
+        $normalized = $this->normalize_path($remote_path);
+        return $normalized !== false && $this->backend->upload_from_local($local_path, $normalized);
     }
 
     public function supports_chunked_transfer(): bool
@@ -147,20 +208,46 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
 
     public function download_to_local_chunked(string $remote_path, string $local_path, int $offset = 0, int $chunk_size = 2097152): array
     {
-        return $this->backend->download_to_local_chunked($this->normalize_path($remote_path), $local_path, $offset, $chunk_size);
+        $normalized = $this->normalize_path($remote_path);
+        if ($normalized === false) {
+            return ['status' => self::COPY_ERROR_SOURCE_NOT_FOUND, 'bytes_copied' => $offset];
+        }
+        return $this->backend->download_to_local_chunked($normalized, $local_path, $offset, $chunk_size);
     }
 
     public function upload_from_local_chunked(string $local_path, string $remote_path, int $offset = 0, int $chunk_size = 2097152): array
     {
-        return $this->backend->upload_from_local_chunked($local_path, $this->normalize_path($remote_path), $offset, $chunk_size);
+        $normalized = $this->normalize_path($remote_path);
+        if ($normalized === false) {
+            return ['status' => self::COPY_ERROR_CREATING_FILE, 'bytes_copied' => $offset];
+        }
+        return $this->backend->upload_from_local_chunked($local_path, $normalized, $offset, $chunk_size);
     }
 
     private function normalize_path($path)
     {
-        if (strpos($path, $this->base_path) === 0) {
+        return $this->validate_path((string) $path);
+    }
+
+    private function to_virtual_path(string $path): string
+    {
+        $base = '/' . ltrim(rtrim(str_replace('\\', '/', $this->base_path), '/'), '/');
+        $path = '/' . ltrim(str_replace('\\', '/', $path), '/');
+
+        if ($base === '') {
             return $path;
         }
-        return $this->base_path . '/' . ltrim($path, '/');
+
+        if ($path === $base) {
+            return '/';
+        }
+
+        $base_with_sep = $base . '/';
+        if (strpos($path, $base_with_sep) === 0) {
+            return '/' . ltrim(substr($path, strlen($base_with_sep)), '/');
+        }
+
+        return $path;
     }
 }
 
@@ -227,7 +314,7 @@ class SFTPPhpseclibBackend
         foreach ($raw as $name => $stat) {
             if ($name === '.' || $name === '..') continue;
 
-            $full_path = rtrim($path, '/') . '/' . $name;
+            $full_path = rtrim($path, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $name;
 
             // type: 1 = regular file, 2 = directory, 3 = symlink
             $is_dir    = isset($stat['type']) && (int) $stat['type'] === 2;
@@ -293,7 +380,7 @@ class SFTPPhpseclibBackend
     {
         $names = $this->scandir($path);
         foreach ($names as $name) {
-            $item_path = rtrim($path, '/') . '/' . $name;
+            $item_path = rtrim($path, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $name;
             if ($this->sftp->is_dir($item_path)) {
                 $this->rmdir($item_path);
             } else {
@@ -755,7 +842,7 @@ class SFTPCurlBackend
                 $parsed = $this->parse_ls_line(trim($line));
                 if (! $parsed || $parsed['name'] === '.' || $parsed['name'] === '..') continue;
 
-                $full_path = rtrim($path, '/') . '/' . $parsed['name'];
+                $full_path = rtrim($path, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $parsed['name'];
 
                 $item = [
                     'name'          => $parsed['name'],
@@ -819,7 +906,7 @@ class SFTPCurlBackend
         // Recursively delete all contents first — exceptions propagate to caller
         $names = $this->scandir($path);
         foreach ($names as $name) {
-            $item_path = rtrim($path, '/') . '/' . $name;
+            $item_path = rtrim($path, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $name;
             if ($this->is_dir($item_path)) {
                 $this->rmdir($item_path);
             } else {

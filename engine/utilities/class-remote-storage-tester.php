@@ -67,26 +67,15 @@ class RemoteStorageTester
 		$port = $config['port'] ?? 22;
 
 		try {
-			$ch = curl_init();
-			$url = "sftp://{$config['host']}:{$port}/";
-
-			curl_setopt($ch, CURLOPT_URL, $url);
-			curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-			curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-			curl_setopt($ch, CURLOPT_DIRLISTONLY, true);
-
-			if (! empty($config['private_key']) && file_exists($config['private_key'])) {
-				curl_setopt($ch, CURLOPT_SSH_PRIVATE_KEYFILE, $config['private_key']);
-			} else {
-				curl_setopt($ch, CURLOPT_USERPWD, "{$config['username']}:{$config['password']}");
-			}
-
-			curl_exec($ch);
-			$error = curl_error($ch);
-
-			if ($error) {
-				return ['success' => false, 'message' => $error];
-			}
+			$adapter = new SFTPFileSystemAdapter(
+				$config['host'],
+				$config['username'],
+				$config['password'] ?? null,
+				$config['private_key'] ?? null,
+				$config['base_path'] ?? '/',
+				$port
+			);
+			$adapter->listDirectory('/');
 
 			return ['success' => true, 'message' => 'Connected successfully'];
 		} catch (\Exception $e) {

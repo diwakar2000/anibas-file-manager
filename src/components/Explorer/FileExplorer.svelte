@@ -104,21 +104,19 @@
 
   // ── Bulk delete ─────────────────────────────────────────────
   let showBulkDeleteConfirm = $state(false);
-  let bulkDeletePending = $state<Array<{ path: string; token: string }>>([]);
+  let bulkDeletePending = $state<string[]>([]);
   let isBulkDeleting = $state(false);
+  const bulkDeleteLocked = $derived.by(() =>
+    showBulkDeleteConfirm
+    || isBulkDeleting
+    || fileStore.selectedPaths.some((path) => fileStore.deletingPaths.includes(path))
+  );
 
   async function initBulkDelete() {
     const paths = [...fileStore.selectedPaths];
     if (paths.length === 0) return;
-    try {
-      const tokens = await Promise.all(
-        paths.map((p) => fileStore.requestDeleteToken(p)),
-      );
-      bulkDeletePending = paths.map((path, i) => ({ path, token: tokens[i] }));
-      showBulkDeleteConfirm = true;
-    } catch (err: any) {
-      toast.error(err.message || "Failed to initiate delete");
-    }
+    bulkDeletePending = paths;
+    showBulkDeleteConfirm = true;
   }
 
   async function confirmBulkDelete() {
@@ -126,21 +124,13 @@
     showBulkDeleteConfirm = false;
     const items = [...bulkDeletePending];
     bulkDeletePending = [];
-    let failed = 0;
-    for (const { path, token } of items) {
-      try {
-        fileStore.deletingPaths = [...fileStore.deletingPaths, path];
-        await fileStore.deleteFile(path, token);
-      } catch {
-        fileStore.deletingPaths = fileStore.deletingPaths.filter(
-          (p) => p !== path,
-        );
-        failed++;
-      }
+    try {
+      await fileStore.bulkDelete(items);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to delete selected items");
+    } finally {
+      isBulkDeleting = false;
     }
-    isBulkDeleting = false;
-    if (failed > 0) toast.error(`${failed} item(s) could not be deleted`);
-    fileStore.clearSelection();
   }
 
   // ── Download helper ──────────────────────────────────────────
@@ -172,7 +162,8 @@
       } else if (
         (e.ctrlKey || e.metaKey) &&
         e.key === "c" &&
-        fileStore.selectionCount === 1
+        fileStore.selectionCount === 1 &&
+        !bulkDeleteLocked
       ) {
         const p = fileStore.selectedPaths[0];
         fileStore.copyToClipboard([p]);
@@ -180,7 +171,8 @@
       } else if (
         (e.ctrlKey || e.metaKey) &&
         e.key === "x" &&
-        fileStore.selectionCount === 1
+        fileStore.selectionCount === 1 &&
+        !bulkDeleteLocked
       ) {
         const p = fileStore.selectedPaths[0];
         fileStore.cutToClipboard([p]);
@@ -470,6 +462,7 @@
   let showEmptyFolderPasswordDialog = $state(false);
   let emptyFolderPassword = $state("");
   let isEmptyingFolder = $state(false);
+  const showRemoteTrashWarning = $derived(fileStore.currentStorage !== 'local' && !!(window as any).AnibasFM?.deleteToTrash);
 
   function handleEmptyFolder(file: FileItem) {
     emptyFolderTarget = file;
@@ -714,24 +707,28 @@
             <button
               class="bulk-btn"
               onclick={() => {
+                if (bulkDeleteLocked) return;
                 const paths = [...fileStore.selectedPaths];
                 fileStore.copyToClipboard(paths);
                 const label = paths.length === 1
                   ? `"${paths[0].split("/").pop()}" copied`
                   : `${paths.length} items copied`;
                 toast.info(label);
-              }}>Copy</button
+              }}
+              disabled={bulkDeleteLocked}>Copy</button
             >
             <button
               class="bulk-btn"
               onclick={() => {
+                if (bulkDeleteLocked) return;
                 const paths = [...fileStore.selectedPaths];
                 fileStore.cutToClipboard(paths);
                 const label = paths.length === 1
                   ? `"${paths[0].split("/").pop()}" cut`
                   : `${paths.length} items cut`;
                 toast.info(label);
-              }}>Cut</button
+              }}
+              disabled={bulkDeleteLocked}>Cut</button
             >
             {#if fileStore.selectionCount === 1}
               <button
@@ -1283,13 +1280,18 @@
       <p>
         Delete all contents of <strong>"{emptyFolderTarget.name}"</strong>? The folder itself will be kept.
       </p>
+      {#if showRemoteTrashWarning}
+        <p class="modal-warning">
+          Remote storage is not moved to Anibas trash. This will delete the contents from the remote provider; recovery depends on that provider's own backups, versioning, or trash.
+        </p>
+      {/if}
       <div class="modal-actions">
         <button
           class="btn btn-secondary"
           onclick={() => (showEmptyFolderDialog = false)}>Cancel</button
         >
         <button class="btn btn-danger" onclick={confirmEmptyFolder}
-          >Empty</button
+          >{showRemoteTrashWarning ? 'Delete Remote Contents' : 'Empty'}</button
         >
       </div>
     </div>
@@ -1314,6 +1316,11 @@
     >
       <h3>Delete Password Required</h3>
       <p>Enter the delete password to empty <strong>"{emptyFolderTarget.name}"</strong>.</p>
+      {#if showRemoteTrashWarning}
+        <p class="modal-warning">
+          Remote storage is not moved to Anibas trash. Confirming will delete the contents from the remote provider.
+        </p>
+      {/if}
       <input
         type="password"
         bind:value={emptyFolderPassword}
@@ -1738,6 +1745,16 @@
     font-weight: 600;
     color: #333;
     word-break: break-all;
+  }
+
+  .modal-warning {
+    padding: 10px 12px;
+    margin: 12px 0 16px;
+    border-left: 4px solid #d63638;
+    background: #fcf0f1;
+    color: #5c1114;
+    font-weight: 600;
+    line-height: 1.4;
   }
 
   .format-options {

@@ -8,22 +8,29 @@ if ( ! defined( 'ABSPATH' ) ) exit;
  * Simplified background processor - processes files as discovered
  */
 class BackgroundProcessor {
-    
+
     private static $option_name = 'anibas_fm_job_queue_v2';
     private static $lock_key = 'anibas_fm_worker_lock';
     private static $shutdown_active = false;
 
-    public static function init() {
-        // Initialization handled by Anibas_File_Manager_Main instantiating the WorkerAjaxHandler
-        ActivityLogger::log_message('[BackgroundProcessor] init() called.');
-    }
+    public static function init() {}
 
-    public static function enqueue_job( $source, $destination, $action, $conflict_mode = 'skip', $storage = 'local', $dest_is_final = false ) {
+    public static function enqueue_job( $source, $destination, $action, $conflict_mode = 'skip', $storage = 'local', $options = [] ) {
         ActivityLogger::log_message('[BackgroundProcessor] enqueue_job called: action=' . $action . ', source=' . $source);
         if ( ! in_array( $action, [ 'copy', 'move' ], true ) ) {
             ActivityLogger::log_message('[BackgroundProcessor] enqueue_job failed: Invalid action ' . $action);
             return new \WP_Error( 'invalid_action', sprintf( 'Invalid action "%s" for background job', $action ) );
         }
+
+        if ( is_bool( $options ) ) {
+            $options = [ 'dest_is_final' => $options ];
+        }
+        if ( ! is_array( $options ) ) {
+            $options = [];
+        }
+
+        $dest_is_final = ! empty( $options['dest_is_final'] );
+        $remove_source = ! empty( $options['remove_source'] ) || $action === 'move';
 
         // Get appropriate adapter for storage type
         $original_destination = $destination;
@@ -35,6 +42,15 @@ class BackgroundProcessor {
             // Prevent moving/copying to same location
             if ( realpath( $source ) === realpath( $destination ) ) {
                 return new \WP_Error( 'same_location', __( 'Source and destination are the same location.', 'anibas-file-manager' ) );
+            }
+
+            $source_real = realpath( $source );
+            $dest_parent = realpath( dirname( $destination ) );
+            if ( $source_real && $dest_parent && is_dir( $source_real ) ) {
+                $dest_candidate = $dest_parent . DIRECTORY_SEPARATOR . basename( $destination );
+                if ( self::path_is_inside_or_same( $dest_candidate, $source_real ) ) {
+                    return new \WP_Error( 'destination_inside_source', __( 'Destination cannot be inside the source folder.', 'anibas-file-manager' ) );
+                }
             }
         } else {
             try {
@@ -51,6 +67,10 @@ class BackgroundProcessor {
                 if ( $source === $destination ) {
                     return new \WP_Error( 'same_location', __( 'Source and destination are the same location.', 'anibas-file-manager' ) );
                 }
+
+                if ( $adapter->is_dir( $source ) && self::path_is_inside_or_same( $destination, $source ) ) {
+                    return new \WP_Error( 'destination_inside_source', __( 'Destination cannot be inside the source folder.', 'anibas-file-manager' ) );
+                }
             } catch ( \Exception $e ) {
                 return new \WP_Error( 'storage_check_failed', sprintf( 'Failed to check storage adapter for %s: %s', $storage, $e->getMessage() ) );
             }
@@ -64,6 +84,7 @@ class BackgroundProcessor {
             if ( $existing_job['source_root'] === $source && 
                 $existing_job['dest_root'] === $destination && 
                 $existing_job['action'] === $action &&
+                (bool) ( $existing_job['remove_source'] ?? false ) === $remove_source &&
                 in_array( $existing_job['status'], [ 'pending', 'processing', 'retrying' ] ) ) {
                 return $existing_job['id']; // Return existing job ID
             }
@@ -78,6 +99,7 @@ class BackgroundProcessor {
             'processed_count' => 0,
             'failed_count'    => 0,
             'action'          => $action,
+            'remove_source'   => $remove_source,
             'conflict_mode'   => $conflict_mode,
             'storage'         => $storage,
             'dest_is_final'   => (bool) $dest_is_final,
@@ -126,6 +148,10 @@ class BackgroundProcessor {
             return new \WP_Error( 'same_location', __( 'Source and destination are the same location.', 'anibas-file-manager' ) );
         }
 
+        if ( $source_storage === $dest_storage && $source_adapter->is_dir( $source ) && self::path_is_inside_or_same( $destination, $source ) ) {
+            return new \WP_Error( 'destination_inside_source', __( 'Destination cannot be inside the source folder.', 'anibas-file-manager' ) );
+        }
+
         self::cleanup_old_jobs();
         $queue = anibas_fm_get_option( self::$option_name, [] );
 
@@ -170,9 +196,73 @@ class BackgroundProcessor {
     }
 
     /**
-     * Enqueue a background delete job for a remote storage folder.
+     * Enqueue a background delete job.
+     *
+     * @param string $path       Absolute source path on the given storage.
+     * @param string $storage    Storage adapter id (e.g. 'local').
+     * @param bool   $keep_root  When true, delete all descendants but keep the
+     *                           root folder itself (used by emptyFolder).
      */
-    public static function enqueue_delete_job( $path, $storage ) {
+    /**
+     * Enqueue a single background job that empties a folder by moving its
+     * direct children into the trash. Replaces the synchronous DirectoryIterator
+     * loop in LocalFileSystemAdapter::emptyFolder() for the cross-FS case so
+     * a folder with hundreds of thousands of direct children doesn't time out
+     * the AJAX request.
+     *
+     * Implementation: a delete job with list_depth=1 (don't descend) +
+     * trash_mode=true (DeletePhase calls moveToTrash on each spool entry).
+     */
+    public static function enqueue_empty_folder_trash_job( $path, $storage = 'local' ) {
+        $sm      = StorageManager::get_instance();
+        $adapter = $sm->get_adapter( $storage );
+        if ( ! $adapter ) {
+            return new \WP_Error( 'invalid_storage', sprintf( 'Invalid storage adapter: %s', $storage ) );
+        }
+
+        self::cleanup_old_jobs();
+        $queue = anibas_fm_get_option( self::$option_name, [] );
+
+        foreach ( $queue as $existing_job ) {
+            if ( ( $existing_job['action'] ?? '' ) === 'delete'
+                && ! empty( $existing_job['trash_mode'] )
+                && $existing_job['source_root'] === $path
+                && in_array( $existing_job['status'], [ 'pending', 'processing', 'retrying' ], true ) ) {
+                return $existing_job['id'];
+            }
+        }
+
+        $job = [
+            'id'              => wp_generate_password( 12, false ),
+            'source_root'     => $path,
+            'dest_root'       => '',
+            'original_dest'   => '',
+            'work_queue_id'   => 'anibas_fm_work_queue_' . wp_generate_password( 12, false ),
+            'processed_count' => 0,
+            'failed_count'    => 0,
+            'action'          => 'delete',
+            'conflict_mode'   => 'overwrite',
+            'storage'         => $storage,
+            'is_delete'       => true,
+            'keep_root'       => true,
+            'list_depth'      => 1,
+            'trash_mode'      => true,
+            'status'          => 'pending',
+            'created_at'      => time(),
+            'errors'          => [],
+        ];
+
+        update_option( $job['work_queue_id'], [], false );
+
+        $queue[] = $job;
+        anibas_fm_update_option( self::$option_name, $queue );
+
+        AsyncWorkerDispatcher::dispatch();
+
+        return $job['id'];
+    }
+
+    public static function enqueue_delete_job( $path, $storage, $keep_root = false ) {
         $sm      = StorageManager::get_instance();
         $adapter = $sm->get_adapter( $storage );
 
@@ -183,10 +273,11 @@ class BackgroundProcessor {
         self::cleanup_old_jobs();
         $queue = anibas_fm_get_option( self::$option_name, [] );
 
-        // Check for duplicate
+        // Check for duplicate (same root + same keep_root intent)
         foreach ( $queue as $existing_job ) {
             if ( ( $existing_job['action'] ?? '' ) === 'delete'
                 && $existing_job['source_root'] === $path
+                && ( $existing_job['keep_root'] ?? false ) === (bool) $keep_root
                 && in_array( $existing_job['status'], [ 'pending', 'processing', 'retrying' ] ) ) {
                 return $existing_job['id'];
             }
@@ -204,6 +295,7 @@ class BackgroundProcessor {
             'conflict_mode'   => 'overwrite',
             'storage'         => $storage,
             'is_delete'       => true,
+            'keep_root'       => (bool) $keep_root,
             'status'          => 'pending',
             'created_at'      => time(),
             'errors'          => [],
@@ -220,6 +312,54 @@ class BackgroundProcessor {
         return $job['id'];
     }
 
+    /**
+     * Attach UI metadata to one or more queued jobs.
+     *
+     * Used for higher-level operations like "empty folder" where the backend
+     * may need multiple worker jobs but the frontend should present a single
+     * grouped task.
+     *
+     * @param array $job_ids Job ids to annotate.
+     * @param array $meta    Scalar metadata to merge into each matching job.
+     * @return void
+     */
+    public static function annotate_jobs( array $job_ids, array $meta ): void {
+        if ( empty( $job_ids ) || empty( $meta ) ) {
+            return;
+        }
+
+        $queue   = anibas_fm_get_option( self::$option_name, [] );
+        $job_ids = array_values( array_filter( array_map( 'strval', $job_ids ) ) );
+
+        if ( empty( $queue ) || empty( $job_ids ) ) {
+            return;
+        }
+
+        $allowed_meta = [];
+        foreach ( $meta as $key => $value ) {
+            if ( is_scalar( $value ) || $value === null ) {
+                $allowed_meta[ $key ] = $value;
+            }
+        }
+
+        if ( empty( $allowed_meta ) ) {
+            return;
+        }
+
+        $changed = false;
+        foreach ( $queue as &$job ) {
+            if ( in_array( $job['id'] ?? '', $job_ids, true ) ) {
+                $job     = array_merge( $job, $allowed_meta );
+                $changed = true;
+            }
+        }
+        unset( $job );
+
+        if ( $changed ) {
+            anibas_fm_update_option( self::$option_name, $queue );
+        }
+    }
+
     public static function run_worker() {
         ActivityLogger::log_message('[BackgroundProcessor] run_worker() triggered.');
         if ( ! self::acquire_lock() ) {
@@ -234,43 +374,45 @@ class BackgroundProcessor {
             return;
         }
 
-        ActivityLogger::log_message('[BackgroundProcessor] run_worker() loaded queue, top job ID: ' . $queue[0]['id'] . ' with status: ' . $queue[0]['status']);
+        $job_index = self::find_next_processable_job_index( $queue );
+        if ( $job_index === null ) {
+            ActivityLogger::log_message('[BackgroundProcessor] run_worker() found no processable jobs. Releasing lock and exiting.');
+            self::release_lock();
+            return;
+        }
 
-        $job = &$queue[0];
+        ActivityLogger::log_message('[BackgroundProcessor] run_worker() selected job ID: ' . $queue[$job_index]['id'] . ' with status: ' . $queue[$job_index]['status']);
+
+        $job = &$queue[$job_index];
 
         // Register shutdown handler to catch fatal errors
         self::$shutdown_active = true;
-        register_shutdown_function( function() use ( &$job, &$queue ) {
+        register_shutdown_function( function() use ( &$job, &$queue, $job_index ) {
             if ( ! self::$shutdown_active ) {
                 return;
             }
             $error = error_get_last();
             if ( $error && in_array( $error['type'], [ E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR ] ) ) {
                 self::fail_job( $job, 'Fatal error: ' . $error['message'] . ' in ' . $error['file'] . ':' . $error['line'] );
-                $queue[0] = $job;
+                $queue[$job_index] = $job;
                 self::save_queue( $queue );
                 self::release_lock();
             }
         } );
-        
-        if ( ! self::is_job_processable( $job ) ) {
-            self::$shutdown_active = false;
-            self::release_lock();
-            return;
-        }
 
         $work_queue = self::load_work_queue( $job );
         if ( $work_queue === null ) {
             self::$shutdown_active = false;
             self::fail_job( $job, 'Work queue not found' );
-            $queue[0] = $job;
+            $queue[$job_index] = $job;
             self::save_queue( $queue );
             self::release_lock();
+            self::dispatch_if_processable_jobs_remain( $queue );
             return;
         }
 
         $job['status'] = 'processing';
-        $queue[0] = $job;
+        $queue[$job_index] = $job;
         self::save_queue( $queue );
 
         // Set 5-minute heartbeat to prevent zombie jobs if the worker crashes
@@ -282,21 +424,30 @@ class BackgroundProcessor {
             $is_complete = self::process_job( $job, $work_queue );
             
             if ( $is_complete && $job['status'] !== 'failed' ) {
-                self::complete_job( $job );
+                if ( self::completed_job_has_terminal_failures( $job ) ) {
+                    $message = ! empty( $job['errors'][0] )
+                        ? $job['errors'][0]
+                        : __( 'One or more items could not be processed.', 'anibas-file-manager' );
+                    self::fail_job( $job, $message );
+                } else {
+                    self::complete_job( $job );
+                }
             }
             
-            $queue[0] = $job;
+            $queue[$job_index] = $job;
             self::save_queue( $queue );
-            
+
             self::$shutdown_active = false;
             self::release_lock();
+            self::dispatch_if_processable_jobs_remain( $queue );
             self::log_job_state( $job, 'passed' );
         } catch ( \Exception $e ) {
             self::$shutdown_active = false;
             self::fail_job( $job, 'Fatal: ' . $e->getMessage() );
-            $queue[0] = $job;
+            $queue[$job_index] = $job;
             self::save_queue( $queue );
             self::release_lock();
+            self::dispatch_if_processable_jobs_remain( $queue );
             self::log_job_state( $job, 'failed' );
             ActivityLogger::log_message('[BackgroundProcessor] run_worker() fatal exception for Job ID ' . $job['id'] . ': ' . $e->getMessage());
         }
@@ -386,7 +537,31 @@ class BackgroundProcessor {
     }
 
     private static function save_queue( $queue ) {
-        anibas_fm_update_option( self::$option_name, $queue );
+        $current = anibas_fm_get_option( self::$option_name, [] );
+        if ( empty( $current ) || ! is_array( $current ) ) {
+            anibas_fm_update_option( self::$option_name, $queue );
+            return;
+        }
+
+        $incoming_by_id = [];
+        foreach ( $queue as $job ) {
+            if ( isset( $job['id'] ) ) {
+                $incoming_by_id[ $job['id'] ] = $job;
+            }
+        }
+
+        $merged = [];
+        foreach ( $current as $job ) {
+            $id = $job['id'] ?? null;
+            if ( $id !== null && isset( $incoming_by_id[ $id ] ) ) {
+                $merged[] = $incoming_by_id[ $id ];
+                unset( $incoming_by_id[ $id ] );
+                continue;
+            }
+            $merged[] = $job;
+        }
+
+        anibas_fm_update_option( self::$option_name, $merged );
     }
 
     private static function is_job_processable( $job ) {
@@ -394,6 +569,35 @@ class BackgroundProcessor {
             return false;
         }
         return true;
+    }
+
+    private static function completed_job_has_terminal_failures( array $job ): bool {
+        if ( (int) ( $job['failed_count'] ?? 0 ) <= 0 ) {
+            return false;
+        }
+
+        return ( $job['action'] ?? '' ) === 'delete'
+            || ( $job['action'] ?? '' ) === 'move'
+            || ! empty( $job['remove_source'] );
+    }
+
+    private static function find_next_processable_job_index( array $queue ): ?int {
+        foreach ( $queue as $index => $job ) {
+            if ( self::is_job_processable( $job ) ) {
+                return (int) $index;
+            }
+        }
+        return null;
+    }
+
+    private static function dispatch_if_processable_jobs_remain( array $queue ): void {
+        $latest_queue = anibas_fm_get_option( self::$option_name, $queue );
+        if ( self::find_next_processable_job_index( is_array( $latest_queue ) ? $latest_queue : $queue ) === null ) {
+            return;
+        }
+
+        ActivityLogger::log_message('[BackgroundProcessor] Processable work remains; dispatching next worker slice.');
+        AsyncWorkerDispatcher::dispatch();
     }
 
     private static function load_work_queue( &$job ) {
@@ -419,6 +623,13 @@ class BackgroundProcessor {
         if ( isset( $job['work_queue_id'] ) ) {
             delete_option( $job['work_queue_id'] );
         }
+        // Drop the per-job heartbeat transient. It auto-expires after 5min,
+        // but cleaning up here avoids accumulating transients during bursty
+        // job activity (and matches the work_queue cleanup right above).
+        if ( isset( $job['id'] ) ) {
+            delete_transient( 'anibas_fm_worker_heartbeat_' . $job['id'] );
+            JobQueueSpool::cleanup( $job['id'] );
+        }
     }
 
     private static function complete_job( &$job ) {
@@ -426,6 +637,10 @@ class BackgroundProcessor {
         $job['completed_at'] = time();
         if ( isset( $job['work_queue_id'] ) ) {
             delete_option( $job['work_queue_id'] );
+        }
+        if ( isset( $job['id'] ) ) {
+            delete_transient( 'anibas_fm_worker_heartbeat_' . $job['id'] );
+            JobQueueSpool::cleanup( $job['id'] );
         }
     }
 
@@ -622,7 +837,12 @@ class BackgroundProcessor {
                     'status' => $job['status'],
                     'source' => $job['source_root'],
                     'destination' => $job['original_dest'] ?? $job['dest_root'],
-                    'action' => $job['action'],
+                    'action' => ! empty( $job['remove_source'] ) ? 'move' : $job['action'],
+                    'ui_group_id' => $job['ui_group_id'] ?? null,
+                    'ui_group_action' => $job['ui_group_action'] ?? null,
+                    'ui_group_mode' => $job['ui_group_mode'] ?? null,
+                    'ui_group_label' => $job['ui_group_label'] ?? null,
+                    'ui_group_source' => $job['ui_group_source'] ?? null,
                     'current_phase' => $work_queue ? ( $work_queue['current_phase'] ?? 'initialize' ) : null,
                     'processed_count' => $job['processed_count'],
                     'failed_count' => $job['failed_count'],
@@ -630,6 +850,7 @@ class BackgroundProcessor {
                     'current_file' => $job['current_file'] ?? '',
                     'current_file_bytes' => $job['current_file_bytes'] ?? 0,
                     'current_file_size' => $job['current_file_size'] ?? 0,
+                    'child_job_ids' => array_values( array_filter( array_map( 'strval', $job['child_jobs'] ?? [] ) ) ),
                     'errors' => $job['errors'],
                 ];
                 
@@ -645,6 +866,8 @@ class BackgroundProcessor {
         foreach ( $queue as $key => $job ) {
             if ( $job['id'] === $job_id ) {
                 delete_option( $job['work_queue_id'] );
+                delete_transient( 'anibas_fm_worker_heartbeat_' . $job['id'] );
+                JobQueueSpool::cleanup( $job['id'] );
                 unset( $queue[ $key ] );
                 anibas_fm_update_option( self::$option_name, array_values( $queue ) );
                 return true;
@@ -654,26 +877,89 @@ class BackgroundProcessor {
     }
 
     public static function clear_all_jobs() {
+        $queue = anibas_fm_get_option( self::$option_name, [] );
+        foreach ( $queue as $job ) {
+            if ( ! empty( $job['work_queue_id'] ) ) {
+                delete_option( $job['work_queue_id'] );
+            }
+            if ( ! empty( $job['id'] ) ) {
+                delete_transient( 'anibas_fm_worker_heartbeat_' . $job['id'] );
+                JobQueueSpool::cleanup( $job['id'] );
+            }
+        }
         anibas_fm_update_option( self::$option_name, [] );
         delete_transient( self::$lock_key );
+        delete_option( self::$lock_key );
         return true;
     }
 
     public static function cleanup_old_jobs() {
         $queue = anibas_fm_get_option( self::$option_name, [] );
         $cutoff = time() - HOUR_IN_SECONDS;
-        
+
         $queue = array_filter( $queue, function( $job ) use ( $cutoff ) {
             if ( $job['status'] === 'completed' && isset( $job['completed_at'] ) && $job['completed_at'] < $cutoff ) {
+                // Belt-and-braces: complete_job already drops the work_queue
+                // option + heartbeat transient, but old jobs created before
+                // those cleanups landed could still leak — sweep them here.
+                if ( ! empty( $job['work_queue_id'] ) ) {
+                    delete_option( $job['work_queue_id'] );
+                }
+                if ( ! empty( $job['id'] ) ) {
+                    delete_transient( 'anibas_fm_worker_heartbeat_' . $job['id'] );
+                    JobQueueSpool::cleanup( $job['id'] );
+                }
                 return false;
             }
             if ( $job['status'] === 'failed' && isset( $job['created_at'] ) && $job['created_at'] < $cutoff ) {
+                if ( ! empty( $job['work_queue_id'] ) ) {
+                    delete_option( $job['work_queue_id'] );
+                }
+                if ( ! empty( $job['id'] ) ) {
+                    delete_transient( 'anibas_fm_worker_heartbeat_' . $job['id'] );
+                    JobQueueSpool::cleanup( $job['id'] );
+                }
                 return false;
             }
             return true;
         });
-        
+
         anibas_fm_update_option( self::$option_name, array_values( $queue ) );
+    }
+
+    private static function path_is_inside_or_same( string $candidate, string $root ): bool {
+        $candidate = untrailingslashit( self::normalize_job_path( $candidate ) );
+        $root      = untrailingslashit( self::normalize_job_path( $root ) );
+
+        if ( $candidate === '' || $root === '' ) {
+            return false;
+        }
+
+        return $candidate === $root || strpos( trailingslashit( $candidate ), trailingslashit( $root ) ) === 0;
+    }
+
+    private static function normalize_job_path( string $path ): string {
+        $path = wp_normalize_path( $path );
+        $drive = '';
+        if ( preg_match( '/^[A-Za-z]:\//', $path, $matches ) ) {
+            $drive = strtolower( substr( $matches[0], 0, 2 ) );
+            $path  = substr( $path, 2 );
+        }
+
+        $absolute = strpos( $path, '/' ) === 0;
+        $parts = [];
+        foreach ( explode( '/', $path ) as $part ) {
+            if ( $part === '' || $part === '.' ) {
+                continue;
+            }
+            if ( $part === '..' ) {
+                array_pop( $parts );
+                continue;
+            }
+            $parts[] = $part;
+        }
+
+        return $drive . ( $absolute ? '/' : '' ) . implode( '/', $parts );
     }
 
     /**
@@ -699,7 +985,7 @@ class BackgroundProcessor {
         $log_dir = anibas_fm_get_log_file_path();
 
         $log_file = $log_dir . '/.job-log.json';
-        $timestamp = date( 'Y-m-d H:i:s' );
+        $timestamp =gmdate( 'Y-m-d H:i:s' );
         
         $log_entry = [
             'timestamp' => $timestamp,
@@ -707,7 +993,7 @@ class BackgroundProcessor {
             'job_id' => $job['id'],
             'status' => $job['status'],
             'type' => $job['type'] ?? 'operation',
-            'action' => $job['action'] ?? null,
+            'action' => ! empty( $job['remove_source'] ) ? 'move' : ( $job['action'] ?? null ),
             'source' => $job['source_root'] ?? $job['file_name'] ?? null,
             'destination' => $job['dest_root'] ?? $job['destination'] ?? null,
             'processed_count' => $job['processed_count'] ?? $job['current_chunk'] ?? 0,
@@ -732,12 +1018,12 @@ class BackgroundProcessor {
             $logs = array_slice( $logs, -100 );
         }
         
-        file_put_contents( $log_file, json_encode( $logs, JSON_PRETTY_PRINT ) );
+        file_put_contents( $log_file, wp_json_encode( $logs, JSON_PRETTY_PRINT ) );
         
         // Keep last failed job separately
         if ( $event === 'failed' || $job['status'] === 'failed' ) {
             $failed_log_file = $log_dir . '/last-failed-job.json';
-            file_put_contents( $failed_log_file, json_encode( $job, JSON_PRETTY_PRINT ) );
+            file_put_contents( $failed_log_file, wp_json_encode( $job, JSON_PRETTY_PRINT ) );
         }
     }
 }

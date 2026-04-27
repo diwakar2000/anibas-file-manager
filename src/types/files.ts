@@ -30,10 +30,11 @@ export type ArchiveJob = {
 
 export type Job = {
     id: string;
-    action: 'copy' | 'move' | 'delete' | 'rename';
+    action: 'copy' | 'move' | 'delete' | 'rename' | 'empty';
     status: 'processing' | 'completed' | 'failed';
     source: string;
     destination: string;
+    operation_mode?: 'trash' | 'delete' | null;
     current_phase?: string | null;
     processed: number;
     failed_count: number;
@@ -43,6 +44,7 @@ export type Job = {
     current_chunk: number;
     total_chunks: number;
     file_name: string;
+    child_job_ids?: string[];
     // Per-file and overall progress
     total_files?: number;
     current_file_bytes?: number;

@@ -62,7 +62,7 @@ class TarRestoreEngine {
         $this->lock_file     = $this->dest . '/.tar_lock';
 
         $max_time = (int) ini_get( 'max_execution_time' );
-        $this->time_budget = max( 10, $max_time > 0 ? (int) ( $max_time * 0.6 ) : 20 );
+        $this->time_budget = $max_time > 0 ? max( 1, (int) floor( $max_time * 0.6 ) ) : 20;
 
         $this->chunk_size = intval( anibas_fm_get_option( 'chunk_size', ANIBAS_FM_DEFAULT_CHUNK_SIZE ) );
         if ( $this->chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN ) $this->chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
@@ -219,7 +219,7 @@ class TarRestoreEngine {
         fclose( $fh );
 
         $tmp = $this->manifest_file . '.tmp';
-        file_put_contents( $tmp, json_encode( [
+        file_put_contents( $tmp, wp_json_encode( [
             'total'      => count( $entries ),
             'total_size' => $total_size,
             'entries'    => $entries,
@@ -247,7 +247,7 @@ class TarRestoreEngine {
 
     private function save_state( array $state ) {
         $tmp = $this->state_file . '.tmp';
-        file_put_contents( $tmp, json_encode( $state ) );
+        file_put_contents( $tmp, wp_json_encode( $state ) );
         rename( $tmp, $this->state_file );
     }
 
@@ -274,7 +274,7 @@ class TarRestoreEngine {
         }
 
         $real_ancestor = realpath( $check_dir );
-        if ( $real_ancestor === false || strpos( $real_ancestor, $base ) !== 0 ) {
+        if ( $base === false || $real_ancestor === false || ! $this->path_is_inside( $real_ancestor, $base ) || is_link( $target ) ) {
             throw new Exception( 'Path traversal attempt: ' . esc_html( $name ) );
         }
 
@@ -283,6 +283,12 @@ class TarRestoreEngine {
         }
 
         return $target;
+    }
+
+    private function path_is_inside( string $path, string $base ): bool {
+        $path = untrailingslashit( wp_normalize_path( $path ) );
+        $base = untrailingslashit( wp_normalize_path( $base ) );
+        return $path === $base || str_starts_with( $path . '/', trailingslashit( $base ) );
     }
 
     /* ------------------------------------- */

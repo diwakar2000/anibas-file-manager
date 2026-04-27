@@ -26,6 +26,26 @@
 			return `Assembling file...`;
 		}
 
+		if (job.action === 'empty') {
+			if (job.current_file && job.current_phase === 'transfer' && job.operation_mode === 'trash') {
+				return `Moving to trash: ${job.current_file}`;
+			}
+
+			if (job.current_file && job.current_phase === 'delete') {
+				return `Deleting: ${job.current_file}`;
+			}
+
+			if (job.current_phase === 'list') {
+				return job.operation_mode === 'trash' ? 'Preparing items for trash...' : 'Listing files...';
+			}
+
+			if (job.current_phase === 'transfer' && job.operation_mode === 'trash') {
+				return 'Moving items to trash...';
+			}
+
+			return job.operation_mode === 'trash' ? 'Moving folder contents to trash...' : 'Deleting folder contents...';
+		}
+
 		// Per-file progress for background transfer jobs
 		if (job.current_file && job.current_phase === 'transfer') {
 			const fileProgress = job.current_file_size
@@ -80,7 +100,7 @@
 	function showProgressBar(job: Job): boolean {
 		return job.type === 'assembly'
 			|| (!!job.current_file_size && job.current_file_size > 0)
-			|| (job.action === 'delete' && !!job.total_files);
+			|| ((job.action === 'delete' || job.action === 'empty') && !!job.total_files);
 	}
 
 	function getFilesCounter(job: Job): string {
@@ -132,11 +152,19 @@
 			<div class="job-status">
 				<div class="job-info">
 					<span class="job-action">
-						{job.action === 'delete' ? '🗑 Deleting' : job.action === 'copy' ? '📋 Copying' : job.action === 'rename' ? '✏️ Renaming' : '📦 Moving'}
+						{job.action === 'empty'
+							? (job.operation_mode === 'trash' ? '🗑 Moving to Trash' : '🗑 Deleting Contents')
+							: job.action === 'delete'
+								? '🗑 Deleting'
+								: job.action === 'copy'
+									? '📋 Copying'
+									: job.action === 'rename'
+										? '✏️ Renaming'
+										: '📦 Moving'}
 					</span>
 					<span class="job-paths">
 						{job.source ? job.source.split('/').pop() : job.file_name || 'Unknown'}
-						{#if job.action !== 'delete' && job.action !== 'rename'}
+						{#if job.action !== 'delete' && job.action !== 'rename' && job.action !== 'empty'}
 							→
 							{job.destination ? job.destination.split('/').pop() : 'Destination'}
 						{/if}

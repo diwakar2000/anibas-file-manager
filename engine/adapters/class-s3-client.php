@@ -73,7 +73,7 @@ class AnibasS3Client
 
 		if ($this->path_style && $this->endpoint) {
 			// Path-style with custom endpoint: endpoint/bucket/key
-			$parsed = parse_url($this->endpoint);
+			$parsed = wp_parse_url($this->endpoint);
 			$scheme = $parsed['scheme'] ?? 'https';
 			$host   = $parsed['host'];
 			if (isset($parsed['port'])) {
@@ -586,7 +586,7 @@ class AnibasS3Client
 
 		$final_query = $canonical_query_string . '&X-Amz-Signature=' . rawurlencode($signature);
 
-		$parsed = parse_url($req['url']);
+		$parsed = wp_parse_url($req['url']);
 		$url = $parsed['scheme'] . '://' . $parsed['host'];
 		if (isset($parsed['port'])) {
 			$url .= ':' . $parsed['port'];

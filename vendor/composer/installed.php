@@ -3,7 +3,7 @@
         'name' => 'diwakar/anibas-file-manager',
         'pretty_version' => 'dev-main',
         'version' => 'dev-main',
-        'reference' => '8b6f5f872e93e51be39b4988fa359311f4ae147f',
+        'reference' => '667ef9541fb0a2257100fcefa03f84abae110a9f',
         'type' => 'library',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
@@ -13,7 +13,7 @@
         'diwakar/anibas-file-manager' => array(
             'pretty_version' => 'dev-main',
             'version' => 'dev-main',
-            'reference' => '8b6f5f872e93e51be39b4988fa359311f4ae147f',
+            'reference' => '667ef9541fb0a2257100fcefa03f84abae110a9f',
             'type' => 'library',
             'install_path' => __DIR__ . '/../../',
             'aliases' => array(),

@@ -180,6 +180,9 @@ class Anibas_File_Manager_Main
 						'backupPoll'          => ANIBAS_FM_BACKUP_POLL,
 						'backupCancel'        => ANIBAS_FM_BACKUP_CANCEL,
 						'backupStatus'        => ANIBAS_FM_BACKUP_STATUS,
+						'deleteFileBackup'    => ANIBAS_FM_DELETE_FILE_BACKUP,
+						'deleteFileBackupTree' => ANIBAS_FM_DELETE_FILE_BACKUP_TREE,
+						'deleteSiteBackup'    => ANIBAS_FM_DELETE_SITE_BACKUP,
 					),
 					'listNonce'      => wp_create_nonce(ANIBAS_FM_NONCE_LIST),
 					'createNonce'    => wp_create_nonce(ANIBAS_FM_NONCE_CREATE),
@@ -192,6 +195,7 @@ class Anibas_File_Manager_Main
 					'hasDeletePassword'      => ! empty(anibas_fm_get_option('delete_password_hash', '')),
 					'fmPasswordRequired'     => ! empty(anibas_fm_get_option('fm_password_hash', '')),
 					'fmRefreshRequired'      => (bool) anibas_fm_get_option('fm_password_refresh_required', true),
+					'deleteToTrash'          => (bool) anibas_fm_get_option('delete_to_trash', false),
 					'pluginUrl'              => ANIBAS_FILE_MANAGER_PLUGIN_URL,
 				)
 			);
@@ -226,7 +230,10 @@ class Anibas_File_Manager_Main
 						'backupStatus'        => ANIBAS_FM_BACKUP_STATUS,
 						'listFileBackups'     => ANIBAS_FM_LIST_FILE_BACKUPS,
 						'restoreFileBackup'   => ANIBAS_FM_RESTORE_FILE_BACKUP,
+						'deleteFileBackup'    => ANIBAS_FM_DELETE_FILE_BACKUP,
+						'deleteFileBackupTree' => ANIBAS_FM_DELETE_FILE_BACKUP_TREE,
 						'listSiteBackups'     => ANIBAS_FM_LIST_SITE_BACKUPS,
+						'deleteSiteBackup'    => ANIBAS_FM_DELETE_SITE_BACKUP,
 					),
 					'nonce'          => wp_create_nonce(ANIBAS_FM_NONCE_SETTINGS),
 					'listNonce'      => wp_create_nonce(ANIBAS_FM_NONCE_LIST),

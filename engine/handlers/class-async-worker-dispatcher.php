@@ -28,10 +28,13 @@ class AsyncWorkerDispatcher
         $url    = admin_url('admin-ajax.php');
         ActivityLogger::log_message('[AsyncWorkerDispatcher] dispatch() targeting URL: ' . $url);
 
+        // Intentionally NOT passing $_COOKIE: the loopback authenticates via the
+        // server-to-server secret and hits the nopriv endpoint. Forwarding cookies
+        // would (a) cause PHP session locking when the originating request still
+        // holds the session, and (b) unnecessarily authenticate the loopback.
         $args = [
-            'timeout'   => 1.0,
+            'timeout'   => 0.1,
             'blocking'  => false,
-            'cookies'   => $_COOKIE,
             'sslverify' => apply_filters('https_local_ssl_verify', false),
             'body'      => [
                 'action'        => 'anibas_fm_run_worker',
@@ -61,7 +64,8 @@ class AsyncWorkerDispatcher
         }
 
         foreach ($queue as $job) {
-            if (in_array($job['status'], ['pending', 'processing', 'retrying'], true)) {
+            $status = $job['status'] ?? '';
+            if (in_array($status, ['pending', 'processing', 'retrying'], true)) {
                 return true;
             }
         }

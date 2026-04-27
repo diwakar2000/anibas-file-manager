@@ -5,10 +5,12 @@
         selectedPaths = [],
         onClose,
         onSave,
+        authToken = null,
     } = $props<{
         selectedPaths: string[];
         onClose: () => void;
         onSave: (paths: string[]) => void;
+        authToken?: string | null;
     }>();
 
     const config = (window as any).AnibasFMSettings;
@@ -46,9 +48,12 @@
         try {
             const url = new URL(config.ajaxURL);
             url.searchParams.set("action", config.actions.getFileList);
-            url.searchParams.set("nonce", config.listNonce);
+            url.searchParams.set("nonce", config.nonce);
             url.searchParams.set("dir", path);
             url.searchParams.set("page", "1");
+            if (authToken) {
+                url.searchParams.set("token", authToken);
+            }
 
             const res = await fetch(url.toString());
             const json = await res.json();

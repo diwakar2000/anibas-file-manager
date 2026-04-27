@@ -1,12 +1,12 @@
 <script lang="ts">
 	import ConnectionStatus from '../ConnectionStatus.svelte'
 	
-	let { settings = $bindable() } = $props<{ settings: any }>()
+	let { settings = $bindable(), authToken = null } = $props<{ settings: any, authToken?: string | null }>()
 </script>
 
 <div class="settings-section">
 	<div class="form-group">
-		<ConnectionStatus type="ftp" {settings} bind:enabled={settings.enabled}>
+		<ConnectionStatus type="ftp" {settings} {authToken} bind:enabled={settings.enabled}>
 			Enable FTP/FTPS Connection
 		</ConnectionStatus>
 	</div>

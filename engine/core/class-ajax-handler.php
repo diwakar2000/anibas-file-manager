@@ -30,6 +30,40 @@ class AjaxHandler
         }
     }
 
+    protected function send_json_and_exit($response = null, string $type = 'success', ?int $status_code = null, array $cleanup_transients = []): void
+    {
+        foreach ($cleanup_transients as $transient) {
+            if (is_string($transient) && $transient !== '') {
+                delete_transient($transient);
+            }
+        }
+
+        if ($type === 'error') {
+            wp_send_json_error($response, $status_code);
+            return;
+        }
+
+        wp_send_json_success($response, $status_code);
+    }
+
+    protected function send_success($response = null, ?int $status_code = null, array $cleanup_transients = []): void
+    {
+        $this->send_json_and_exit($response, 'success', $status_code, $cleanup_transients);
+    }
+
+    protected function send_error($response = null, ?int $status_code = null, array $cleanup_transients = []): void
+    {
+        $this->send_json_and_exit($response, 'error', $status_code, $cleanup_transients);
+    }
+
+    protected function send_wp_error(\WP_Error $error, ?int $status_code = null, array $cleanup_transients = []): void
+    {
+        $this->send_error([
+            'error'   => $error->get_error_code(),
+            'message' => $error->get_error_message(),
+        ], $status_code, $cleanup_transients);
+    }
+
     /* =========================================================
        PRIVILEGE / NONCE / TOKEN CHECKS
     ========================================================= */
@@ -37,14 +71,14 @@ class AjaxHandler
     protected function check_admin_privilege()
     {
         if (! current_user_can('manage_options')) {
-            wp_send_json_error(esc_html__('Unauthorized', 'anibas-file-manager'), 403);
+            $this->send_error(esc_html__('Unauthorized', 'anibas-file-manager'), 403);
         }
     }
 
     protected function check_nonce($nonce = '')
     {
         if (! wp_verify_nonce(anibas_fm_fetch_request_variable('request', 'nonce'), $nonce)) {
-            wp_send_json_error(esc_html__('Invalid nonce.', 'anibas-file-manager'), 401);
+            $this->send_error(esc_html__('Invalid nonce.', 'anibas-file-manager'), 401);
         }
     }
 
@@ -91,7 +125,7 @@ class AjaxHandler
         }
 
         if (anibas_fm_is_backup_running()) {
-            wp_send_json_error(
+            $this->send_error(
                 array('error' => 'BackupInProgress', 'message' => esc_html__('A site backup is in progress. Please wait until it completes.', 'anibas-file-manager')),
                 423 // HTTP 423 Locked
             );
@@ -100,14 +134,44 @@ class AjaxHandler
 
     protected function check_backup_privilege()
     {
+        $nonce = anibas_fm_fetch_request_variable('request', 'nonce');
+
+        if (wp_verify_nonce($nonce, ANIBAS_FM_NONCE_SETTINGS)) {
+            $this->check_admin_privilege();
+            $this->check_settings_auth();
+            return;
+        }
+
         $this->check_nonce(ANIBAS_FM_NONCE_CREATE);
         $this->check_admin_privilege();
+        $this->check_fm_token();
     }
 
     protected function check_save_settings_privilege()
     {
         $this->check_nonce(ANIBAS_FM_NONCE_SETTINGS);
         $this->check_admin_privilege();
+    }
+
+    protected function check_settings_auth(): void
+    {
+        if (! $this->has_valid_settings_auth()) {
+            $this->send_error(esc_html__('Invalid authentication', 'anibas-file-manager'), 401);
+        }
+    }
+
+    protected function has_valid_settings_auth(): bool
+    {
+        $settings_hash = anibas_fm_get_option('settings_password_hash', '');
+        if (empty($settings_hash)) {
+            return true;
+        }
+
+        $user_id      = get_current_user_id();
+        $token        = anibas_fm_fetch_request_variable('request', 'token', '');
+        $stored_token = get_transient('anibas_fm_auth_' . $user_id);
+
+        return $token && is_string($stored_token) && hash_equals($stored_token, $token);
     }
 
     /**
@@ -117,23 +181,35 @@ class AjaxHandler
      */
     protected function check_fm_token(): void
     {
-        $fm_hash = anibas_fm_get_option('fm_password_hash', '');
-        if (empty($fm_hash)) {
-            return; // FM password not configured — no gate
+        if (! $this->fm_password_is_configured()) {
+            return;
         }
 
-        $user_id   = get_current_user_id();
-        $raw_token = anibas_fm_fetch_request_variable('request', 'fm_token', '');
-
-        if (empty($raw_token)) {
-            wp_send_json_error(array('error' => 'FMTokenRequired', 'message' => esc_html__('File manager authentication required', 'anibas-file-manager')), 401);
+        if (! anibas_fm_fetch_request_variable('request', 'fm_token', '')) {
+            $this->send_error(array('error' => 'FMTokenRequired', 'message' => esc_html__('File manager authentication required', 'anibas-file-manager')), 401);
         }
 
+        if (! $this->has_valid_fm_token()) {
+            $this->send_error(array('error' => 'FMTokenRequired', 'message' => esc_html__('File manager session expired. Please re-enter your password.', 'anibas-file-manager')), 401);
+        }
+    }
+
+    protected function fm_password_is_configured(): bool
+    {
+        return ! empty(anibas_fm_get_option('fm_password_hash', ''));
+    }
+
+    protected function has_valid_fm_token(): bool
+    {
+        if (! $this->fm_password_is_configured()) {
+            return true;
+        }
+
+        $user_id     = get_current_user_id();
+        $raw_token   = anibas_fm_fetch_request_variable('request', 'fm_token', '');
         $stored_hash = get_transient('anibas_fm_fm_token_' . $user_id);
 
-        if (! $stored_hash || ! hash_equals($stored_hash, hash('sha256', $raw_token))) {
-            wp_send_json_error(array('error' => 'FMTokenRequired', 'message' => esc_html__('File manager session expired. Please re-enter your password.', 'anibas-file-manager')), 401);
-        }
+        return $raw_token && $stored_hash && hash_equals($stored_hash, hash('sha256', $raw_token));
     }
 
     /* =========================================================
@@ -188,15 +264,15 @@ class AjaxHandler
         return $full_path;
     }
 
-    protected function get_storage_adapter($storage)
+    protected function get_storage_adapter($storage, array $cleanup_transients = [])
     {
         try {
             $adapter = StorageManager::get_instance()->get_adapter($storage);
         } catch (\Throwable $e) {
-            wp_send_json_error(array(
+            $this->send_error(array(
                 'error'   => 'StorageConnectionFailed',
                 'message' => esc_html($e->getMessage()),
-            ));
+            ), null, $cleanup_transients);
         }
         return $adapter;
     }

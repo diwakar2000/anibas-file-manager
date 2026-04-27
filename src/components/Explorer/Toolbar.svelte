@@ -490,7 +490,14 @@
 
 	{#each getJobsArray() as job}
 		<span class="job-indicator">
-			⏳ {job.action === "copy" ? "Copying" : "Moving"}: {job.source} → {job.destination}
+			⏳ {job.action === "empty"
+				? (job.operation_mode === "trash" ? "Moving to trash" : "Deleting contents")
+				: job.action === "copy"
+					? "Copying"
+					: "Moving"}: {job.source}
+			{#if job.action !== "empty"}
+				→ {job.destination}
+			{/if}
 			{#if job.current_phase}
 				<span class="job-phase">({job.current_phase})</span>
 			{/if}

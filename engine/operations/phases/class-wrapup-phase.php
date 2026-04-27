@@ -15,20 +15,27 @@ class WrapupPhase extends OperationPhase
         $start_time = $context['start_time'];
         $time_limit = $context['time_limit'];
 
-        // For move operations, delete the source folder
-        if ($job['action'] === 'move' && $fs->is_dir($job['source_root'])) {
-            $this->delete_empty_folders_iterative($job, $work_queue, $fs, $start_time, $time_limit);
+        $remove_source = ! empty($job['remove_source']) || $job['action'] === 'move';
 
-            // Check if we need more time
-            if ((microtime(true) - $start_time) >= $time_limit) {
-                return; // Will resume on next request
+        // For move-style operations, delete the now-empty source folder tree.
+        if ($remove_source && $fs->is_dir($job['source_root'])) {
+            if ($this->has_spooled_sources($job)) {
+                $this->delete_spooled_source_folders($job, $work_queue, $fs, $start_time, $time_limit);
+            } else {
+                $this->delete_empty_folders_iterative($job, $work_queue, $fs, $start_time, $time_limit);
+            }
+
+            if (! empty($work_queue['folders_to_delete'])
+                || ! empty($work_queue['sources_reverse_cursor'])
+                || (microtime(true) - $start_time) >= $time_limit) {
+                return;
             }
         }
 
         // Log activity
         $source_root = is_array($job['source_root']) ? $job['source_root']['path'] ?? '' : $job['source_root'];
         $item_name = basename($source_root);
-        $action = match ($job['action']) {
+        $action = match ($remove_source ? 'move' : $job['action']) {
             'move' => 'moved',
             'copy' => 'copied',
             'delete' => 'deleted',
@@ -39,6 +46,52 @@ class WrapupPhase extends OperationPhase
         $job['status'] = 'completed';
         $job['completed_at'] = time();
         delete_option($job['work_queue_id']);
+    }
+
+    private function has_spooled_sources(array $job): bool
+    {
+        return ! empty($job['id']) && JobQueueSpool::exists($job['id'], 'sources');
+    }
+
+    private function delete_spooled_source_folders(&$job, &$work_queue, $fs, $start_time, $time_limit): void
+    {
+        $job_id = (string) ($job['id'] ?? '');
+        if (! isset($work_queue['sources_reverse_cursor'])) {
+            $work_queue['sources_reverse_cursor'] = JobQueueSpool::size($job_id, 'sources');
+        }
+
+        while (! empty($work_queue['sources_reverse_cursor']) && (microtime(true) - $start_time) < $time_limit) {
+            $peek = JobQueueSpool::previous($job_id, 'sources', (int) $work_queue['sources_reverse_cursor']);
+            $work_queue['sources_reverse_cursor'] = $peek['previous_cursor'];
+            $entry = $peek['item'];
+            if ($entry === null || empty($entry['path'])) {
+                continue;
+            }
+            $this->delete_source_folder_once($job, $fs, $entry['path']);
+        }
+    }
+
+    private function delete_source_folder_once(&$job, $fs, string $folder_path): void
+    {
+        if ($folder_path === '') {
+            return;
+        }
+
+        try {
+            $rm = method_exists($fs, 'queuedRmdir')
+                ? $fs->queuedRmdir($folder_path, (string) ($job['source_root'] ?? ''))
+                : ($fs->is_dir($folder_path) ? $fs->rmdir($folder_path) : true);
+            if ($rm === false) {
+                $message = basename($folder_path) . esc_html__('/: Failed to remove source folder after move', 'anibas-file-manager');
+                $job['failed_count']++;
+                $job['errors'][] = $message;
+                ActivityLogger::get_instance()->log_message('Move cleanup rmdir failed for: ' . $folder_path);
+            }
+        } catch (\Exception $e) {
+            $job['failed_count']++;
+            $job['errors'][] = basename($folder_path) . '/: ' . $e->getMessage();
+            ActivityLogger::get_instance()->log_message('Move cleanup failed for ' . $folder_path . ' - ' . $e->getMessage());
+        }
     }
 
     private function delete_empty_folders_iterative(&$job, &$work_queue, $fs, $start_time, $time_limit)
@@ -74,7 +127,7 @@ class WrapupPhase extends OperationPhase
 
         // Phase 2: Deletion - Delete empty folders
         if ($work_queue['phase'] === 'deletion') {
-            $this->deletion_phase($work_queue, $fs, $start_time, $time_limit);
+            $this->deletion_phase($job, $work_queue, $fs, $start_time, $time_limit);
         }
 
         // Clean up queue when done
@@ -132,7 +185,7 @@ class WrapupPhase extends OperationPhase
         }
     }
 
-    private function deletion_phase(&$work_queue, $fs, $start_time, $time_limit)
+    private function deletion_phase(&$job, &$work_queue, $fs, $start_time, $time_limit)
     {
         $previous_skipped_count = -1;
 
@@ -182,11 +235,12 @@ class WrapupPhase extends OperationPhase
             $previous_skipped_count = count($work_queue['folders_to_delete']);
         }
 
-        // Reset to discovery phase if folders to delete is not empty and count equals skipped count
         if (! empty($work_queue['folders_to_delete']) && $previous_skipped_count === count($work_queue['folders_to_delete'])) {
-            ActivityLogger::get_instance()->log_message('No progress made, resetting to discovery phase');
-            $work_queue['phase'] = 'discovery';
-            $work_queue['scanned_folders'] = [];
+            $message = esc_html__('Move cleanup failed because some source folders are still not empty.', 'anibas-file-manager');
+            ActivityLogger::get_instance()->log_message('No progress made, failing move cleanup');
+            $job['failed_count']++;
+            $job['errors'][] = $message;
+            $work_queue['folders_to_delete'] = [];
         }
     }
 
@@ -218,7 +272,7 @@ class WrapupPhase extends OperationPhase
 
     public function is_complete($work_queue)
     {
-        return empty($work_queue['folders_to_delete']);
+        return empty($work_queue['folders_to_delete']) && empty($work_queue['sources_reverse_cursor']);
     }
 
     public function next_phase()

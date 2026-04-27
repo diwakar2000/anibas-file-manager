@@ -37,7 +37,7 @@ class AuthAjaxHandler extends AjaxHandler
         $att_key  = 'anibas_fm_fm_pwd_attempts_' . $user_id;
 
         if (get_transient($lock_key)) {
-            wp_send_json_error(esc_html__('Too many attempts. Please wait 5 minutes.', 'anibas-file-manager'), 429);
+            $this->send_error(esc_html__('Too many attempts. Please wait 5 minutes.', 'anibas-file-manager'), 429);
         }
 
         $password  = anibas_fm_fetch_request_variable('post', 'password', '');
@@ -49,11 +49,11 @@ class AuthAjaxHandler extends AjaxHandler
                 delete_transient($att_key);
                 set_transient($lock_key, true, 300);
                 sleep(1);
-                wp_send_json_error(esc_html__('Too many failed attempts. Locked for 5 minutes.', 'anibas-file-manager'), 429);
+                $this->send_error(esc_html__('Too many failed attempts. Locked for 5 minutes.', 'anibas-file-manager'), 429);
             }
             set_transient($att_key, $attempts, 300);
             sleep(1);
-            wp_send_json_error(esc_html__('Invalid password', 'anibas-file-manager'), 401);
+            $this->send_error(esc_html__('Invalid password', 'anibas-file-manager'), 401);
         }
 
         // Correct — issue token
@@ -62,7 +62,7 @@ class AuthAjaxHandler extends AjaxHandler
         $token_hash  = hash('sha256', $raw_token);
         set_transient('anibas_fm_fm_token_' . $user_id, $token_hash, 12 * HOUR_IN_SECONDS);
 
-        wp_send_json_success(array('token' => $raw_token));
+        $this->send_success(array('token' => $raw_token));
     }
 
     /* =========================================================
@@ -78,7 +78,7 @@ class AuthAjaxHandler extends AjaxHandler
         $lock_key    = 'anibas_fm_fm_auth_lock_' . $user_id;
 
         if (get_transient($lock_key)) {
-            wp_send_json_error(array('error' => 'FMTokenRequired', 'message' => esc_html__('Too many attempts.', 'anibas-file-manager')), 429);
+            $this->send_error(array('error' => 'FMTokenRequired', 'message' => esc_html__('Too many attempts.', 'anibas-file-manager')), 429);
         }
 
         $raw_token   = anibas_fm_fetch_request_variable('post', 'token', '');
@@ -87,7 +87,7 @@ class AuthAjaxHandler extends AjaxHandler
         sleep(1); // timing-safe constant delay
 
         if ($raw_token && $stored_hash && hash_equals($stored_hash, hash('sha256', $raw_token))) {
-            wp_send_json_success();
+            $this->send_success();
         } else {
             $retry = (int) get_transient('anibas_fm_fm_auth_retry_' . $user_id);
             if ($retry >= 3) {
@@ -96,7 +96,7 @@ class AuthAjaxHandler extends AjaxHandler
             } else {
                 set_transient('anibas_fm_fm_auth_retry_' . $user_id, $retry + 1, 300);
             }
-            wp_send_json_error(array('error' => 'FMTokenRequired', 'message' => esc_html__('Session expired', 'anibas-file-manager')), 401);
+            $this->send_error(array('error' => 'FMTokenRequired', 'message' => esc_html__('Session expired', 'anibas-file-manager')), 401);
         }
     }
 
@@ -109,7 +109,7 @@ class AuthAjaxHandler extends AjaxHandler
         $attempts_key = 'anibas_fm_delete_pwd_attempts_' . $user_id;
 
         if (get_transient($lock_key)) {
-            wp_send_json_error(esc_html__('Too many attempts. Please wait.', 'anibas-file-manager'), 429);
+            $this->send_error(esc_html__('Too many attempts. Please wait.', 'anibas-file-manager'), 429);
         }
 
         $password = anibas_fm_fetch_request_variable('post', 'password', '');
@@ -119,7 +119,7 @@ class AuthAjaxHandler extends AjaxHandler
             delete_transient($attempts_key);
             $token = wp_generate_password(32, false);
             set_transient('anibas_fm_delete_auth_' . $user_id, $token, 60);
-            wp_send_json_success(array('token' => $token));
+            $this->send_success(array('token' => $token));
         } else {
             $attempts = (int) get_transient($attempts_key);
             $attempts++;
@@ -128,11 +128,11 @@ class AuthAjaxHandler extends AjaxHandler
             if ($attempts >= 5) {
                 set_transient($lock_key, true, 300);
                 delete_transient($attempts_key);
-                wp_send_json_error(esc_html__('Too many failed attempts. Locked for 5 minutes.', 'anibas-file-manager'), 429);
+                $this->send_error(esc_html__('Too many failed attempts. Locked for 5 minutes.', 'anibas-file-manager'), 429);
             }
 
             sleep(1);
-            wp_send_json_error(esc_html__('Invalid password', 'anibas-file-manager'), 401);
+            $this->send_error(esc_html__('Invalid password', 'anibas-file-manager'), 401);
         }
     }
 
@@ -145,7 +145,7 @@ class AuthAjaxHandler extends AjaxHandler
         $attempts_key = 'anibas_fm_settings_pwd_attempts_' . $user_id;
 
         if (get_transient($lock_key)) {
-            wp_send_json_error(esc_html__('Too many attempts. Please wait.', 'anibas-file-manager'), 429);
+            $this->send_error(esc_html__('Too many attempts. Please wait.', 'anibas-file-manager'), 429);
         }
 
         $password = anibas_fm_fetch_request_variable('post', 'password', '');
@@ -155,7 +155,7 @@ class AuthAjaxHandler extends AjaxHandler
             delete_transient($attempts_key);
             $token = wp_generate_password(32, false);
             set_transient('anibas_fm_auth_' . $user_id, $token, HOUR_IN_SECONDS);
-            wp_send_json_success(array('token' => $token));
+            $this->send_success(array('token' => $token));
         } else {
             $attempts = (int) get_transient($attempts_key);
             $attempts++;
@@ -164,18 +164,18 @@ class AuthAjaxHandler extends AjaxHandler
             if ($attempts >= 5) {
                 set_transient($lock_key, true, 300);
                 delete_transient($attempts_key);
-                wp_send_json_error(esc_html__('Too many failed attempts. Locked for 5 minutes.', 'anibas-file-manager'), 429);
+                $this->send_error(esc_html__('Too many failed attempts. Locked for 5 minutes.', 'anibas-file-manager'), 429);
             }
 
             sleep(1);
-            wp_send_json_error(esc_html__('Invalid password', 'anibas-file-manager'), 401);
+            $this->send_error(esc_html__('Invalid password', 'anibas-file-manager'), 401);
         }
     }
 
     public function check_auth()
     {
         if (get_transient('anibas_fm_auth_' . get_current_user_id() . '_lock')) {
-            wp_send_json_error(esc_html__('Too many attempts. Please try again later.', 'anibas-file-manager'), 429);
+            $this->send_error(esc_html__('Too many attempts. Please try again later.', 'anibas-file-manager'), 429);
         }
 
         $this->check_save_settings_privilege();
@@ -188,7 +188,7 @@ class AuthAjaxHandler extends AjaxHandler
         if ($token && is_string($stored_token) && hash_equals($stored_token, $token)) {
             delete_transient('anibas_fm_auth_' . get_current_user_id() . '_retry');
             set_transient('anibas_fm_auth_' . get_current_user_id(), $token, HOUR_IN_SECONDS);
-            wp_send_json_success();
+            $this->send_success();
         } else {
             $retry = (int) get_transient('anibas_fm_auth_' . get_current_user_id() . '_retry');
             if ($retry < 3) {
@@ -197,7 +197,7 @@ class AuthAjaxHandler extends AjaxHandler
                 delete_transient('anibas_fm_auth_' . get_current_user_id() . '_retry');
                 set_transient('anibas_fm_auth_' . get_current_user_id() . '_lock', true, 300);
             }
-            wp_send_json_error(esc_html__('Invalid token', 'anibas-file-manager'), 401);
+            $this->send_error(esc_html__('Invalid token', 'anibas-file-manager'), 401);
         }
     }
 
@@ -208,7 +208,7 @@ class AuthAjaxHandler extends AjaxHandler
         $path = anibas_fm_fetch_request_variable('post', 'path', '');
 
         if (empty($path)) {
-            wp_send_json_error(array('error' => esc_html__('Path required', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Path required', 'anibas-file-manager')));
         }
 
         $user_id = get_current_user_id();
@@ -218,6 +218,6 @@ class AuthAjaxHandler extends AjaxHandler
         // Store token for 1 minute
         set_transient($token_key, $token, 60);
 
-        wp_send_json_success(array('delete_token' => $token));
+        $this->send_success(array('delete_token' => $token));
     }
 }

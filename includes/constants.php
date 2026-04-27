@@ -68,7 +68,10 @@ define( 'ANIBAS_FM_EMPTY_TRASH', 'anibas_fm_empty_trash' );
 define( 'ANIBAS_FM_BACKUP_SINGLE_FILE', 'anibas_fm_backup_single_file' );
 define( 'ANIBAS_FM_LIST_FILE_BACKUPS', 'anibas_fm_list_file_backups' );
 define( 'ANIBAS_FM_RESTORE_FILE_BACKUP', 'anibas_fm_restore_file_backup' );
+define( 'ANIBAS_FM_DELETE_FILE_BACKUP', 'anibas_fm_delete_file_backup' );
+define( 'ANIBAS_FM_DELETE_FILE_BACKUP_TREE', 'anibas_fm_delete_file_backup_tree' );
 define( 'ANIBAS_FM_LIST_SITE_BACKUPS', 'anibas_fm_list_site_backups' );
+define( 'ANIBAS_FM_DELETE_SITE_BACKUP', 'anibas_fm_delete_site_backup' );
 
 // Temp Operations
 define( 'ANIBAS_FM_TEMP_MAX_AGE', 86400 ); // 24 hours

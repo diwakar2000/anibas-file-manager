@@ -28,21 +28,20 @@ class FileCrudAjaxHandler extends AjaxHandler
 
     public function get_file_list()
     {
-        $this->check_privilege();
-
         $dir = anibas_fm_fetch_request_variable('get', 'dir', '/');
         $page = intval(anibas_fm_fetch_request_variable('get', 'page', 1));
         $storage = anibas_fm_fetch_request_variable('get', 'storage', 'local');
+        $this->check_file_list_privilege($storage);
 
         if ($storage !== 'local') {
             $adapter = $this->get_storage_adapter($storage);
             if (! $adapter) {
-                wp_send_json_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
+                $this->send_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
             }
 
             try {
                 $result = $adapter->listDirectory($dir);
-                wp_send_json_success(array(
+                $this->send_success(array(
                     'path' => $dir,
                     'page' => $page,
                     'page_size' => ANIBAS_FILE_MANAGER_DEFAULT_FILE_SIZE,
@@ -51,16 +50,29 @@ class FileCrudAjaxHandler extends AjaxHandler
                     'items' => $result['items']
                 ));
             } catch (\Exception $e) {
-                wp_send_json_error(array('error' => esc_html($e->getMessage())));
+                $this->send_error(array('error' => esc_html($e->getMessage())));
             }
         } else {
             if ($path = $this->validate_path($dir)) {
                 $fm = new LocalFileSystemAdapter();
-                wp_send_json_success($fm->listDirectory($path, $page, ANIBAS_FILE_MANAGER_DEFAULT_FILE_SIZE));
+                $this->send_success($fm->listDirectory($path, $page, ANIBAS_FILE_MANAGER_DEFAULT_FILE_SIZE));
             } else {
-                wp_send_json_error(array('error' => 'PathInvalid', 'message' => esc_html__('Path does not exist', 'anibas-file-manager')));
+                $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Path does not exist', 'anibas-file-manager')));
             }
         }
+    }
+
+    private function check_file_list_privilege($storage): void
+    {
+        $nonce = anibas_fm_fetch_request_variable('request', 'nonce');
+
+        if ($storage === 'local' && wp_verify_nonce($nonce, ANIBAS_FM_NONCE_SETTINGS)) {
+            $this->check_admin_privilege();
+            $this->check_settings_auth();
+            return;
+        }
+
+        $this->check_privilege();
     }
 
     public function create_folder()
@@ -72,7 +84,7 @@ class FileCrudAjaxHandler extends AjaxHandler
         $retry_key = 'anibas_fm_create_retry_' . $user_id;
 
         if (get_transient($lock_key)) {
-            wp_send_json_error(array('error' => esc_html__('Please wait before creating another folder', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Please wait before creating another folder', 'anibas-file-manager')));
         }
 
         $retry_count = get_transient($retry_key) ?: 0;
@@ -83,8 +95,7 @@ class FileCrudAjaxHandler extends AjaxHandler
 
         if ($retry_count >= 3) {
             ActivityLogger::log_retry_timeout('create_folder', $retry_count + 1);
-            delete_transient($retry_key);
-            wp_send_json_error(array('error' => esc_html__('Folder creation failed after 3 attempts. Please try again later.', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Folder creation failed after 3 attempts. Please try again later.', 'anibas-file-manager')), null, [$retry_key]);
         }
 
         set_transient($lock_key, true, ANIBAS_FM_LOCK_DURATION);
@@ -95,73 +106,53 @@ class FileCrudAjaxHandler extends AjaxHandler
         $storage = anibas_fm_fetch_request_variable('post', 'storage', 'local');
 
         if (empty($name)) {
-            delete_transient($lock_key);
-            delete_transient($retry_key);
-            wp_send_json_error(array('error' => esc_html__('Folder name required', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Folder name required', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
         }
 
         if (strpos($name, '..') !== false || strpos($name, '/') !== false || strpos($name, '\\') !== false) {
-            delete_transient($lock_key);
-            delete_transient($retry_key);
-            wp_send_json_error(array('error' => esc_html__('Invalid folder name', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Invalid folder name', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
         }
 
         sleep(ANIBAS_FM_OPERATION_DELAY);
 
         if ($storage !== 'local') {
-            $adapter = $this->get_storage_adapter($storage);
+            $adapter = $this->get_storage_adapter($storage, [$lock_key, $retry_key]);
             if (! $adapter) {
-                delete_transient($lock_key);
-                delete_transient($retry_key);
-                wp_send_json_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
+                $this->send_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
             }
 
             try {
                 $path = rtrim($parent, '/') . '/' . $name;
                 $ok   = $adapter->mkdir($path);
-                delete_transient($lock_key);
-                delete_transient($retry_key);
                 if ($ok === false) {
-                    wp_send_json_error(array('error' => esc_html__('Failed to create folder on remote storage', 'anibas-file-manager')));
+                    $this->send_error(array('error' => esc_html__('Failed to create folder on remote storage', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
                 }
-                wp_send_json_success(array('message' => esc_html__('Folder created successfully', 'anibas-file-manager')));
+                $this->send_success(array('message' => esc_html__('Folder created successfully', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
             } catch (\Exception $e) {
-                delete_transient($lock_key);
-                delete_transient($retry_key);
-                wp_send_json_error(array('error' => esc_html($e->getMessage())));
+                $this->send_error(array('error' => esc_html($e->getMessage())), null, [$lock_key, $retry_key]);
             }
         }
         $parent_path = $this->validate_path($parent);
         if (! $parent_path) {
-            delete_transient($lock_key);
-            wp_send_json_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid parent path', 'anibas-file-manager')));
+            $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid parent path', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
         }
 
         $new_folder_path = $parent_path . DIRECTORY_SEPARATOR . $name;
 
         if (file_exists($new_folder_path)) {
-            delete_transient($lock_key);
-            delete_transient($retry_key);
-            wp_send_json_error(array('error' => esc_html__('Folder already exists', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Folder already exists', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
         }
 
-        // Validate the constructed path would be safe (simulate with parent check)
         $simulated_parent = dirname($new_folder_path);
         if ($simulated_parent !== $parent_path) {
-            delete_transient($lock_key);
-            delete_transient($retry_key);
-            wp_send_json_error(array('error' => esc_html__('Invalid folder path', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Invalid folder path', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
         }
 
         $fm = new LocalFileSystemAdapter();
         if ($fm->createFolder($new_folder_path)) {
-            delete_transient($lock_key);
-            delete_transient($retry_key);
-            wp_send_json_success(array('message' => esc_html__('Folder created successfully', 'anibas-file-manager')));
+            $this->send_success(array('message' => esc_html__('Folder created successfully', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
         } else {
-            delete_transient($lock_key);
-            delete_transient($retry_key);
-            wp_send_json_error(array('error' => esc_html__('Failed to create folder', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Failed to create folder', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
         }
     }
 
@@ -174,7 +165,7 @@ class FileCrudAjaxHandler extends AjaxHandler
         $retry_key = 'anibas_fm_create_file_retry_' . $user_id;
 
         if (get_transient($lock_key)) {
-            wp_send_json_error(array('error' => esc_html__('Please wait before creating another file', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Please wait before creating another file', 'anibas-file-manager')));
         }
 
         $retry_count = get_transient($retry_key) ?: 0;
@@ -185,8 +176,7 @@ class FileCrudAjaxHandler extends AjaxHandler
 
         if ($retry_count >= 3) {
             ActivityLogger::log_retry_timeout('create_file', $retry_count + 1);
-            delete_transient($retry_key);
-            wp_send_json_error(array('error' => esc_html__('File creation failed after 3 attempts. Please try again later.', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('File creation failed after 3 attempts. Please try again later.', 'anibas-file-manager')), null, [$retry_key]);
         }
 
         set_transient($lock_key, true, ANIBAS_FM_LOCK_DURATION);
@@ -198,61 +188,47 @@ class FileCrudAjaxHandler extends AjaxHandler
         $storage = anibas_fm_fetch_request_variable('post', 'storage', 'local');
 
         if (empty($name)) {
-            delete_transient($lock_key);
-            delete_transient($retry_key);
-            wp_send_json_error(array('error' => esc_html__('File name required', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('File name required', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
         }
 
         if (strpos($name, '..') !== false || strpos($name, '/') !== false || strpos($name, '\\') !== false) {
-            delete_transient($lock_key);
-            delete_transient($retry_key);
-            wp_send_json_error(array('error' => esc_html__('Invalid file name', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Invalid file name', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
         }
 
         $max_size = min(wp_max_upload_size(), 1048576); // 1MB or WP max, whichever is less
         if (strlen($content) > $max_size) {
-            delete_transient($lock_key);
-            delete_transient($retry_key);
-            wp_send_json_error(array(/* translators: %s: formatted file size */
-                'error' => sprintf(esc_html__('Content exceeds maximum size of %s', 'anibas-file-manager'), size_format($max_size))));
+            $this->send_error(array(/* translators: %s: formatted file size */
+                'error' => sprintf(esc_html__('Content exceeds maximum size of %s', 'anibas-file-manager'), size_format($max_size))), null, [$lock_key, $retry_key]);
         }
 
         sleep(ANIBAS_FM_OPERATION_DELAY);
 
         if ($storage !== 'local') {
-            $adapter = $this->get_storage_adapter($storage);
+            $adapter = $this->get_storage_adapter($storage, [$lock_key, $retry_key]);
             if (! $adapter) {
-                delete_transient($lock_key);
-                wp_send_json_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
+                $this->send_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
             }
 
             try {
                 $path = rtrim($parent, '/') . '/' . $name;
                 $ok   = $adapter->put_contents($path, $content);
-                delete_transient($lock_key);
-                delete_transient($retry_key);
                 if ($ok === false) {
-                    wp_send_json_error(array('error' => esc_html__('Failed to create file on remote storage', 'anibas-file-manager')));
+                    $this->send_error(array('error' => esc_html__('Failed to create file on remote storage', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
                 }
-                wp_send_json_success(array('message' => esc_html__('File created successfully', 'anibas-file-manager')));
+                $this->send_success(array('message' => esc_html__('File created successfully', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
             } catch (\Exception $e) {
-                delete_transient($lock_key);
-                delete_transient($retry_key);
-                wp_send_json_error(array('error' => esc_html($e->getMessage())));
+                $this->send_error(array('error' => esc_html($e->getMessage())), null, [$lock_key, $retry_key]);
             }
         }
         $parent_path = $this->validate_path($parent);
         if (! $parent_path) {
-            delete_transient($lock_key);
-            wp_send_json_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid parent path', 'anibas-file-manager')));
+            $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid parent path', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
         }
 
         $new_file_path = $parent_path . DIRECTORY_SEPARATOR . $name;
 
         if (file_exists($new_file_path)) {
-            delete_transient($lock_key);
-            delete_transient($retry_key);
-            wp_send_json_error(array('error' => esc_html__('File already exists', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('File already exists', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
         }
 
         if (! function_exists('WP_Filesystem')) {
@@ -262,13 +238,9 @@ class FileCrudAjaxHandler extends AjaxHandler
         global $wp_filesystem;
 
         if ($wp_filesystem->put_contents($new_file_path, $content, FS_CHMOD_FILE)) {
-            delete_transient($lock_key);
-            delete_transient($retry_key);
-            wp_send_json_success(array('message' => esc_html__('File created successfully', 'anibas-file-manager')));
+            $this->send_success(array('message' => esc_html__('File created successfully', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
         } else {
-            delete_transient($lock_key);
-            delete_transient($retry_key);
-            wp_send_json_error(array('error' => esc_html__('Failed to create file', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Failed to create file', 'anibas-file-manager')), null, [$lock_key, $retry_key]);
         }
     }
 
@@ -280,7 +252,7 @@ class FileCrudAjaxHandler extends AjaxHandler
         $lock_key = 'anibas_fm_delete_lock_' . $user_id;
 
         if (get_transient($lock_key)) {
-            wp_send_json_error(array('error' => esc_html__('Please wait before deleting another item', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Please wait before deleting another item', 'anibas-file-manager')));
         }
         set_transient($lock_key, true, ANIBAS_FM_LOCK_DURATION);
 
@@ -290,56 +262,47 @@ class FileCrudAjaxHandler extends AjaxHandler
         $storage      = anibas_fm_fetch_request_variable('post', 'storage', 'local');
 
         if (empty($path)) {
-            delete_transient($lock_key);
-            wp_send_json_error(array('error' => esc_html__('Path required', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Path required', 'anibas-file-manager')), null, [$lock_key]);
         }
 
         $stored_delete_token = get_transient('anibas_fm_delete_token_' . $user_id . '_' . md5($path));
         if (! $delete_token || ! $stored_delete_token || ! hash_equals($stored_delete_token, $delete_token)) {
-            delete_transient($lock_key);
-            wp_send_json_error(array('error' => 'DeleteTokenExpired', 'message' => esc_html__('Delete confirmation expired. Please try again.', 'anibas-file-manager')));
+            $this->send_error(array('error' => 'DeleteTokenExpired', 'message' => esc_html__('Delete confirmation expired. Please try again.', 'anibas-file-manager')), null, [$lock_key]);
         }
 
         $delete_password_hash = anibas_fm_get_option('delete_password_hash', '');
         if (! empty($delete_password_hash)) {
             $stored_token = get_transient('anibas_fm_delete_auth_' . $user_id);
             if (! $token || ! $stored_token || ! hash_equals($stored_token, $token)) {
-                delete_transient($lock_key);
-                wp_send_json_error(array('error' => 'DeletePasswordRequired'));
+                $this->send_error(array('error' => 'DeletePasswordRequired'), null, [$lock_key]);
             }
         }
 
         delete_transient('anibas_fm_delete_token_' . $user_id . '_' . md5($path));
 
-        $adapter = $this->get_storage_adapter($storage);
+        $adapter = $this->get_storage_adapter($storage, [$lock_key]);
         if (! $adapter) {
-            delete_transient($lock_key);
-            wp_send_json_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')), null, [$lock_key]);
         }
 
         $full_path = $adapter->validate_path($path);
         if (! $full_path) {
-            delete_transient($lock_key);
-            wp_send_json_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid path', 'anibas-file-manager')));
+            $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid path', 'anibas-file-manager')), null, [$lock_key]);
         }
 
         $result = $adapter->delete($full_path);
-        delete_transient($lock_key);
 
         if (is_wp_error($result)) {
-            wp_send_json_error(array(
-                'error'   => $result->get_error_code(),
-                'message' => $result->get_error_message(),
-            ));
+            $this->send_wp_error($result, null, [$lock_key]);
         }
         if (is_array($result) && isset($result['job_id'])) {
-            wp_send_json_success(array('job_id' => $result['job_id']));
+            $this->send_success(array('job_id' => $result['job_id']), null, [$lock_key]);
         }
-        wp_send_json_success(array(
+        $this->send_success(array(
             'message' => anibas_fm_trash_enabled() && $storage === 'local'
                 ? esc_html__('Moved to trash', 'anibas-file-manager')
                 : esc_html__('Deleted successfully', 'anibas-file-manager'),
-        ));
+        ), null, [$lock_key]);
     }
 
     public function empty_folder()
@@ -351,7 +314,7 @@ class FileCrudAjaxHandler extends AjaxHandler
         $storage = anibas_fm_fetch_request_variable('post', 'storage', 'local');
 
         if (empty($path)) {
-            wp_send_json_error(array('error' => esc_html__('Path required', 'anibas-file-manager')));
+            $this->send_error(array('error' => esc_html__('Path required', 'anibas-file-manager')));
         }
 
         // Enforce delete password if configured
@@ -360,31 +323,65 @@ class FileCrudAjaxHandler extends AjaxHandler
         if (! empty($delete_password_hash)) {
             $stored_token = get_transient('anibas_fm_delete_auth_' . $user_id);
             if (! $token || ! $stored_token || ! hash_equals($stored_token, $token)) {
-                wp_send_json_error(array('error' => 'DeletePasswordRequired'));
+                $this->send_error(array('error' => 'DeletePasswordRequired'));
             }
         }
 
-        if ($storage !== 'local') {
-            wp_send_json_error(array('error' => esc_html__('Empty folder is only supported for local storage', 'anibas-file-manager')));
-        }
+        if ($storage === 'local') {
+            $full_path = $this->validate_path($path);
+            if (! $full_path || ! is_dir($full_path)) {
+                $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid folder path', 'anibas-file-manager')));
+            }
 
-        $full_path = $this->validate_path($path);
-        if (! $full_path || ! is_dir($full_path)) {
-            wp_send_json_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid folder path', 'anibas-file-manager')));
-        }
+            $fm     = new LocalFileSystemAdapter();
+            $result = $fm->emptyFolder($full_path);
+        } else {
+            $adapter = $this->get_storage_adapter($storage);
+            if (! $adapter) {
+                $this->send_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
+            }
 
-        $fm     = new LocalFileSystemAdapter();
-        $result = $fm->emptyFolder($full_path);
+            $full_path = $adapter->validate_path($path);
+            if (! $full_path || ! $adapter->is_dir($full_path)) {
+                $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid remote folder path', 'anibas-file-manager')));
+            }
+
+            $job_id = BackgroundProcessor::enqueue_delete_job($full_path, $storage, true);
+            if (is_wp_error($job_id)) {
+                $result = $job_id;
+            } else {
+                $group_id = 'empty_' . wp_generate_password(12, false);
+                BackgroundProcessor::annotate_jobs(array($job_id), array(
+                    'ui_group_id'     => $group_id,
+                    'ui_group_action' => 'empty',
+                    'ui_group_label'  => basename($path),
+                    'ui_group_source' => $path,
+                    'ui_group_mode'   => 'delete',
+                ));
+                $result = array(
+                    'job_ids'        => array($job_id),
+                    'group_id'       => $group_id,
+                    'operation_mode' => 'delete',
+                );
+            }
+        }
 
         if (is_wp_error($result)) {
-            wp_send_json_error(array(
-                'error'   => $result->get_error_code(),
-                'message' => $result->get_error_message(),
+            $this->send_wp_error($result);
+        }
+
+        // Frontend polls queued empty-folder jobs.
+        if (is_array($result) && isset($result['job_ids']) && is_array($result['job_ids']) && ! empty($result['job_ids'])) {
+            $this->send_success(array(
+                'job_ids'        => array_values($result['job_ids']),
+                'group_id'       => $result['group_id'] ?? null,
+                'operation_mode' => $result['operation_mode'] ?? null,
+                'message'        => esc_html__('Emptying folder in the background…', 'anibas-file-manager'),
             ));
         }
 
-        wp_send_json_success(array(
-            'message' => anibas_fm_trash_enabled()
+        $this->send_success(array(
+            'message' => anibas_fm_trash_enabled() && $storage === 'local'
                 ? esc_html__('Folder contents moved to trash', 'anibas-file-manager')
                 : esc_html__('Folder emptied successfully', 'anibas-file-manager'),
         ));
@@ -402,51 +399,60 @@ class FileCrudAjaxHandler extends AjaxHandler
         $new_name = anibas_fm_fetch_request_variable('post', 'new_name', '');
         $storage  = anibas_fm_fetch_request_variable('post', 'storage', 'local');
 
-        if (empty($path) || empty($new_name)) {
-            wp_send_json_error(array('error' => 'MissingParams', 'message' => esc_html__('Path and new name are required', 'anibas-file-manager')));
+        if ($path === '' || $new_name === '') {
+            $this->send_error(array('error' => 'MissingParams', 'message' => esc_html__('Path and new name are required', 'anibas-file-manager')));
         }
 
         // Reject path separators and null bytes in the new name
         if (preg_match('/[\/\\\\]/', $new_name) || strpos($new_name, "\0") !== false) {
-            wp_send_json_error(array('error' => 'InvalidName', 'message' => esc_html__('Name cannot contain path separators', 'anibas-file-manager')));
+            $this->send_error(array('error' => 'InvalidName', 'message' => esc_html__('Name cannot contain path separators', 'anibas-file-manager')));
         }
 
         if ($storage === 'local') {
             $full_path = $this->validate_path($path);
             if (! $full_path || ! file_exists($full_path)) {
-                wp_send_json_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid path', 'anibas-file-manager')));
+                $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid path', 'anibas-file-manager')));
             }
             $new_full_path = dirname($full_path) . DIRECTORY_SEPARATOR . $new_name;
+            $local_adapter = new LocalFileSystemAdapter();
+            if (! $local_adapter->validate_path($new_full_path)) {
+                $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid target path', 'anibas-file-manager')));
+            }
             if (file_exists($new_full_path)) {
-                wp_send_json_error(array('error' => 'AlreadyExists', /* translators: %s: file or folder name */
+                $this->send_error(array('error' => 'AlreadyExists', /* translators: %s: file or folder name */
                 'message' => sprintf(esc_html__('\'%s\' already exists in this location', 'anibas-file-manager'), esc_html($new_name))));
             }
             if (! @rename($full_path, $new_full_path)) {
-                wp_send_json_error(array('error' => 'RenameFailed', 'message' => esc_html__('Rename failed. Check file permissions.', 'anibas-file-manager')));
+                $this->send_error(array('error' => 'RenameFailed', 'message' => esc_html__('Rename failed. Check file permissions.', 'anibas-file-manager')));
             }
         } else {
-            $adapter   = StorageManager::get_instance()->get_adapter($storage);
+            $adapter   = $this->get_storage_adapter($storage);
             $full_path = $adapter->validate_path($path);
             if (! $full_path || (! $adapter->is_file($full_path) && ! $adapter->is_dir($full_path))) {
-                wp_send_json_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid path', 'anibas-file-manager')));
+                $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid path', 'anibas-file-manager')));
             }
             $dir           = rtrim(dirname($full_path), '/');
             $new_full_path = $dir . '/' . $new_name;
+            if (! $adapter->validate_path($new_full_path)) {
+                $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid target path', 'anibas-file-manager')));
+            }
             if ($adapter->exists($new_full_path)) {
-                wp_send_json_error(array('error' => 'AlreadyExists', /* translators: %s: file or folder name */
+                $this->send_error(array('error' => 'AlreadyExists', /* translators: %s: file or folder name */
                 'message' => sprintf(esc_html__('\'%s\' already exists in this location', 'anibas-file-manager'), esc_html($new_name))));
             }
 
             // Route remote rename through BackgroundProcessor (S3 rename = copy + delete,
             // which can be slow for large files/folders and would otherwise time out).
-            $job_id = BackgroundProcessor::enqueue_job($full_path, $new_full_path, 'move', 'overwrite', $storage, true);
+            $job_id = BackgroundProcessor::enqueue_job($full_path, $new_full_path, 'move', 'overwrite', $storage, [
+                'dest_is_final' => true,
+            ]);
             if (is_wp_error($job_id)) {
-                wp_send_json_error(array(
+                $this->send_error(array(
                     'error'   => 'RenameFailed',
                     'message' => $job_id->get_error_message(),
                 ));
             }
-            wp_send_json_success(array(
+            $this->send_success(array(
                 'job_id'   => $job_id,
                 /* translators: %s: new name */
                 'message'  => sprintf(esc_html__('Rename job started for \'%s\'', 'anibas-file-manager'), esc_html($new_name)),
@@ -455,7 +461,7 @@ class FileCrudAjaxHandler extends AjaxHandler
             return;
         }
 
-        wp_send_json_success(array(/* translators: %s: new name */
+        $this->send_success(array(/* translators: %s: new name */
             'message' => sprintf(esc_html__('Renamed to \'%s\' successfully', 'anibas-file-manager'), esc_html($new_name)), 'new_name' => $new_name));
     }
 
@@ -488,9 +494,12 @@ class FileCrudAjaxHandler extends AjaxHandler
             $mime = 'application/octet-stream';
             if (function_exists('finfo_open')) {
                 $finfo = finfo_open(FILEINFO_MIME_TYPE);
-                $detected = finfo_file($finfo, $full_path);
-                if ($detected) {
-                    $mime = $detected;
+                if ($finfo) {
+                    $detected = finfo_file($finfo, $full_path);
+                    if ($detected) {
+                        $mime = $detected;
+                    }
+                    finfo_close($finfo);
                 }
             } elseif (function_exists('mime_content_type')) {
                 $detected = @mime_content_type($full_path);
@@ -566,35 +575,35 @@ class FileCrudAjaxHandler extends AjaxHandler
         $limit   = 102400; // 100KB
 
         if (empty($path)) {
-            wp_send_json_error(array('error' => 'MissingParams', 'message' => esc_html__('Path is required', 'anibas-file-manager')));
+            $this->send_error(array('error' => 'MissingParams', 'message' => esc_html__('Path is required', 'anibas-file-manager')));
         }
 
         if ($storage === 'local') {
             $full_path = $this->validate_path($path);
             if (! $full_path || ! is_file($full_path)) {
-                wp_send_json_error(array('error' => 'NotFound', 'message' => esc_html__('File not found', 'anibas-file-manager')));
+                $this->send_error(array('error' => 'NotFound', 'message' => esc_html__('File not found', 'anibas-file-manager')));
             }
             $content = file_get_contents($full_path, false, null, 0, $limit);
-            wp_send_json_success(array('content' => $content));
+            $this->send_success(array('content' => $content));
         } else {
             $adapter   = StorageManager::get_instance()->get_adapter($storage);
             $full_path = $adapter->validate_path($path);
             if (! $full_path || ! $adapter->is_file($full_path)) {
-                wp_send_json_error(array('error' => 'NotFound', 'message' => esc_html__('File not found', 'anibas-file-manager')));
+                $this->send_error(array('error' => 'NotFound', 'message' => esc_html__('File not found', 'anibas-file-manager')));
             }
 
             // Refuse preview for files larger than the limit — fetching the whole
             // file into memory is unsafe for large files on remote storage.
             $file_size = method_exists($adapter, 'get_file_size') ? $adapter->get_file_size($full_path) : false;
             if ($file_size !== false && $file_size > $limit) {
-                wp_send_json_error(array('error' => 'FileTooLarge', 'message' => esc_html__('File is too large to preview', 'anibas-file-manager')));
+                $this->send_error(array('error' => 'FileTooLarge', 'message' => esc_html__('File is too large to preview', 'anibas-file-manager')));
             }
 
             $content = $adapter->get_contents($full_path);
             if ($content !== false) {
-                wp_send_json_success(array('content' => $content));
+                $this->send_success(array('content' => $content));
             } else {
-                wp_send_json_error(array('error' => 'ReadFailed', 'message' => esc_html__('Failed to read from remote storage', 'anibas-file-manager')));
+                $this->send_error(array('error' => 'ReadFailed', 'message' => esc_html__('Failed to read from remote storage', 'anibas-file-manager')));
             }
         }
     }
@@ -610,7 +619,7 @@ class FileCrudAjaxHandler extends AjaxHandler
         $storage = anibas_fm_fetch_request_variable('get', 'storage', 'local');
 
         if (empty($path)) {
-            wp_send_json_error(array('error' => 'MissingParams', 'message' => esc_html__('Path is required', 'anibas-file-manager')));
+            $this->send_error(array('error' => 'MissingParams', 'message' => esc_html__('Path is required', 'anibas-file-manager')));
         }
 
         try {
@@ -618,17 +627,17 @@ class FileCrudAjaxHandler extends AjaxHandler
             $full_path = $adapter->validate_path($path);
 
             if (! $full_path) {
-                wp_send_json_error(array('error' => 'NotFound', 'message' => esc_html__('File or folder not found', 'anibas-file-manager')));
+                $this->send_error(array('error' => 'NotFound', 'message' => esc_html__('File or folder not found', 'anibas-file-manager')));
             }
 
             $details = $adapter->getDetails($full_path);
             if ($details === false) {
-                wp_send_json_error(array('error' => 'NotFound', 'message' => esc_html__('Could not fetch details', 'anibas-file-manager')));
+                $this->send_error(array('error' => 'NotFound', 'message' => esc_html__('Could not fetch details', 'anibas-file-manager')));
             }
 
-            wp_send_json_success(array('details' => $details));
+            $this->send_success(array('details' => $details));
         } catch (\Throwable $e) {
-            wp_send_json_error(array('error' => 'Exception', 'message' => esc_html($e->getMessage())));
+            $this->send_error(array('error' => 'Exception', 'message' => esc_html($e->getMessage())));
         }
     }
 }

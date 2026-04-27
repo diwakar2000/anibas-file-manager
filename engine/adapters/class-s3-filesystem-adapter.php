@@ -64,13 +64,13 @@ class S3FileSystemAdapter extends FileSystemAdapter
         return $message;
     }
 
-    public function validate_path($path)
+    public function validate_path(string $path): string|false
     {
         // S3 handles path constraints, return as-is
         return $path;
     }
 
-    public function exists($path)
+    public function exists(string $path): bool
     {
         $key = $this->get_key($path);
         if ($key === '') {
@@ -88,12 +88,12 @@ class S3FileSystemAdapter extends FileSystemAdapter
         return $first_key === $key || str_starts_with($first_key, $key . '/');
     }
 
-    public function is_file($path)
+    public function is_file(string $path): bool
     {
         return $this->exists($path) && ! $this->is_dir($path);
     }
 
-    public function is_dir($path)
+    public function is_dir(string $path): bool
     {
         $key = $this->get_key($path);
         if (! str_ends_with($key, '/')) {
@@ -107,7 +107,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
         return ! empty($result['Contents']) || ! empty($result['CommonPrefixes']);
     }
 
-    public function mkdir($path)
+    public function mkdir(string $path): bool
     {
         $key = $this->get_key($path);
         if (! str_ends_with($key, '/')) {
@@ -121,7 +121,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
         return true;
     }
 
-    public function scandir($path)
+    public function scandir(string $path): array
     {
         $key = $this->get_key($path);
         if (! str_ends_with($key, '/')) {
@@ -144,7 +144,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
         return $items;
     }
 
-    public function listDirectory($path)
+    public function listDirectory(string $path): array
     {
         $key = $this->get_key($path);
         // Root path produces an empty key — use '' as prefix, not '/' which matches nothing
@@ -206,7 +206,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
         ];
     }
 
-    public function getDetails($path)
+    public function getDetails(string $path): array|false
     {
         $key   = $this->get_key($path);
         $isDir = $this->is_dir($path);
@@ -254,7 +254,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function rmdir($path)
+    public function rmdir(string $path): bool
     {
         $key = $this->get_key($path);
         if (! str_ends_with($key, '/')) {
@@ -296,7 +296,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
         return $iterations < $max_iterations;
     }
 
-    public function copy($source, $target)
+    public function copy(string $source, string $target): bool
     {
         return $this->copyFileInChunks($source, $target);
     }
@@ -502,7 +502,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function move($source, $target)
+    public function move(string $source, string $target): bool
     {
         // Use S3's native server-side CopyObject — completes in one API call for
         // objects up to 5GB (the S3 hard limit for single-call copies). This path
@@ -523,7 +523,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
         return $this->unlink($source);
     }
 
-    public function unlink($path)
+    public function unlink(string $path): bool
     {
         $this->s3_client->deleteObject([
             'Bucket' => $this->bucket,
@@ -815,7 +815,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function get_contents($path)
+    public function get_contents(string $path): string|false
     {
         try {
             $obj = $this->s3_client->getObject([
@@ -829,7 +829,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
     }
 
 
-    public function get_temporary_link($path, $duration = 3600)
+    public function get_temporary_link(string $path, int $duration = 3600): string|false
     {
         try {
             return $this->s3_client->getPresignedUrl($this->bucket, $this->get_key($path), $duration);
@@ -838,7 +838,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function put_contents($path, $content)
+    public function put_contents(string $path, string $content): bool
     {
         try {
             $this->s3_client->putObject([
@@ -852,7 +852,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function append_contents($path, $content)
+    public function append_contents(string $path, string $content): bool
     {
         // S3 doesn't support byte-range appends natively.
         // Strategy: download existing content, concatenate, re-upload.

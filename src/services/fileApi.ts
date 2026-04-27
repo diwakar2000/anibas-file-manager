@@ -27,6 +27,32 @@ function appendFmTokenToUrl(url: URL): void {
 	if (_fmToken) url.searchParams.set('fm_token', _fmToken)
 }
 
+function useSettingsBackupAuth(settingsAuthToken?: string | null): boolean {
+	return settingsAuthToken !== undefined || (!(window as any).AnibasFM && !!(window as any).AnibasFMSettings)
+}
+
+function appendBackupAuth(formData: FormData, cfg: any, settingsAuthToken?: string | null): void {
+	if (useSettingsBackupAuth(settingsAuthToken)) {
+		formData.append("nonce", cfg.nonce ?? cfg.settingsNonce ?? cfg.createNonce)
+		if (settingsAuthToken) formData.append("token", settingsAuthToken)
+		return
+	}
+
+	formData.append("nonce", cfg.createNonce)
+	appendFmToken(formData)
+}
+
+function appendBackupAuthToUrl(url: URL, cfg: any, settingsAuthToken?: string | null): void {
+	if (useSettingsBackupAuth(settingsAuthToken)) {
+		url.searchParams.set("nonce", cfg.nonce ?? cfg.settingsNonce ?? cfg.createNonce)
+		if (settingsAuthToken) url.searchParams.set("token", settingsAuthToken)
+		return
+	}
+
+	url.searchParams.set("nonce", cfg.createNonce)
+	appendFmTokenToUrl(url)
+}
+
 /** Checks json error for FMTokenRequired and fires the handler if so. */
 export function checkFmTokenError(json: any): void {
 	if (json.data?.error === 'FMTokenRequired') {
@@ -507,11 +533,13 @@ export async function checkRunningTasks() {
 	return json.data
 }
 
-export async function listTrash() {
+export async function listTrash(page = 1, pageSize = 50) {
 	const cfg = (window as any).AnibasFM
 	const formData = new FormData()
 	formData.append("action", cfg.actions.listTrash || "anibas_fm_list_trash")
 	formData.append("nonce", cfg.listNonce)
+	formData.append("page", String(page))
+	formData.append("page_size", String(pageSize))
 	appendFmToken(formData)
 
 	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
@@ -521,7 +549,7 @@ export async function listTrash() {
 		checkFmTokenError(json)
 		throw new Error(json.data?.message ?? json.data?.error ?? "Failed to list trash")
 	}
-	return json.data.items || []
+	return json.data || { items: [], total_items: 0, page, page_size: pageSize, has_more: false }
 }
 
 export async function restoreTrash(trashName: string) {
@@ -542,11 +570,12 @@ export async function restoreTrash(trashName: string) {
 	return json.data
 }
 
-export async function emptyTrashBin() {
+export async function emptyTrashBin(token?: string) {
 	const cfg = (window as any).AnibasFM
 	const formData = new FormData()
 	formData.append("action", cfg.actions.emptyTrash || "anibas_fm_empty_trash")
 	formData.append("nonce", cfg.deleteNonce)
+	if (token) formData.append("token", token)
 	appendFmToken(formData)
 
 	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
@@ -555,6 +584,25 @@ export async function emptyTrashBin() {
 	if (!json.success) {
 		checkFmTokenError(json)
 		throw new Error(json.data?.message ?? json.data?.error ?? "Failed to empty trash")
+	}
+	return json.data
+}
+
+export async function deleteTrashItem(trashName: string, token?: string) {
+	const cfg = (window as any).AnibasFM
+	const formData = new FormData()
+	formData.append("action", cfg.actions.deleteTrashItem || "anibas_fm_delete_trash_item")
+	formData.append("nonce", cfg.deleteNonce)
+	formData.append("trash_name", trashName)
+	if (token) formData.append("token", token)
+	appendFmToken(formData)
+
+	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
+	const json = await res.json()
+
+	if (!json.success) {
+		checkFmTokenError(json)
+		throw new Error(json.data?.message ?? json.data?.error ?? "Failed to delete item")
 	}
 	return json.data
 }
@@ -580,12 +628,11 @@ export async function backupSingleFile(path: string, storage: string) {
 	return json.data
 }
 
-export async function listFileBackups() {
+export async function listFileBackups(settingsAuthToken?: string | null) {
 	const cfg = (window as any).AnibasFM ?? (window as any).AnibasFMSettings
 	const formData = new FormData()
 	formData.append("action", cfg.actions.listFileBackups)
-	formData.append("nonce", cfg.createNonce)
-	appendFmToken(formData)
+	appendBackupAuth(formData, cfg, settingsAuthToken)
 
 	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
 	const json = await res.json()
@@ -597,14 +644,13 @@ export async function listFileBackups() {
 	return json.data.items || []
 }
 
-export async function restoreFileBackup(key: string, version: string) {
+export async function restoreFileBackup(key: string, version: string, settingsAuthToken?: string | null) {
 	const cfg = (window as any).AnibasFM ?? (window as any).AnibasFMSettings
 	const formData = new FormData()
 	formData.append("action", cfg.actions.restoreFileBackup)
-	formData.append("nonce", cfg.createNonce)
+	appendBackupAuth(formData, cfg, settingsAuthToken)
 	formData.append("key", key)
 	formData.append("version", version)
-	appendFmToken(formData)
 
 	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
 	const json = await res.json()
@@ -616,12 +662,46 @@ export async function restoreFileBackup(key: string, version: string) {
 	return json.data
 }
 
-export async function listSiteBackups() {
+export async function deleteFileBackup(key: string, version: string, settingsAuthToken?: string | null) {
+	const cfg = (window as any).AnibasFM ?? (window as any).AnibasFMSettings
+	const formData = new FormData()
+	formData.append("action", cfg.actions.deleteFileBackup)
+	appendBackupAuth(formData, cfg, settingsAuthToken)
+	formData.append("key", key)
+	formData.append("version", version)
+
+	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
+	const json = await res.json()
+
+	if (!json.success) {
+		checkFmTokenError(json)
+		throw new Error(json.data?.message ?? json.data?.error ?? "Failed to delete backup")
+	}
+	return json.data
+}
+
+export async function deleteFileBackupTree(key: string, settingsAuthToken?: string | null) {
+	const cfg = (window as any).AnibasFM ?? (window as any).AnibasFMSettings
+	const formData = new FormData()
+	formData.append("action", cfg.actions.deleteFileBackupTree)
+	appendBackupAuth(formData, cfg, settingsAuthToken)
+	formData.append("key", key)
+
+	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
+	const json = await res.json()
+
+	if (!json.success) {
+		checkFmTokenError(json)
+		throw new Error(json.data?.message ?? json.data?.error ?? "Failed to delete backup history")
+	}
+	return json.data
+}
+
+export async function listSiteBackups(settingsAuthToken?: string | null) {
 	const cfg = (window as any).AnibasFM ?? (window as any).AnibasFMSettings
 	const formData = new FormData()
 	formData.append("action", cfg.actions.listSiteBackups)
-	formData.append("nonce", cfg.createNonce)
-	appendFmToken(formData)
+	appendBackupAuth(formData, cfg, settingsAuthToken)
 
 	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
 	const json = await res.json()
@@ -633,16 +713,32 @@ export async function listSiteBackups() {
 	return json.data.items || []
 }
 
+export async function deleteSiteBackup(name: string, settingsAuthToken?: string | null) {
+	const cfg = (window as any).AnibasFM ?? (window as any).AnibasFMSettings
+	const formData = new FormData()
+	formData.append("action", cfg.actions.deleteSiteBackup)
+	appendBackupAuth(formData, cfg, settingsAuthToken)
+	formData.append("name", name)
+
+	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
+	const json = await res.json()
+
+	if (!json.success) {
+		checkFmTokenError(json)
+		throw new Error(json.data?.message ?? json.data?.error ?? "Failed to delete site backup")
+	}
+	return json.data
+}
+
 // ─── Backup ──────────────────────────────────────────────────────────────────
 
-export async function backupStart(format: 'tar' | 'anfm' = 'tar', password?: string) {
+export async function backupStart(format: 'tar' | 'anfm' = 'tar', password?: string, settingsAuthToken?: string | null) {
 	const cfg = (window as any).AnibasFM ?? (window as any).AnibasFMSettings
 	const formData = new FormData()
 	formData.append("action", cfg.actions.backupStart)
-	formData.append("nonce", cfg.createNonce)
+	appendBackupAuth(formData, cfg, settingsAuthToken)
 	formData.append("format", format)
 	if (password) formData.append("password", password)
-	appendFmToken(formData)
 
 	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
 	const json = await res.json()
@@ -654,14 +750,13 @@ export async function backupStart(format: 'tar' | 'anfm' = 'tar', password?: str
 	return json.data as { job_id: string; output: string; info: { total: number; total_size: number } }
 }
 
-export async function backupPoll(jobId: string, password?: string) {
+export async function backupPoll(jobId: string, password?: string, settingsAuthToken?: string | null) {
 	const cfg = (window as any).AnibasFM ?? (window as any).AnibasFMSettings
 	const formData = new FormData()
 	formData.append("action", cfg.actions.backupPoll)
-	formData.append("nonce", cfg.createNonce)
+	appendBackupAuth(formData, cfg, settingsAuthToken)
 	formData.append("job_id", jobId)
 	if (password) formData.append("password", password)
-	appendFmToken(formData)
 
 	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
 	const json = await res.json()
@@ -673,13 +768,12 @@ export async function backupPoll(jobId: string, password?: string) {
 	return json.data as { done: boolean; progress: { current: number; total: number; percent: number; bytes_processed: number; total_size: number; phase: string } }
 }
 
-export async function backupCancel(jobId: string) {
+export async function backupCancel(jobId: string, settingsAuthToken?: string | null) {
 	const cfg = (window as any).AnibasFM ?? (window as any).AnibasFMSettings
 	const formData = new FormData()
 	formData.append("action", cfg.actions.backupCancel)
-	formData.append("nonce", cfg.createNonce)
+	appendBackupAuth(formData, cfg, settingsAuthToken)
 	formData.append("job_id", jobId)
-	appendFmToken(formData)
 
 	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
 	const json = await res.json()
@@ -691,13 +785,11 @@ export async function backupCancel(jobId: string) {
 	return json.data
 }
 
-export async function backupStatus() {
+export async function backupStatus(settingsAuthToken?: string | null) {
 	const cfg = (window as any).AnibasFM ?? (window as any).AnibasFMSettings
-	const nonce = cfg.createNonce
 	const url = new URL(cfg.ajaxURL)
 	url.searchParams.set("action", cfg.actions.backupStatus)
-	url.searchParams.set("nonce", nonce)
-	appendFmTokenToUrl(url)
+	appendBackupAuthToUrl(url, cfg, settingsAuthToken)
 
 	const res = await fetch(url.toString())
 	const json = await res.json()
@@ -708,4 +800,3 @@ export async function backupStatus() {
 	}
 	return json.data as { running: boolean; job_id?: string; format?: string; output?: string; started_at?: number; progress?: any }
 }
-

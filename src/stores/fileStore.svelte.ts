@@ -22,9 +22,37 @@ import {
     backupSingleFile as apiBackupSingleFile,
     setFmToken,
     setFmTokenRequiredHandler,
+    getFmToken,
+    checkFmTokenError,
 } from "../services/fileApi";
 import type { FileItem, DirectoryResponse, Job, ArchiveJob } from "../types/files";
 import { toast } from "../utils/toast";
+
+type RunningTask = {
+    id: string;
+    action: 'copy' | 'move' | 'delete' | 'rename' | 'empty';
+    status: 'pending' | 'processing' | 'completed' | 'failed' | 'retrying';
+    source?: string;
+    destination?: string;
+    current_phase?: string | null;
+    processed_count?: number;
+    failed_count?: number;
+    total_files?: number;
+    current_file?: string;
+    current_file_bytes?: number;
+    current_file_size?: number;
+    type?: string | null;
+    progress?: number;
+    current_chunk?: number;
+    total_chunks?: number;
+    file_name?: string;
+    ui_group_id?: string | null;
+    ui_group_action?: 'empty' | null;
+    ui_group_mode?: 'trash' | 'delete' | null;
+    ui_group_label?: string | null;
+    ui_group_source?: string | null;
+    child_job_ids?: string[];
+};
 
 function isNetworkError(err: unknown): boolean {
     return err instanceof TypeError;
@@ -37,6 +65,10 @@ const FM_SESSION_KEY = 'anibas_fm_fm_token';
 // processing" lull at the end of fast operations from up-to-2s down to
 // up-to-750ms before the next item in a bulk batch can start.
 const JOB_POLL_INTERVAL_MS = 750;
+
+function basename(path: string): string {
+    return path.split('/').filter(Boolean).pop() || path || 'Item';
+}
 
 export class AnibasFileStore {
     currentPath = $state("/");
@@ -130,25 +162,7 @@ export class AnibasFileStore {
 
     private initializeApp() {
         checkRunningTasks().then(result => {
-            for (const task of result.tasks ?? []) {
-                this.activeJobs[task.id] = {
-                    id: task.id,
-                    action: task.action,
-                    status: task.status,
-                    processed: task.processed || 0,
-                    failed_count: task.failed_count || 0,
-                    current_file: task.current_file || '',
-                    type: task.type || null,
-                    progress: task.progress || 0,
-                    current_chunk: task.current_chunk || 0,
-                    total_chunks: task.total_chunks || 0,
-                    file_name: task.file_name || '',
-                    source: task.source || '',
-                    destination: task.destination || '',
-                    current_phase: task.current_phase || null,
-                };
-                this.pollJobStatus(task.id);
-            }
+            this.restoreRunningTasks((result.tasks ?? []) as RunningTask[]);
             // Restore any archive jobs that were running before the page refresh
             this.archiveJobs = result.archive_jobs ?? [];
 
@@ -160,6 +174,86 @@ export class AnibasFileStore {
         }).catch(() => {
             // Silently ignore — FMTokenRequired is handled by checkFmTokenError in fileApi
         });
+    }
+
+    private restoreRunningTasks(tasks: RunningTask[]) {
+        const groupedEmptyTasks = new Map<string, RunningTask[]>();
+
+        for (const task of tasks) {
+            if (task.ui_group_action === 'empty' && task.ui_group_id) {
+                const group = groupedEmptyTasks.get(task.ui_group_id) || [];
+                group.push(task);
+                groupedEmptyTasks.set(task.ui_group_id, group);
+                continue;
+            }
+
+            this.activeJobs[task.id] = this.buildJobFromTask(task);
+            this.pollJobStatus(task.id);
+        }
+
+        for (const [groupId, groupTasks] of groupedEmptyTasks) {
+            const groupJobId = `group:${groupId}`;
+            const source = groupTasks[0]?.ui_group_source || groupTasks[0]?.source || '/';
+            const mode = (groupTasks[0]?.ui_group_mode || 'delete') as 'trash' | 'delete';
+            const childJobIds = groupTasks.map(task => task.id);
+
+            this.activeJobs[groupJobId] = this.buildGroupedEmptyJob(groupJobId, source, childJobIds, mode);
+            void this.pollGroupedJob(groupJobId, childJobIds, source, mode);
+        }
+    }
+
+    private buildJobFromTask(task: RunningTask): Job {
+        return {
+            id: task.id,
+            action: task.ui_group_action === 'empty' ? 'empty' : task.action,
+            status: task.status === 'failed' ? 'failed' : task.status === 'completed' ? 'completed' : 'processing',
+            processed: task.processed_count || 0,
+            failed_count: task.failed_count || 0,
+            current_file: task.current_file || '',
+            type: task.type || null,
+            progress: task.progress || 0,
+            current_chunk: task.current_chunk || 0,
+            total_chunks: task.total_chunks || 0,
+            file_name: task.file_name || '',
+            source: task.ui_group_source || task.source || '',
+            destination: task.destination || '',
+            current_phase: task.current_phase || null,
+            total_files: task.total_files || 0,
+            current_file_bytes: task.current_file_bytes || 0,
+            current_file_size: task.current_file_size || 0,
+            operation_mode: task.ui_group_mode || null,
+            child_job_ids: task.child_job_ids || undefined,
+        };
+    }
+
+    private buildGroupedEmptyJob(
+        groupJobId: string,
+        source: string,
+        childJobIds: string[],
+        mode: 'trash' | 'delete',
+        stats: Partial<Job> = {},
+    ): Job {
+        return {
+            id: groupJobId,
+            action: 'empty',
+            status: 'processing',
+            processed: stats.processed || 0,
+            failed_count: stats.failed_count || 0,
+            current_file: stats.current_file || '',
+            type: null,
+            progress: stats.progress || 0,
+            current_chunk: 0,
+            total_chunks: 0,
+            file_name: basename(source),
+            source,
+            destination: '',
+            current_phase: stats.current_phase || null,
+            total_files: stats.total_files || 0,
+            current_file_bytes: 0,
+            current_file_size: 0,
+            operation_mode: mode,
+            child_job_ids: childJobIds,
+        };
     }
 
     async openEditor(path: string, canEdit: boolean): Promise<void> {
@@ -181,11 +275,14 @@ export class AnibasFileStore {
         formData.append('path', path);
         formData.append('storage', this.currentStorage);
         formData.append('can_edit', canEdit ? '1' : '0');
+        const fmToken = getFmToken();
+        if (fmToken) formData.append('fm_token', fmToken);
 
         const res = await fetch(cfg.ajaxURL, { method: 'POST', body: formData });
         const json = await res.json();
 
         if (!json.success) {
+            checkFmTokenError(json);
             toast.error(json.data?.message || 'Failed to open editor');
             return;
         }
@@ -261,10 +358,12 @@ export class AnibasFileStore {
         return (window as any).AnibasFM?.hasDeletePassword ?? false;
     }
 
-    async loadDirectory(path: string, page = 1) {
+    async loadDirectory(path: string, page = 1, opts: { silent?: boolean } = {}) {
         this.isLoading = true;
-        this.error = null;
-        this.lastErrorType = null;
+        if (!opts.silent) {
+            this.error = null;
+            this.lastErrorType = null;
+        }
         try {
             const data: DirectoryResponse = await fetchNode({ path, page, storage: this.currentStorage });
             if (data.items) {
@@ -285,14 +384,21 @@ export class AnibasFileStore {
             this.directoryCache = { ...this.directoryCache, [path]: data };
         } catch (err: any) {
             const errorData = this.parseError(err);
-            this.error = errorData.message;
-            this.lastErrorType = errorData.errorType;
+            // Always self-heal stale state on PathInvalid even in silent mode —
+            // the cache/expandedFolders entry is genuinely gone server-side.
             if (errorData.errorType === 'PathInvalid') {
                 this.expandedFolders = this.expandedFolders.filter(p => p !== path);
                 delete this.directoryCache[path];
                 if (this.currentPath === path) {
                     this.currentPath = '/';
                 }
+            }
+            // Silent reloads (e.g. post-job-completion refreshes for paths
+            // the user isn't actively viewing) shouldn't surface as a banner
+            // or toast — they're best-effort cache warmups.
+            if (!opts.silent) {
+                this.error = errorData.message;
+                this.lastErrorType = errorData.errorType;
             }
         } finally {
             this.isLoading = false;
@@ -426,7 +532,10 @@ export class AnibasFileStore {
                     destination: '',
                     current_phase: null,
                 };
-                await this.pollJobStatus(result.job_id);
+                const status = await this.pollJobStatus(result.job_id);
+                if (status === 'failed') {
+                    throw new Error(this.error || 'Delete job failed');
+                }
                 return;
             }
 
@@ -509,11 +618,29 @@ export class AnibasFileStore {
 
     async emptyFolder(path: string) {
         this.error = null;
-        const name = path.split('/').pop() || 'Folder';
+        const name = basename(path) || 'Folder';
         this.currentOperation = `Emptying ${name}...`;
         try {
-            await apiEmptyFolder(path, this.deleteToken || undefined, this.currentStorage);
-            toast.success(`"${name}" emptied successfully`);
+            const result = await apiEmptyFolder(path, this.deleteToken || undefined, this.currentStorage);
+
+            const jobIds: string[] = Array.isArray(result?.job_ids)
+                ? result.job_ids
+                : (result?.job_id ? [result.job_id] : []);
+
+            if (jobIds.length > 0) {
+                const mode = (result?.operation_mode || 'delete') as 'trash' | 'delete';
+                const groupId = typeof result?.group_id === 'string' && result.group_id
+                    ? `group:${result.group_id}`
+                    : jobIds.length > 1
+                        ? `group:empty:${Date.now()}`
+                        : jobIds[0];
+
+                this.activeJobs[groupId] = this.buildGroupedEmptyJob(groupId, path, jobIds, mode);
+                await this.pollGroupedJob(groupId, jobIds, path, mode);
+                return;
+            }
+
+            toast.success(result?.message || `"${name}" emptied successfully`);
         } catch (err: any) {
             if (err.message === 'DeletePasswordRequired') {
                 throw err;
@@ -521,8 +648,21 @@ export class AnibasFileStore {
             this.error = err.message || 'Failed to empty folder';
             throw err;
         } finally {
-            this.currentOperation = null;
-            await this.loadDirectory(this.currentPath);
+            // pollJobStatus handles its own currentOperation + loadDirectory;
+            // clear/refresh only for the synchronous (trash) path so we don't
+            // double-refresh the view.
+            if (!this.activeJobs || Object.keys(this.activeJobs).length === 0) {
+                this.currentOperation = null;
+                // Invalidate both the emptied folder AND its parent, then
+                // reload whichever one the user is currently viewing. Also
+                // reload the emptied folder itself so navigating into it
+                // next shows empty contents instead of a stale cache hit.
+                this.invalidateCacheForJob(path, null);
+                await this.loadDirectory(this.currentPath);
+                if (this.currentPath !== path) {
+                    void this.loadDirectory(path);
+                }
+            }
         }
     }
 
@@ -732,6 +872,122 @@ export class AnibasFileStore {
         }
     }
 
+    private async pollGroupedJob(
+        groupJobId: string,
+        childJobIds: string[],
+        source: string,
+        mode: 'trash' | 'delete',
+    ): Promise<void> {
+        const totals = new Map<string, number>();
+        const processed = new Map<string, number>();
+        const failed = new Map<string, number>();
+        const errors: string[] = [];
+
+        const queuedJobIds = [...childJobIds];
+        const seenJobIds = new Set(queuedJobIds);
+
+        const updateGroup = (currentJob?: RunningTask) => {
+            const totalFiles = Array.from(totals.values()).reduce((sum, value) => sum + value, 0);
+            const processedCount = Array.from(processed.values()).reduce((sum, value) => sum + value, 0);
+            const failedCount = Array.from(failed.values()).reduce((sum, value) => sum + value, 0);
+            const progress = totalFiles > 0
+                ? Math.min(100, Math.round(((processedCount + failedCount) / totalFiles) * 100))
+                : 0;
+
+            this.activeJobs[groupJobId] = this.buildGroupedEmptyJob(groupJobId, source, queuedJobIds, mode, {
+                processed: processedCount,
+                failed_count: failedCount,
+                current_file: currentJob?.current_file || '',
+                current_phase: currentJob?.current_phase || null,
+                total_files: totalFiles,
+                progress,
+            });
+        };
+
+        const enqueueDiscoveredChildren = (job: RunningTask) => {
+            const nestedIds = Array.isArray(job.child_job_ids) ? job.child_job_ids : [];
+            for (const id of nestedIds) {
+                if (id && !seenJobIds.has(id)) {
+                    seenJobIds.add(id);
+                    queuedJobIds.push(id);
+                }
+            }
+        };
+
+        for (let index = 0; index < queuedJobIds.length; index++) {
+            const childJobId = queuedJobIds[index];
+            let consecutiveFailures = 0;
+
+            await new Promise<void>((resolve) => {
+                const poll = async () => {
+                    if (!this.activeJobs[groupJobId]) {
+                        resolve();
+                        return;
+                    }
+
+                    try {
+                        const job = await apiGetJobStatus(childJobId) as RunningTask;
+                        consecutiveFailures = 0;
+                        enqueueDiscoveredChildren(job);
+
+                        totals.set(childJobId, job.total_files || totals.get(childJobId) || 0);
+                        processed.set(childJobId, job.processed_count || 0);
+                        failed.set(childJobId, job.failed_count || 0);
+                        updateGroup(job);
+
+                        if (job.status === 'completed' || job.status === 'failed') {
+                            if (job.status === 'failed' && Array.isArray((job as any).errors) && (job as any).errors.length > 0) {
+                                errors.push((job as any).errors[0]);
+                            }
+                            resolve();
+                            return;
+                        }
+
+                        setTimeout(poll, JOB_POLL_INTERVAL_MS);
+                    } catch (err: any) {
+                        consecutiveFailures++;
+                        if (consecutiveFailures >= 5) {
+                            errors.push(err?.message || 'Lost connection to background job');
+                            resolve();
+                            return;
+                        }
+
+                        const backoff = Math.min(8000, JOB_POLL_INTERVAL_MS * Math.pow(2, consecutiveFailures - 1));
+                        setTimeout(poll, backoff);
+                    }
+                };
+
+                poll();
+            });
+        }
+
+        const grouped = this.activeJobs[groupJobId];
+        if (!grouped) {
+            return;
+        }
+
+        delete this.activeJobs[groupJobId];
+        this.currentOperation = null;
+        this.clearSelection();
+        this.invalidateCacheForJob(source, null);
+
+        if (errors.length > 0) {
+            this.error = 'Job failed: ' + errors[0];
+            toast.error(this.error);
+        } else {
+            toast.success(
+                mode === 'trash'
+                    ? `"${basename(source)}" moved to trash successfully`
+                    : `"${basename(source)}" emptied successfully`
+            );
+        }
+
+        void this.loadDirectory(this.currentPath);
+        if (this.currentPath !== source) {
+            void this.loadDirectory(source, 1, { silent: true });
+        }
+    }
+
     /**
      * Poll a background job until it reaches a terminal state. Returns a
      * Promise<void> that resolves on completion, failure, OR polling error —
@@ -741,12 +997,12 @@ export class AnibasFileStore {
      * paste/delete should continue with remaining items after a single
      * failure, not abort the whole batch.
      */
-    async pollJobStatus(jobId: string): Promise<void> {
+    async pollJobStatus(jobId: string): Promise<'completed' | 'failed' | 'lost' | 'cancelled'> {
         // Preserve the frontend-assigned action (e.g. 'rename') across API updates,
         // since the backend job always reports the underlying action ('move').
         const frontendAction = this.activeJobs[jobId]?.action;
 
-        return new Promise<void>((resolve) => {
+        return new Promise<'completed' | 'failed' | 'lost' | 'cancelled'>((resolve) => {
             let consecutiveFailures = 0;
             const MAX_CONSECUTIVE_FAILURES = 5;
 
@@ -756,12 +1012,18 @@ export class AnibasFileStore {
                     
                     // If the job was cancelled/deleted from activeJobs while we were polling, terminate the poll loop cleanly
                     if (!this.activeJobs[jobId]) {
-                        resolve();
+                        resolve('cancelled');
                         return;
                     }
 
                     consecutiveFailures = 0;
-                    const effectiveAction = (frontendAction === 'rename' ? 'rename' : job.action) as 'copy' | 'move' | 'delete' | 'rename';
+                    // Preserve synthetic frontend actions ('rename', 'empty')
+                    // that the backend reports as their underlying primitive
+                    // (move/delete). Needed so the completion toast reads
+                    // "renamed" / "emptied" instead of "moved" / "deleted".
+                    const effectiveAction = ((frontendAction === 'rename' || frontendAction === 'empty')
+                        ? frontendAction
+                        : job.action) as 'copy' | 'move' | 'delete' | 'rename' | 'empty';
 
                     this.activeJobs[jobId] = {
                         id: jobId,
@@ -783,16 +1045,24 @@ export class AnibasFileStore {
                         current_file_size: job.current_file_size || 0,
                     };
 
-                    if (job.status === 'completed' || job.status === 'failed') {
+                    const terminalStatus = job.status === 'completed' && (job.failed_count || 0) > 0
+                        ? 'failed'
+                        : job.status;
+
+                    if (terminalStatus === 'completed' || terminalStatus === 'failed') {
                         delete this.activeJobs[jobId];
                         this.currentOperation = null;
                         this.clearSelection();
 
-                        if (job.status === 'failed') {
+                        if (terminalStatus === 'failed') {
                             this.error = 'Job failed: ' + (job.errors?.[0] || 'Unknown error');
                             toast.error(this.error);
                         } else {
-                            const actionText = effectiveAction === 'delete' ? 'deleted' : effectiveAction === 'copy' ? 'copied' : effectiveAction === 'rename' ? 'renamed' : 'moved';
+                            const actionText = effectiveAction === 'delete' ? 'deleted'
+                                : effectiveAction === 'copy' ? 'copied'
+                                : effectiveAction === 'rename' ? 'renamed'
+                                : effectiveAction === 'empty' ? 'emptied'
+                                : 'moved';
                             const name = job.source.split('/').pop() || 'Item';
                             toast.success(`"${name}" ${actionText} successfully`);
                         }
@@ -803,10 +1073,43 @@ export class AnibasFileStore {
                         // Other cached views (siblings, expanded tree branches)
                         // remain valid and don't need to refetch.
                         this.invalidateCacheForJob(job.source, job.destination);
-                        resolve();
+                        resolve(terminalStatus);
+
+                        // Refresh every directory whose listing just changed:
+                        //  • currentPath — what the user is viewing right now (loud reload).
+                        //  • source's parent — where the item was removed from. For
+                        //    "empty folder" jobs, source IS the folder whose contents
+                        //    changed, so we include source itself.
+                        //  • destination — the drop-target folder, BUT only if it's a
+                        //    user-visible path. Move-to-trash 'move' jobs send a
+                        //    destination inside /.trash/ which the user shouldn't see in
+                        //    their normal directory cache — skip it.
+                        // Anything other than currentPath uses silent mode so a stale
+                        // PathInvalid doesn't pop a banner; loadDirectory still
+                        // self-heals expandedFolders + directoryCache on PathInvalid.
+                        const parentOf = (p: string) => {
+                            const trimmed = p.replace(/\/+$/, '');
+                            const idx = trimmed.lastIndexOf('/');
+                            return idx <= 0 ? '/' : trimmed.slice(0, idx);
+                        };
+                        const isTrashPath = (p: string) => /(^|\/)\.trash(\/|$)/.test(p);
+
+                        const silentTargets = new Set<string>();
+                        if (job.source) {
+                            silentTargets.add(parentOf(job.source));
+                            if (effectiveAction === 'empty') {
+                                silentTargets.add(job.source);
+                            }
+                        }
+                        if (job.destination && !isTrashPath(job.destination)) {
+                            silentTargets.add(job.destination);
+                        }
+                        // currentPath is the visible view — loud reload so the user
+                        // sees their listing refresh and any genuine error surfaces.
+                        silentTargets.delete(this.currentPath);
                         void this.loadDirectory(this.currentPath);
-                        if (job.destination && job.destination !== this.currentPath) {
-                            void this.loadDirectory(job.destination);
+                        for (const p of silentTargets) {
+                            void this.loadDirectory(p, 1, { silent: true });
                         }
                     } else {
                         setTimeout(poll, JOB_POLL_INTERVAL_MS);
@@ -822,7 +1125,7 @@ export class AnibasFileStore {
                         this.currentOperation = null;
                         toast.error('Lost connection to background job — refreshing view');
                         await this.loadDirectory(this.currentPath);
-                        resolve();
+                        resolve('lost');
                         return;
                     }
                     const backoff = Math.min(8000, JOB_POLL_INTERVAL_MS * Math.pow(2, consecutiveFailures - 1));
@@ -841,17 +1144,62 @@ export class AnibasFileStore {
             const idx = trimmed.lastIndexOf('/');
             return idx <= 0 ? '/' : trimmed.slice(0, idx);
         };
-        if (source) dirs.add(parentOf(source));
-        if (destination) dirs.add(parentOf(destination));
+        // Invalidate the path AND its parent:
+        //  • Folder ops (empty/delete/mkdir target) change the folder's own listing → invalidate the path.
+        //  • Item add/remove changes the parent's listing → invalidate the parent.
+        //  • For file paths, invalidating the file key is a harmless no-op.
+        // Backend sends `destination = original_dest` (the drop-target folder) for
+        // copy/move, so invalidating destination-as-is clears the folder that just
+        // gained new children.
+        if (source) {
+            dirs.add(source);
+            dirs.add(parentOf(source));
+        }
+        if (destination) {
+            dirs.add(destination);
+            dirs.add(parentOf(destination));
+        }
         for (const dir of dirs) {
             delete this.directoryCache[dir];
+        }
+
+        // Prune descendant entries in directoryCache AND expandedFolders.
+        // When /wp-content/foo gets moved/deleted, anything we'd cached or
+        // expanded under it (e.g. /wp-content/foo/sub) is now stale and
+        // points to a non-existent path. Without pruning, a later render or
+        // background reload tries to fetch /wp-content/foo/sub, the backend
+        // returns PathInvalid, and the user sees "Path does not exist".
+        const pruneRoots = [source, destination].filter(Boolean) as string[];
+        if (pruneRoots.length > 0) {
+            const isDescendantOfAny = (path: string) =>
+                pruneRoots.some(root => path !== root && path.startsWith(root.replace(/\/+$/, '') + '/'));
+
+            const newCache = { ...this.directoryCache };
+            let changedCache = false;
+            for (const cachedPath of Object.keys(newCache)) {
+                if (isDescendantOfAny(cachedPath)) {
+                    delete newCache[cachedPath];
+                    changedCache = true;
+                }
+            }
+            if (changedCache) this.directoryCache = newCache;
+
+            const expanded = this.expandedFolders.filter(p => !isDescendantOfAny(p));
+            if (expanded.length !== this.expandedFolders.length) {
+                this.expandedFolders = expanded;
+            }
         }
     }
 
     async cancelJob(jobId: string) {
         try {
-            await apiCancelJob(jobId);
             const cancelled = this.activeJobs[jobId];
+            const childJobIds = cancelled?.child_job_ids || [jobId];
+
+            for (const childJobId of childJobIds) {
+                await apiCancelJob(childJobId);
+            }
+
             delete this.activeJobs[jobId];
             if (cancelled) {
                 this.invalidateCacheForJob(cancelled.source, cancelled.destination);

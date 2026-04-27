@@ -13,7 +13,8 @@ class LocalFileSystemAdapter extends FileSystemAdapter
 
     private string $rootPath;
     private array $protectedPaths = [];
-    private $fs;
+    private \WP_Filesystem_Direct $fs;
+    private string $lastFailureReason = '';
 
     public function __construct()
     {
@@ -61,15 +62,6 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         $this->protectedPaths = array_unique($this->protectedPaths);
     }
 
-    /**
-     * Legacy initialization method from LocalFileSystemAdapter.
-     * Included for compatibility but calls the optimized initProtectedPaths.
-     */
-    private function init_protected_paths()
-    {
-        $this->initProtectedPaths();
-    }
-
     /* =========================================================
        HARDENED SECURITY GATE (Replaces validate_path)
     ========================================================= */
@@ -99,8 +91,10 @@ class LocalFileSystemAdapter extends FileSystemAdapter
             }
         }
 
-        // Must be inside WordPress root
-        if (strpos($real, $this->rootPath) !== 0) {
+        // Must be inside WordPress root.
+        $root_norm = untrailingslashit(wp_normalize_path($this->rootPath));
+        $real_norm = untrailingslashit(wp_normalize_path($real));
+        if ($real_norm !== $root_norm && strpos(trailingslashit($real_norm), trailingslashit($root_norm)) !== 0) {
             return false;
         }
 
@@ -109,9 +103,13 @@ class LocalFileSystemAdapter extends FileSystemAdapter
             return false;
         }
 
+        if ($this->isPrivateBackupPath($real)) {
+            return false;
+        }
+
         // Block protected paths
         foreach ($this->protectedPaths as $protected) {
-            if (strpos($real, $protected) === 0) {
+            if ($real === $protected || strpos(trailingslashit($real), trailingslashit($protected)) === 0) {
                 return false;
             }
         }
@@ -141,9 +139,9 @@ class LocalFileSystemAdapter extends FileSystemAdapter
     /**
      * Mapping validate_path to assertAllowed to fulfill interface requirements.
      */
-    public function validate_path($path)
+    public function validate_path(string $path): string|false
     {
-        return $this->assertAllowed((string) $path);
+        return $this->assertAllowed($path);
     }
 
     /**
@@ -152,6 +150,10 @@ class LocalFileSystemAdapter extends FileSystemAdapter
      */
     private function normalizePath(string $path): string|false
     {
+        if ($path === '') {
+            return false;
+        }
+
         // Convert to absolute path if relative
         if ($path[0] !== '/' && strpos($path, ':') === false) {
             $path = $this->rootPath . '/' . $path;
@@ -180,10 +182,17 @@ class LocalFileSystemAdapter extends FileSystemAdapter
     }
 
     /**
-     * Check if a path is protected.
+     * Return true if the path is NOT inside any protected directory.
+     * Separate from assertAllowed() which also covers blocked-filename patterns,
+     * symlinks, and traversal; this one is a focused protected-subtree check
+     * used when validating a newly-constructed target path.
      */
-    private function check_protected_path($full_path): bool
+    private function is_allowed_path(string $full_path): bool
     {
+        if ($this->isPrivateBackupPath($full_path)) {
+            return false;
+        }
+
         foreach ($this->protectedPaths as $protected) {
             if (strpos(trailingslashit($full_path), trailingslashit($protected)) === 0) {
                 return false;
@@ -192,29 +201,201 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         return true;
     }
 
+    private function assertQueuedPath(string $path, string $root): string|false
+    {
+        $path = str_replace(chr(0), '', $path);
+        $root = str_replace(chr(0), '', $root);
+
+        if (strpos($path, $this->rootPath) !== 0) {
+            $path = $this->frontendPathToReal($path);
+        }
+        if (strpos($root, $this->rootPath) !== 0) {
+            $root = $this->frontendPathToReal($root);
+        }
+
+        $real = realpath($path) ?: $this->normalizePath($path);
+        $root_real = realpath($root) ?: $this->normalizePath($root);
+        if (! $real || ! $root_real) {
+            return false;
+        }
+
+        $real_norm = untrailingslashit(wp_normalize_path($real));
+        $root_norm = untrailingslashit(wp_normalize_path($root_real));
+        $wp_root   = untrailingslashit(wp_normalize_path($this->rootPath));
+
+        if (! $this->path_is_inside_or_same($root_norm, $wp_root)
+            || ! $this->path_is_inside_or_same($real_norm, $root_norm)) {
+            return false;
+        }
+
+        if (file_exists($path) && is_link($path)) {
+            return false;
+        }
+
+        if ($this->is_job_protected_path($real_norm)) {
+            return false;
+        }
+
+        return $real;
+    }
+
+    private function is_job_protected_path(string $real_norm): bool
+    {
+        if ($this->isPrivateBackupPath($real_norm)) {
+            return true;
+        }
+
+        foreach ($this->protectedPaths as $protected) {
+            $protected = untrailingslashit(wp_normalize_path($protected));
+            if ($this->path_is_inside_or_same($real_norm, $protected)) {
+                return true;
+            }
+        }
+
+        $trash_dir = $this->trashDirPath();
+        $trash_real = realpath($trash_dir) ?: $this->normalizePath($trash_dir);
+        return $trash_real && $this->path_is_inside_or_same($real_norm, untrailingslashit(wp_normalize_path($trash_real)));
+    }
+
+    private function trashDirPath(): string
+    {
+        return untrailingslashit(WP_CONTENT_DIR) . DIRECTORY_SEPARATOR . ANIBAS_FM_TRASH_DIR_NAME;
+    }
+
+    private function path_is_inside_or_same(string $candidate, string $root): bool
+    {
+        $candidate = untrailingslashit(wp_normalize_path($candidate));
+        $root = untrailingslashit(wp_normalize_path($root));
+
+        if ($candidate === '' || $root === '') {
+            return false;
+        }
+
+        return $candidate === $root || strpos(trailingslashit($candidate), trailingslashit($root)) === 0;
+    }
+
+    public function queuedUnlink(string $path, string $root): bool
+    {
+        $validated = $this->assertQueuedPath($path, $root);
+        if (! $validated) {
+            return false;
+        }
+        if (! file_exists($validated)) {
+            return true;
+        }
+        if (is_dir($validated)) {
+            return false;
+        }
+
+        return @unlink($validated);
+    }
+
+    public function queuedRmdir(string $path, string $root): bool
+    {
+        $validated = $this->assertQueuedPath($path, $root);
+        if (! $validated) {
+            return false;
+        }
+        if (! file_exists($validated)) {
+            return true;
+        }
+        if (! is_dir($validated)) {
+            return false;
+        }
+
+        return @rmdir($validated);
+    }
+
+    private function has_protected_descendant(string $path): bool
+    {
+        $root = realpath($path) ?: $this->normalizePath($path);
+        if (! $root || ! is_dir($root)) {
+            return false;
+        }
+
+        foreach ($this->protectedPaths as $protected) {
+            if ($this->path_is_inside($protected, $root)) {
+                return true;
+            }
+        }
+
+        $trash_dir = $this->trashDirPath();
+        return $this->path_is_inside($trash_dir, $root);
+    }
+
+    private function path_is_inside(string $candidate, string $root): bool
+    {
+        $candidate = untrailingslashit(wp_normalize_path(realpath($candidate) ?: $this->normalizePath($candidate) ?: $candidate));
+        $root      = untrailingslashit(wp_normalize_path(realpath($root) ?: $this->normalizePath($root) ?: $root));
+
+        if ($candidate === '' || $root === '' || $candidate === $root) {
+            return false;
+        }
+
+        return strpos(trailingslashit($candidate), trailingslashit($root)) === 0;
+    }
+
+    private function local_delete_failure_reason(string $path): string
+    {
+        if ($this->lastFailureReason !== '') {
+            $reason = $this->lastFailureReason;
+            $this->lastFailureReason = '';
+            return ' ' . $reason;
+        }
+
+        $err = error_get_last();
+        if (is_array($err) && ! empty($err['message'])) {
+            return ' ' . $err['message'];
+        }
+
+        if (! is_writable(dirname($path))) {
+            return ' ' . __('Parent directory is not writable.', 'anibas-file-manager');
+        }
+
+        return self::delete_failure_reason($path);
+    }
+
+    private function isPrivateBackupPath(string $path): bool
+    {
+        $real = realpath($path) ?: $this->normalizePath($path);
+        if (! $real) {
+            return false;
+        }
+
+        $contentRoot = realpath(WP_CONTENT_DIR) ?: $this->normalizePath(WP_CONTENT_DIR);
+        if (! $contentRoot || ($real !== $contentRoot && strpos(trailingslashit($real), trailingslashit($contentRoot)) !== 0)) {
+            return false;
+        }
+
+        $relative = trim(str_replace('\\', '/', substr($real, strlen($contentRoot))), '/');
+        $topLevel = explode('/', $relative)[0] ?? '';
+
+        return $topLevel === ANIBAS_FM_BACKUP_DIR_NAME || strpos($topLevel, '.anibas-backups-') === 0;
+    }
+
     /* =========================================================
        FILE INFORMATION
     ========================================================= */
 
-    public function exists($path)
+    public function exists(string $path): bool
     {
         $validated = $this->assertAllowed($path);
         return $validated && file_exists($validated);
     }
 
-    public function is_file($path)
+    public function is_file(string $path): bool
     {
         $validated = $this->assertAllowed($path);
         return $validated && is_file($validated);
     }
 
-    public function is_dir($path)
+    public function is_dir(string $path): bool 
     {
         $validated = $this->assertAllowed($path);
         return $validated && is_dir($validated);
     }
 
-    public function is_empty($path)
+    public function is_empty(string $path): bool 
     {
         $validated = $this->assertAllowed($path);
         if (! $validated || ! is_dir($validated)) {
@@ -238,13 +419,20 @@ class LocalFileSystemAdapter extends FileSystemAdapter
        FILE LISTING
     ========================================================= */
 
-    public function scandir($path)
+    public function scandir(string $path): array
     {
         $validated = $this->assertAllowed($path);
         if (! $validated) {
             return [];
         }
-        return scandir($validated);
+        $entries = @scandir($validated);
+        if (! $entries) {
+            return [];
+        }
+        return array_values(array_filter(
+            $entries,
+            static fn($e) => $e !== '.' && $e !== '..'
+        ));
     }
 
     public function listFilesIterative(string $root): array
@@ -263,27 +451,34 @@ class LocalFileSystemAdapter extends FileSystemAdapter
 
         $dirIterator = new \RecursiveDirectoryIterator($root, $flags);
 
-        $iterator = new \RecursiveIteratorIterator(
+        // Prune disallowed subtrees at the source so recursion doesn't descend
+        // into them (old code used $iterator->next() which is a no-op inside
+        // foreach, causing children of rejected dirs to leak into the result
+        // and mis-parent under the previous sibling).
+        $trashName = defined('ANIBAS_FM_TRASH_DIR_NAME') ? ANIBAS_FM_TRASH_DIR_NAME : '.trash';
+        $filter = new \RecursiveCallbackFilterIterator(
             $dirIterator,
+            function (\SplFileInfo $file) use ($trashName): bool {
+                if ($file->isDir() && $file->getFilename() === $trashName) {
+                    return false;
+                }
+                return (bool) $this->assertAllowed($file->getPathname());
+            }
+        );
+
+        $iterator = new \RecursiveIteratorIterator(
+            $filter,
             \RecursiveIteratorIterator::SELF_FIRST
         );
 
         foreach ($iterator as $filename => $fileInfo) {
             $fullPath = $fileInfo->getPathname();
-
-            if (! $allowed = $this->assertAllowed($fullPath)) {
-                if ($fileInfo->isDir()) {
-                    $iterator->next();
-                }
-                continue;
-            }
-
             $depth = $iterator->getDepth();
             $stack = array_slice($stack, 0, $depth + 1);
 
             $item = [
                 'is_folder'     => $fileInfo->isDir(),
-                'path'          => $this->sanitizePath($allowed, strlen($this->rootPath)),
+                'path'          => $this->sanitizePath($fullPath, strlen($this->rootPath)),
                 'permission'    => $fileInfo->getPerms(),
                 'last_modified' => $fileInfo->getMTime(),
             ];
@@ -308,7 +503,100 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         return $result;
     }
 
-    public function listDirectory($path, int $page = 1, int $pageSize = 100): array
+    /**
+     * Streaming readdir-based iterator for background-job queue building.
+     *
+     * Walks the directory with opendir/readdir and resumes via an integer
+     * position cursor. No sorting and no in-memory accumulation of the whole
+     * listing — safe for directories with millions of direct children.
+     *
+     * Cursor stability assumes the directory is not mutated between calls.
+     * The list phase only reads the source, so this holds for copy/move/delete
+     * jobs (the source is not modified until the transfer/delete phases run
+     * on the already-built queue).
+     */
+    public function iterateDirectory(string $path, ?array $cursor = null, int $maxItems = 1000, array $options = []): array
+    {
+        $empty = ['entries' => [], 'next_cursor' => null, 'has_more' => false];
+        $recursive_root = isset($options['recursive_root']) && is_string($options['recursive_root'])
+            ? $options['recursive_root']
+            : '';
+
+        $root = $recursive_root !== ''
+            ? $this->assertQueuedPath($path, $recursive_root)
+            : $this->assertAllowed($path);
+        if (! $root) {
+            return $empty;
+        }
+        if (! is_dir($root)) {
+            return $empty;
+        }
+
+        $skip        = is_array($cursor) && isset($cursor['offset']) ? max(0, (int) $cursor['offset']) : 0;
+        $rootPathLen = strlen($this->rootPath);
+
+        $entries  = [];
+        $position = 0;
+        $hasMore  = false;
+
+        $dh = @opendir($root);
+        if ($dh === false) {
+            return $empty;
+        }
+
+        try {
+            while (($name = readdir($dh)) !== false) {
+                if ($name === '.' || $name === '..') {
+                    continue;
+                }
+                $position++;
+
+                if ($position <= $skip) {
+                    continue;
+                }
+
+                $fullPath = $root . DIRECTORY_SEPARATOR . $name;
+                $isDir    = is_dir($fullPath);
+
+                if ($isDir
+                    && $recursive_root === ''
+                    && ($name === ANIBAS_FM_TRASH_DIR_NAME || $this->isPrivateBackupPath($fullPath))) {
+                    continue;
+                }
+                $validated = $recursive_root !== ''
+                    ? $this->assertQueuedPath($fullPath, $recursive_root)
+                    : $this->assertAllowed($fullPath);
+                if (! $validated) {
+                    continue;
+                }
+
+                $entry = [
+                    'name'      => $name,
+                    'is_folder' => $isDir,
+                    'path'      => $this->sanitizePath($validated, $rootPathLen),
+                ];
+                if (! $isDir) {
+                    $entry['filesize'] = @filesize($fullPath) ?: 0;
+                }
+                $entries[] = $entry;
+
+                if (count($entries) >= $maxItems) {
+                    $hasMore = (readdir($dh) !== false);
+                    break;
+                }
+            }
+        } finally {
+            closedir($dh);
+        }
+
+        return [
+            'entries'     => $entries,
+            'next_cursor' => ['offset' => $position],
+            'has_more'    => $hasMore,
+        ];
+    }
+
+    public function listDirectory(string $path, int $page = 1, int $pageSize = 100): array
     {
         if (! $root = $this->assertAllowed($path)) {
             return ['items' => [], 'total_items' => 0];
@@ -339,8 +627,10 @@ class LocalFileSystemAdapter extends FileSystemAdapter
                 if ($fileInfo->isDot()) continue;
                 if ($count >= $maxEntries) break;
 
-                // Hide the trash directory
-                if ($fileInfo->getFilename() === ANIBAS_FM_TRASH_DIR_NAME && $fileInfo->isDir()) continue;
+                if ($fileInfo->isDir()
+                    && ($fileInfo->getFilename() === ANIBAS_FM_TRASH_DIR_NAME || $this->isPrivateBackupPath($fileInfo->getPathname()))) {
+                    continue;
+                }
 
                 $fullPath = $fileInfo->getPathname();
                 if (! $this->assertAllowed($fullPath)) continue;
@@ -398,13 +688,14 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         return $response;
     }
 
-    public function getDetails($path)
+    public function getDetails(string $path): array|false
     {
-        if (! file_exists($path)) {
+        $validated = $this->assertAllowed($path);
+        if (! $validated || ! file_exists($validated)) {
             return false;
         }
 
-        $fi    = new \SplFileInfo($path);
+        $fi    = new \SplFileInfo($validated);
         $isDir = $fi->isDir();
         $perms = $fi->getPerms();
 
@@ -424,15 +715,18 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         if (! $isDir) {
             if (function_exists('finfo_open')) {
                 $finfo = finfo_open(FILEINFO_MIME_TYPE);
-                $mime  = finfo_file($finfo, $path) ?: '';
+                if ($finfo) {
+                    $mime = finfo_file($finfo, $validated) ?: '';
+                    finfo_close($finfo);
+                }
             } elseif (function_exists('mime_content_type')) {
-                $mime = mime_content_type($path) ?: '';
+                $mime = mime_content_type($validated) ?: '';
             }
         }
 
         return [
             'name'             => $fi->getFilename(),
-            'path'             => $path,
+            'path'             => $this->sanitizePath($validated, strlen($this->rootPath)),
             'is_folder'        => $isDir,
             'size'             => $isDir ? 0 : $fi->getSize(),
             'last_modified'    => $fi->getMTime(),
@@ -484,16 +778,17 @@ class LocalFileSystemAdapter extends FileSystemAdapter
        WRITE / DELETE OPERATIONS
     ========================================================= */
 
-    public function mkdir($path)
+    public function mkdir(string $path): bool
     {
-        $validated = $this->assertAllowed(dirname($path));
-        if (! $validated) {
+        $parent = $this->assertAllowed(dirname($path));
+        if (! $parent) {
             return false;
         }
 
-        $absolute_path = $this->assertAllowed($path) ?: $this->frontendPathToReal($path);
-
-        if (! $this->check_protected_path($absolute_path)) {
+        // Validate the final target path so blocked basenames (wp-config.php,
+        // .env, .htaccess, *.sql, etc.) can't slip through as new directories.
+        $absolute_path = $parent . DIRECTORY_SEPARATOR . basename($path);
+        if (! $this->assertAllowed($absolute_path) || ! $this->is_allowed_path($absolute_path)) {
             return false;
         }
 
@@ -509,7 +804,7 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         return $this->mkdir($path);
     }
 
-    public function rmdir($path)
+    public function rmdir(string $path): bool
     {
         $validated = $this->assertAllowed($path);
         if (! $validated || ! is_dir($validated)) {
@@ -537,6 +832,12 @@ class LocalFileSystemAdapter extends FileSystemAdapter
 
         $full_path = $validated_dir . DIRECTORY_SEPARATOR . basename($filename);
 
+        // Re-validate the assembled path so blocked basenames don't bypass via
+        // a validated parent (e.g. createFile("wp-content/wp-config.php")).
+        if (! $this->assertAllowed($full_path)) {
+            return false;
+        }
+
         $result = (bool) $this->fs->put_contents(
             $full_path,
             $content,
@@ -550,12 +851,12 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         return $result;
     }
 
-    public function put_contents($path, $content)
+    public function put_contents(string $path, string $content): bool
     {
         return $this->createFile($path, $content);
     }
 
-    public function append_contents($path, $content)
+    public function append_contents(string $path, string $content): bool
     {
         $validated = $this->assertAllowed($path);
         if (! $validated || ! file_exists($validated)) {
@@ -578,7 +879,7 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         return $this->unlink($filename);
     }
 
-    public function unlink($path)
+    public function unlink(string $path): bool
     {
         $validated = $this->assertAllowed($path);
         if (! $validated) {
@@ -600,7 +901,7 @@ class LocalFileSystemAdapter extends FileSystemAdapter
      *
      * @return true|array|\WP_Error
      */
-    public function delete($path)
+    public function delete(string $path)
     {
         $validated = $this->assertAllowed($path);
         if (! $validated || ! file_exists($validated)) {
@@ -609,16 +910,29 @@ class LocalFileSystemAdapter extends FileSystemAdapter
 
         if (anibas_fm_trash_enabled()) {
             error_clear_last();
-            if ($this->moveToTrash($validated)) {
+            $trash_result = $this->moveToTrash($validated);
+            if ($trash_result === true) {
                 return true;
+            }
+            // Cross-device fallback: moveToTrash enqueued a chunked move job.
+            // Propagate the job_id so the frontend polls instead of pretending
+            // the work finished synchronously.
+            if (is_string($trash_result)) {
+                return ['job_id' => $trash_result];
             }
             return new \WP_Error(
                 'trash_failed',
-                __('Failed to move to trash.', 'anibas-file-manager') . self::delete_failure_reason($validated)
+                __('Failed to move to trash.', 'anibas-file-manager') . $this->local_delete_failure_reason($validated)
             );
         }
 
         if (is_dir($validated)) {
+            if ($this->has_protected_descendant($validated)) {
+                return new \WP_Error(
+                    'delete_failed',
+                    __('Folder contains protected file-manager paths and cannot be deleted as a whole.', 'anibas-file-manager')
+                );
+            }
             $job_id = BackgroundProcessor::enqueue_delete_job($validated, 'local');
             if (is_wp_error($job_id)) {
                 return $job_id;
@@ -633,55 +947,103 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         }
         return new \WP_Error(
             'delete_failed',
-            __('Failed to delete file.', 'anibas-file-manager') . self::delete_failure_reason($validated)
+            __('Failed to delete file.', 'anibas-file-manager') . $this->local_delete_failure_reason($validated)
         );
     }
 
     /**
      * Move a file or folder to the .trash directory instead of deleting it.
      * Items are stored as: .trash/{timestamp}_{basename}
+     *
+     * Return shape:
+     *   true            — synchronous rename succeeded, item is in trash now
+     *   string          — job_id of an in-flight chunked move (cross-device path)
+     *   false           — failure
      */
-    public function moveToTrash(string $path): bool
+    public function moveToTrash(string $path): bool|string
     {
         $validated = $this->assertAllowed($path);
         if (! $validated || ! file_exists($validated)) {
             return false;
         }
 
+        return $this->moveValidatedToTrash($validated);
+    }
+
+    public function moveQueuedItemToTrash(string $path, string $root): bool|string
+    {
+        $validated = $this->assertQueuedPath($path, $root);
+        if (! $validated || ! file_exists($validated)) {
+            return false;
+        }
+
+        return $this->moveValidatedToTrash($validated);
+    }
+
+    private function moveValidatedToTrash(string $validated): bool|string
+    {
         $trash_dir = anibas_fm_get_trash_dir();
         $basename  = basename($validated);
-        
+
         $trash_id = time() . '_' . uniqid() . '_' . $basename;
         $dest     = $trash_dir . DIRECTORY_SEPARATOR . $trash_id;
 
-        $result = rename($validated, $dest);
+        $is_dir_src = is_dir($validated);
+        $size_src   = $is_dir_src ? 0 : (int) @filesize($validated);
+
+        if ($is_dir_src && $this->path_is_inside($dest, $validated)) {
+            $this->lastFailureReason = __('Cannot move a folder into its own trash subtree.', 'anibas-file-manager');
+            ActivityLogger::get_instance()->log_message('Trash blocked because destination is inside source: ' . $validated . ' -> ' . $dest);
+            return false;
+        }
+
+        if ($is_dir_src && $this->has_protected_descendant($validated)) {
+            $this->lastFailureReason = __('Folder contains protected file-manager paths and cannot be moved to trash as a whole.', 'anibas-file-manager');
+            ActivityLogger::get_instance()->log_message('Trash blocked because source contains protected descendants: ' . $validated);
+            return false;
+        }
+
+        $result = anibas_fm_safe_move($validated, $dest);
         if ($result) {
-            $index_file = $trash_dir . DIRECTORY_SEPARATOR . 'index.json';
-            $index = [];
-            if (file_exists($index_file)) {
-                $content = file_get_contents($index_file);
-                if ($content) {
-                    $index = json_decode($content, true) ?: [];
-                }
-            }
-
-            // Calculate relative path inside ABSPATH
-            $relative_path = ltrim(str_replace(wp_normalize_path(ABSPATH), '', wp_normalize_path($validated)), '/');
-
-            $index[$trash_id] = [
-                'original_path' => $relative_path,
+            // Index-entry metadata. list_trash() already skips orphaned
+            // entries (where the file doesn't exist at $dest yet), so the
+            // in-flight async case won't show up in trash UI until the job
+            // finishes copying — at which point it appears with this entry.
+            $entry = [
+                'original_path' => ltrim(str_replace(wp_normalize_path(ABSPATH), '', wp_normalize_path($validated)), '/'),
                 'basename'      => $basename,
                 'trashed_at'    => time(),
-                'is_dir'        => is_dir($dest),
-                'filesize'      => is_dir($dest) ? 0 : filesize($dest)
+                'is_dir'        => $is_dir_src,
+                'filesize'      => $size_src,
             ];
 
-            file_put_contents($index_file, wp_json_encode($index), LOCK_EX);
+            // Atomic read-modify-write under an exclusive lock; the previous
+            // code read then wrote separately, so two concurrent trash ops
+            // could stomp each other's index entries.
+            $index_file = $trash_dir . DIRECTORY_SEPARATOR . 'index.json';
+            $fp = @fopen($index_file, 'c+');
+            if ($fp) {
+                if (flock($fp, LOCK_EX)) {
+                    $content = stream_get_contents($fp);
+                    $index   = $content ? (json_decode($content, true) ?: []) : [];
+                    $index[$trash_id] = $entry;
+
+                    rewind($fp);
+                    ftruncate($fp, 0);
+                    fwrite($fp, wp_json_encode($index));
+                    fflush($fp);
+                    flock($fp, LOCK_UN);
+                }
+                fclose($fp);
+            }
 
             ActivityLogger::get_instance()->log('trashed', $basename, dirname($validated));
         } else {
-            $error_msg = sprintf("Failed to move %s to trash. Reason: %s", $path, print_r(error_get_last(), true));
-            ActivityLogger::get_instance()->log('error', basename($validated), dirname($validated), $error_msg);
+            $error_msg = sprintf('Failed to move %s to trash. Reason: %s', $validated, print_r(error_get_last(), true));
+            ActivityLogger::get_instance()->log_message($error_msg);
+            if ($this->lastFailureReason === '') {
+                $this->lastFailureReason = __('Filesystem move failed.', 'anibas-file-manager');
+            }
             error_clear_last();
         }
         return $result;
@@ -689,9 +1051,20 @@ class LocalFileSystemAdapter extends FileSystemAdapter
 
     /**
      * Remove (or trash) every child of a directory, leaving the directory itself
-     * in place. Each child is routed through delete() so trash mode applies.
+     * in place. Chunked to survive arbitrarily large folders.
      *
-     * @return true|\WP_Error
+     * Trash mode: move the whole root into .trash as a single atomic rename,
+     * then recreate an empty root at the original path. O(1) regardless of
+     * how many descendants live under $path.
+     *
+     * No-trash mode: enqueue a single background delete job with keep_root=true.
+     * DeletePhase walks the tree time-sliced and unlinks in chunks — no sync
+     * loop in the request that triggered the empty.
+     *
+     * @return true|array|\WP_Error
+     *   - true               on synchronous success (trash mode)
+     *   - ['job_id' => ...]  when work was enqueued
+     *   - \WP_Error          on failure
      */
     public function emptyFolder(string $path)
     {
@@ -700,24 +1073,93 @@ class LocalFileSystemAdapter extends FileSystemAdapter
             return new \WP_Error('not_found', __('Folder not found', 'anibas-file-manager'));
         }
 
-        $failures = [];
-        foreach (new \DirectoryIterator($validated) as $item) {
-            if ($item->isDot()) continue;
-            $result = $this->delete($item->getPathname());
-            if (is_wp_error($result)) {
-                $failures[] = $item->getFilename() . ': ' . $result->get_error_message();
+        $group_id = 'empty_' . wp_generate_password(12, false);
+        $group_meta = [
+            'ui_group_id'     => $group_id,
+            'ui_group_action' => 'empty',
+            'ui_group_label'  => basename($validated),
+            'ui_group_source' => $validated,
+        ];
+
+        if (anibas_fm_trash_enabled()) {
+            $trash_dir = anibas_fm_get_trash_dir();
+
+            // Same-FS detection via stat()['dev'] — when source and trash live
+            // on the same filesystem, the atomic rename optimization works
+            // and finishes in O(1) regardless of tree size. Different devices
+            // (typical Docker bind-mount: /var/www/html overlay vs.
+            // wp-content bind-mount) can't atomically rename a folder, so we
+            // fall back to per-child moveToTrash — the folder itself stays
+            // put while each child gets renamed-or-enqueued individually.
+            $src_stat   = @stat($validated);
+            $trash_stat = @stat($trash_dir);
+            $same_fs    = $src_stat && $trash_stat
+                && isset($src_stat['dev'], $trash_stat['dev'])
+                && $src_stat['dev'] === $trash_stat['dev'];
+
+            if ($same_fs) {
+                error_clear_last();
+                $r = $this->moveToTrash($validated);
+                if ($r !== true) {
+                    return new \WP_Error(
+                        'empty_failed',
+                        __('Failed to empty folder.', 'anibas-file-manager') . $this->local_delete_failure_reason($validated)
+                    );
+                }
+                if (! wp_mkdir_p($validated)) {
+                    return new \WP_Error(
+                        'empty_recreate_failed',
+                        __('Folder contents were trashed but the folder could not be recreated.', 'anibas-file-manager')
+                    );
+                }
+                ActivityLogger::get_instance()->log('emptied', basename($validated), dirname($validated));
+                return true;
             }
+
+            // Cross-FS fallback. The root folder stays put; every direct child
+            // gets moved to trash. Push the iteration into a single background
+            // job so the AJAX request returns immediately even when the folder
+            // has hundreds of thousands of direct children. The job's
+            // DeletePhase walks the children chunked and calls moveToTrash on
+            // each one (which itself may rename atomically or enqueue a sub-job
+            // for cross-FS directory moves).
+            $job_id = BackgroundProcessor::enqueue_empty_folder_trash_job($validated, 'local');
+            if (is_wp_error($job_id)) {
+                return $job_id;
+            }
+
+            BackgroundProcessor::annotate_jobs([$job_id], $group_meta + [
+                'ui_group_mode' => 'trash',
+            ]);
+
+            ActivityLogger::get_instance()->log('emptied', basename($validated), dirname($validated));
+            return [
+                'job_ids'        => [$job_id],
+                'group_id'       => $group_id,
+                'operation_mode' => 'trash',
+            ];
         }
 
-        if (! empty($failures)) {
-            return new \WP_Error(
-                'empty_partial',
-                __('Some items could not be deleted:', 'anibas-file-manager') . ' ' . implode('; ', $failures)
-            );
+        // No-trash path: hand off to BackgroundProcessor so the delete runs
+        // chunked. keep_root=true preserves the root folder itself. Returned
+        // as a single-element job_ids array so the AJAX layer + frontend
+        // can use one shape across both the no-trash and cross-FS-trash
+        // branches (the latter genuinely produces multiple jobs).
+        $job_id = BackgroundProcessor::enqueue_delete_job($validated, 'local', true);
+        if (is_wp_error($job_id)) {
+            return $job_id;
         }
+
+        BackgroundProcessor::annotate_jobs([$job_id], $group_meta + [
+            'ui_group_mode' => 'delete',
+        ]);
 
         ActivityLogger::get_instance()->log('emptied', basename($validated), dirname($validated));
-        return true;
+        return [
+            'job_ids'        => [$job_id],
+            'group_id'       => $group_id,
+            'operation_mode' => 'delete',
+        ];
     }
 
     public function readFile(string $filename)
@@ -725,7 +1167,7 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         return $this->get_contents($filename);
     }
 
-    public function get_contents($path)
+    public function get_contents(string $path): string|false
     {
         $validated = $this->assertAllowed($path);
         if (! $validated) {
@@ -738,7 +1180,7 @@ class LocalFileSystemAdapter extends FileSystemAdapter
        COPY / MOVE OPERATIONS
     ========================================================= */
 
-    public function copy($source, $target)
+    public function copy(string $source, string $target): bool
     {
         $validated_source = $this->assertAllowed($source);
         $validated_target_dir = $this->assertAllowed(dirname($target));
@@ -749,25 +1191,25 @@ class LocalFileSystemAdapter extends FileSystemAdapter
 
         $target_path = $validated_target_dir . DIRECTORY_SEPARATOR . basename($target);
 
-        if (is_file($validated_source)) {
-            return $this->fs->copy($validated_source, $target_path, true, FS_CHMOD_FILE);
-        }
-
-        // For directories, use background processor if available
-        if (class_exists('Anibas\BackgroundProcessor')) {
-            return ! is_wp_error(BackgroundProcessor::enqueue_job($validated_source, $target_path, 'copy', 'skip'));
-        }
-
-        // Copy single file
-        if (! copy($validated_source, $target_path)) {
-            ActivityLogger::get_instance()->log_message('Local file copy failed from ' . $validated_source . ' to ' . $target_path);
+        // Match move()'s target-path protection and also enforce blocked-basename
+        // rules via assertAllowed, so the target can't land on wp-config.php etc.
+        if (! $this->assertAllowed($target_path) || ! $this->is_allowed_path($target_path)) {
             return false;
         }
 
-        return true;
+        if (class_exists('Anibas\BackgroundProcessor')) {
+            if (is_dir($validated_source) && $this->has_protected_descendant($validated_source)) {
+                return false;
+            }
+            return ! is_wp_error(BackgroundProcessor::enqueue_job($validated_source, $target_path, 'copy', 'skip', 'local', [
+                'dest_is_final' => true,
+            ]));
+        }
+
+        return false;
     }
 
-    public function move($source, $target)
+    public function move(string $source, string $target): bool
     {
         $validated_source = $this->assertAllowed($source);
         $validated_target_dir = $this->assertAllowed(dirname($target));
@@ -779,18 +1221,23 @@ class LocalFileSystemAdapter extends FileSystemAdapter
 
         $target_path = $validated_target_dir . DIRECTORY_SEPARATOR . basename($target);
 
-        if (! $this->check_protected_path($target_path)) {
-            ActivityLogger::get_instance()->log_message('Local move blocked - protected path: ' . $target_path);
+        if (! $this->assertAllowed($target_path) || ! $this->is_allowed_path($target_path)) {
+            ActivityLogger::get_instance()->log_message('Local move blocked - protected or disallowed target path: ' . $target_path);
             return false;
         }
 
         if (is_dir($validated_source)) {
-            // Use background processor for directories
-            return ! is_wp_error(BackgroundProcessor::enqueue_job($validated_source, $target_path, 'move', 'skip'));
+            if ($this->has_protected_descendant($validated_source)) {
+                ActivityLogger::get_instance()->log_message('Local move blocked - source contains protected descendants: ' . $validated_source);
+                return false;
+            }
+            return ! is_wp_error(BackgroundProcessor::enqueue_job($validated_source, $target_path, 'move', 'skip', 'local', [
+                'dest_is_final' => true,
+            ]));
         }
 
-        // Move single file
-        if (! rename($validated_source, $target_path)) {
+        // Fast rename when possible; otherwise queue chunked copy+remove_source.
+        if (! anibas_fm_safe_move($validated_source, $target_path)) {
             ActivityLogger::get_instance()->log_message('Local file move failed from ' . $validated_source . ' to ' . $target_path);
             return false;
         }
@@ -806,30 +1253,6 @@ class LocalFileSystemAdapter extends FileSystemAdapter
     public function copyPath(string $source, string $destination): bool
     {
         return $this->copy($source, $destination);
-    }
-
-    public function processSingleFile(string $source, string $destination, string $action): bool
-    {
-        $source = $this->assertAllowed($source);
-        $dest_dir = $this->assertAllowed(dirname($destination));
-
-        if (! $source || ! $dest_dir) {
-            throw new \Exception(esc_html__('Invalid paths', 'anibas-file-manager'));
-        }
-
-        $destination = $dest_dir . DIRECTORY_SEPARATOR . basename($destination);
-
-        if ($action === 'move') {
-            $result = $this->fs->move($source, $destination, true);
-        } else {
-            $result = $this->copyFileInChunks($source, $destination);
-        }
-
-        if (! $result) {
-            throw new \Exception(esc_html__('Operation failed', 'anibas-file-manager'));
-        }
-
-        return true;
     }
 
     /**
@@ -865,10 +1288,10 @@ class LocalFileSystemAdapter extends FileSystemAdapter
             $chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
         }
 
-        // Ensure destination directory exists
+        // Ensure destination directory exists (recursive; fs->mkdir is single-level).
         $dest_dir = dirname($destination);
-        if (! $this->fs->is_dir($dest_dir)) {
-            if (! $this->fs->mkdir($dest_dir, FS_CHMOD_DIR)) {
+        if (! is_dir($dest_dir)) {
+            if (! wp_mkdir_p($dest_dir)) {
                 ActivityLogger::get_instance()->log_message('Local Copy error: Failed to create destination directory');
                 return self::COPY_ERROR_CREATING_FILE;
             }
@@ -882,8 +1305,12 @@ class LocalFileSystemAdapter extends FileSystemAdapter
 
         $source_size = filesize($source);
         if ($source_size === 0) {
-            ActivityLogger::get_instance()->log_message('Local Copy error: Source file is empty');
-            return self::COPY_ERROR_SOURCE_EMPTY;
+            if (@file_put_contents($destination, '') !== false) {
+                chmod($destination, FS_CHMOD_FILE);
+                return self::COPY_OPERATION_COMPLETE;
+            }
+            ActivityLogger::get_instance()->log_message('Local Copy error: Failed to create empty destination file');
+            return self::COPY_ERROR_CREATING_FILE;
         }
 
         // Check if copy is already complete
@@ -933,7 +1360,16 @@ class LocalFileSystemAdapter extends FileSystemAdapter
                 }
 
                 if (strlen($chunk) === 0) {
-                    break; // End of file reached
+                    // Unexpected EOF before $source_size — source was truncated
+                    // or the read returned empty without an error. Returning
+                    // IN_PROGRESS here would cause the caller to retry forever.
+                    fclose($source_handle);
+                    fclose($dest_handle);
+                    ActivityLogger::get_instance()->log_message(
+                        'Local Copy error: Unexpected EOF at position ' .
+                        ($bytes_copied + $bytes_copied_current) . ' of ' . $source_size
+                    );
+                    return self::COPY_ERROR_READING_CHUNK;
                 }
 
                 $bytes_written = fwrite($dest_handle, $chunk);
@@ -1024,12 +1460,17 @@ class LocalFileSystemAdapter extends FileSystemAdapter
      */
     public function deleteDestination($destination): bool
     {
+        $validated = $this->assertAllowed($destination);
+        if (! $validated) {
+            return false;
+        }
+
         try {
-            if (file_exists($destination)) {
-                if (is_dir($destination)) {
-                    return $this->fs->rmdir($destination);
+            if (file_exists($validated)) {
+                if (is_dir($validated)) {
+                    return $this->fs->rmdir($validated);
                 } else {
-                    return $this->fs->unlink($destination);
+                    return $this->fs->delete($validated);
                 }
             }
             return true; // Nothing to delete
@@ -1056,12 +1497,12 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         $ext  = isset($info['extension']) ? '.' . $info['extension'] : '';
 
         // More efficient approach: use timestamp + random digits to avoid loops
-        $new_path = $dir . DIRECTORY_SEPARATOR . $name . '_' . date('Y-m-d_H-i-s') . '_' . mt_rand(100000, 999999) . $ext;
+        $new_path = $dir . DIRECTORY_SEPARATOR . $name . '_' . (string) microtime(true) . '_' . wp_rand(100000, 999999) . $ext;
 
         // Double-check the extremely unlikely case of collision
         $counter = 0;
         while ($this->fs->exists($new_path) && $counter < 10) {
-            $new_path = $dir . DIRECTORY_SEPARATOR . $name . '_' . date('Y-m-d_H-i-s') . '_' . mt_rand(100000, 999999) . $ext;
+            $new_path = $dir . DIRECTORY_SEPARATOR . $name . '_' . (string) microtime(true) . '_' . wp_rand(100000, 999999) . $ext;
             $counter++;
         }
 

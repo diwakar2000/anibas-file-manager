@@ -62,9 +62,8 @@ class ZipCreateEngine {
         $this->state_file    = $output . '.state.json';
         $this->lock_file     = $output . '.lock';
 
-        // Use ~60% of available execution time, minimum 10s
         $max_time = (int) ini_get( 'max_execution_time' );
-        $this->time_budget = max( 10, $max_time > 0 ? (int) ( $max_time * 0.6 ) : 20 );
+        $this->time_budget = $max_time > 0 ? max( 1, (int) floor( $max_time * 0.6 ) ) : 20;
     }
 
     /* ------------------------------------- */
@@ -166,7 +165,7 @@ class ZipCreateEngine {
 
         // Atomic write
         $tmp = $this->manifest_file . '.tmp';
-        file_put_contents( $tmp, json_encode( [
+        file_put_contents( $tmp, wp_json_encode( [
             'total'         => count( $entries ),
             'total_size'    => array_sum( array_column( $entries, 'size' ) ),
             'max_file_size' => $max_file_size,
@@ -226,7 +225,7 @@ class ZipCreateEngine {
 
     private function save_state( array $state ) {
         $tmp = $this->state_file . '.tmp';
-        file_put_contents( $tmp, json_encode( $state ) );
+        file_put_contents( $tmp, wp_json_encode( $state ) );
         rename( $tmp, $this->state_file );
     }
 

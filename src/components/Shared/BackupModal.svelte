@@ -4,11 +4,13 @@
 
   let {
     visible = false,
+    settingsAuthToken = undefined,
     onclose,
     onstarted,
     oncomplete,
   } = $props<{
     visible: boolean
+    settingsAuthToken?: string | null
     onclose: () => void
     onstarted?: () => void
     oncomplete?: () => void
@@ -55,7 +57,7 @@
     errorMsg = ""
 
     try {
-      const result = await backupStart(format, format === "anfm" && password ? password : undefined)
+      const result = await backupStart(format, format === "anfm" && password ? password : undefined, settingsAuthToken)
       jobId = result.job_id
       outputFile = result.output
       phase = "running"
@@ -73,7 +75,7 @@
     if (!jobId) return
 
     try {
-      const result = await backupPoll(jobId, format === "anfm" && password ? password : undefined)
+      const result = await backupPoll(jobId, format === "anfm" && password ? password : undefined, settingsAuthToken)
       progress = result.progress
 
       if (result.done) {
@@ -95,7 +97,7 @@
     cancelling = true
 
     try {
-      await backupCancel(jobId)
+      await backupCancel(jobId, settingsAuthToken)
       cleanup()
       onclose()
     } catch (err: any) {
@@ -127,7 +129,7 @@
   // Check if a backup is already running on mount
   $effect(() => {
     if (visible && phase === "choose") {
-      backupStatus().then((status) => {
+      backupStatus(settingsAuthToken).then((status) => {
         if (status.running && status.job_id) {
           jobId = status.job_id
           outputFile = status.output ?? ""
@@ -289,27 +291,32 @@
 {/if}
 
 <style>
-  .anibas-fm-backup-overlay {
-    position: fixed;
-    top: 0;
+	  .anibas-fm-backup-overlay {
+	    position: fixed;
+	    top: 0;
     left: 0;
     right: 0;
     bottom: 0;
     background: rgba(0, 0, 0, 0.6);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 100000;
-  }
+	    display: flex;
+	    align-items: flex-start;
+	    justify-content: center;
+	    z-index: 100000;
+	    overflow-y: auto;
+	    padding: 32px 16px;
+	    box-sizing: border-box;
+	  }
 
-  .anibas-fm-backup-modal {
-    background: #fff;
-    border-radius: 8px;
-    padding: 30px;
-    max-width: 480px;
-    width: 90%;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-  }
+	  .anibas-fm-backup-modal {
+	    background: #fff;
+	    border-radius: 8px;
+	    padding: 30px;
+	    max-width: 480px;
+	    width: 90%;
+	    max-height: calc(100vh - 64px);
+	    overflow-y: auto;
+	    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+	  }
 
   .anibas-fm-backup-modal h3 {
     margin: 0 0 10px;

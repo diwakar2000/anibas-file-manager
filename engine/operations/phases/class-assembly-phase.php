@@ -76,7 +76,9 @@ class AssemblyPhase extends OperationPhase
 
     private function verify_assembly_token(&$job)
     {
-        $token_key = 'anibas_fm_upload_' . md5($job['file_name'] . $job['file_size'] . $job['user_id']) . '_assembly';
+        $token_key = ! empty($job['upload_id'])
+            ? 'anibas_fm_upload_' . $job['upload_id'] . '_' . $job['user_id'] . '_assembly'
+            : 'anibas_fm_upload_' . md5($job['file_name'] . $job['file_size'] . $job['user_id']) . '_assembly';
         $stored_token = get_transient($token_key);
 
         if (! $stored_token) {

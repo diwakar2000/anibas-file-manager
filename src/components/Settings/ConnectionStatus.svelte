@@ -1,5 +1,5 @@
 <script lang="ts">
-	let { type, settings, enabled = $bindable(), children } = $props<{ type: string, settings: any, enabled: boolean, children: import('svelte').Snippet }>()
+	let { type, settings, enabled = $bindable(), authToken = null, children } = $props<{ type: string, settings: any, enabled: boolean, authToken?: string | null, children: import('svelte').Snippet }>()
 	
 	let status = $state<'offline' | 'online' | 'checking'>('offline')
 	let statusMessage = $state('')
@@ -25,6 +25,9 @@
 		const formData = new FormData()
 		formData.append('action', cfg.actions.testRemoteConnection)
 		formData.append('nonce', cfg.nonce)
+		if (authToken) {
+			formData.append('token', authToken)
+		}
 		formData.append('type', type)
 		formData.append('config', JSON.stringify(settings))
 

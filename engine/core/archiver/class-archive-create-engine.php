@@ -89,7 +89,7 @@ class ArchiveCreateEngine {
         $this->lock_file          = $output . '.lock';
 
         $max_time = (int) ini_get( 'max_execution_time' );
-        $this->time_budget = max( 10, $max_time > 0 ? (int) ( $max_time * 0.6 ) : 20 );
+        $this->time_budget = $max_time > 0 ? max( 1, (int) floor( $max_time * 0.6 ) ) : 20;
 
         $this->chunk_size = intval( anibas_fm_get_option( 'chunk_size', ANIBAS_FM_DEFAULT_CHUNK_SIZE ) );
         if ( $this->chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN ) $this->chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
@@ -221,7 +221,7 @@ class ArchiveCreateEngine {
         }
 
         $tmp = $this->scan_manifest_file . '.tmp';
-        file_put_contents( $tmp, json_encode( [
+        file_put_contents( $tmp, wp_json_encode( [
             'total'         => count( $entries ),
             'total_size'    => array_sum( array_column( $entries, 'size' ) ),
             'max_file_size' => $max_file_size,
@@ -286,7 +286,7 @@ class ArchiveCreateEngine {
 
     private function save_state( array $state ) {
         $tmp = $this->state_file . '.tmp';
-        file_put_contents( $tmp, json_encode( $state ) );
+        file_put_contents( $tmp, wp_json_encode( $state ) );
         rename( $tmp, $this->state_file );
     }
 
@@ -451,7 +451,7 @@ class ArchiveCreateEngine {
                 $is_protected = ! empty( $state['password_protected'] );
                 $key = self::resolve_key( $password, $key_material, $is_protected );
 
-                $manifest_json   = json_encode( [ 'files' => $state['file_entries'] ] );
+                $manifest_json   = wp_json_encode( [ 'files' => $state['file_entries'] ] );
                 $manifest_offset = $state['archive_pos'];
 
                 $fh = fopen( $this->output, 'r+b' );

@@ -365,7 +365,7 @@
                 </button>
             </div>
 
-            <BackupsList />
+            <BackupsList {authToken} />
 
             <div class="card max-w-100">
                 <h3>Remote File Backups</h3>
@@ -690,6 +690,7 @@
 {#if showPathSelector}
     <PathSelector
         selectedPaths={excludedPaths}
+        {authToken}
         onClose={() => (showPathSelector = false)}
         onSave={handlePathsSelected}
     />
@@ -697,6 +698,7 @@
 
 <BackupModal
     visible={showBackupModal}
+    settingsAuthToken={authToken}
     onclose={() => { showBackupModal = false; backupRunning = false }}
     onstarted={() => { backupRunning = true }}
     oncomplete={() => { backupRunning = false }}

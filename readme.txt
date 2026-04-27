@@ -4,9 +4,10 @@ Donate link: https://diwakar2000.com.np/
 Tags: file manager, editor, archive, cloud storage, s3 compatible
 Requires at least: 6.0
 Tested up to: 6.9
-Stable tag: 0.5.0
+Stable tag: 0.6.0
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
+Requires PHP: 8.0
 
 Advanced File Manager with multi-storage support, code editor, archive management, and background processing.
 
@@ -25,6 +26,13 @@ Anibas File Manager is a powerful, modern, and secure file management solution f
 *   **Security First**: Built with strict capability checks, action-specific nonces, multi-layer path validation, and hardcoded blocked paths for mission-critical WordPress files.
 *   **Privacy & Protection**: Optional file manager password gate, settings protection, and delete-confirmation passwords with brute-force protection.
 
+== Installation ==
+
+1. Upload the `anibas-file-manager` folder to the `/wp-content/plugins/` directory, or install the ZIP file via the WordPress plugin dashboard.
+2. Activate the plugin through the 'Plugins' menu in WordPress.
+3. Access the 'File Manager' menu in the admin dashboard to start managing your files.
+4. (Optional) Configure remote storage options and security settings under File Manager -> Settings.
+
 == Frequently Asked Questions ==
 
 = Is it safe to use? =
@@ -36,6 +44,11 @@ Absolutely. It supports FTP, SFTP, and any S3-compatible storage like AWS, Digit
 = What is the maximum file size for the editor? =
 By default, the editor supports files up to 10 MB. This can be configured via constants if your server memory allows for larger chunks.
 
+== Source Code ==
+
+The full source code and build instructions are available at:
+https://github.com/diwakar2000/anibas-file-manager
+
 == Screenshots ==
 
 1. The main file explorer showing the sidebar tree and file grid.
@@ -44,6 +57,5 @@ By default, the editor supports files up to 10 MB. This can be configured via co
 
 == Changelog ==
 
-= 1.0 =
+= 0.6.0 =
 * Initial release.
-

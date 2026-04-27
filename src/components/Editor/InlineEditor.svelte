@@ -3,6 +3,7 @@
     import { getLanguage } from './editorLanguage';
     import { fileStore } from '../../stores/fileStore.svelte';
     import { toast } from '../../utils/toast';
+    import { checkFmTokenError, getFmToken } from '../../services/fileApi';
 
     let { path, storage, canEdit } = $props<{ path: string; storage: string; canEdit: boolean }>();
 
@@ -29,11 +30,14 @@
             fd.append('path',    path);
             fd.append('storage', storage);
             fd.append('offset',  String(offset));
+            const fmToken = getFmToken();
+            if (fmToken) fd.append('fm_token', fmToken);
 
             const res  = await fetch(cfg.ajaxURL, { method: 'POST', body: fd });
             const json = await res.json();
 
             if (!json.success) {
+                checkFmTokenError(json);
                 throw new Error(json.data?.message || json.data?.error || 'Failed to load file');
             }
 
@@ -68,6 +72,8 @@
             fd.append('nonce',   cfg.editorNonce);
             fd.append('path',    path);
             fd.append('storage', storage);
+            const fmToken = getFmToken();
+            if (fmToken) fd.append('fm_token', fmToken);
             const bytes = new TextEncoder().encode(content);
             let binary = '';
             for (const b of bytes) binary += String.fromCharCode(b);
@@ -76,7 +82,10 @@
             const res  = await fetch(cfg.ajaxURL, { method: 'POST', body: fd });
             const json = await res.json();
 
-            if (!json.success) throw new Error(json.data?.message || 'Save failed');
+            if (!json.success) {
+                checkFmTokenError(json);
+                throw new Error(json.data?.message || json.data?.error || 'Save failed');
+            }
 
             isDirty = false;
             status  = 'saved';

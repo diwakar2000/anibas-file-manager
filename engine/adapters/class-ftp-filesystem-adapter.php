@@ -21,28 +21,23 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         $this->host = $host;
         $this->username = $username;
         $this->password = $password;
-        $this->base_path = rtrim($base_path, '/');
+        $this->base_path = is_string($base_path) && $base_path !== '' ? $base_path : '/';
         $this->use_ssl = $use_ssl;
         $this->port = $port ?? ($use_ssl ? 990 : 21);
         $this->is_passive = $is_passive;
         $this->insecure_ssl = (bool) $insecure_ssl;
     }
 
-    public function validate_path($path)
+    public function validate_path(string $path): string|false
     {
-        // FTP server handles path constraints, return as-is
-        return $path;
+        return anibas_fm_normalize_remote_path($path, $this->base_path);
     }
 
     public function resolve_path($path, $context = 'default')
     {
-        // Remove base_path if already present
-        if ($this->base_path && strpos($path, $this->base_path) === 0) {
-            $resolved = $path;
-        } elseif ($this->base_path === '/') {
-            $resolved = $path;
-        } else {
-            $resolved = rtrim($this->base_path, '/') . '/' . ltrim($path, '/');
+        $resolved = $this->validate_path((string) $path);
+        if ($resolved === false) {
+            throw new \InvalidArgumentException(esc_html__('Invalid remote path', 'anibas-file-manager'));
         }
 
         // For FTP commands (QUOTE), don't quote - some servers don't support it
@@ -202,10 +197,15 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function exists($path)
+    public function exists(string $path): bool
     {
+        $validated = $this->validate_path($path);
+        if ($validated === false) {
+            return false;
+        }
+
         // Try as directory first (with trailing slash)
-        $dir_path = rtrim($path, '/') . '/';
+        $dir_path = rtrim($validated, '/') . '/';
         $ch = $this->build_curl($dir_path, [CURLOPT_NOBODY => true, CURLOPT_HEADER => true]);
         curl_exec($ch);
         $this->check_curl_connection_error($ch);
@@ -216,7 +216,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         }
 
         // Try as file (without trailing slash)
-        $ch = $this->build_curl($path, [CURLOPT_NOBODY => true, CURLOPT_HEADER => true]);
+        $ch = $this->build_curl($validated, [CURLOPT_NOBODY => true, CURLOPT_HEADER => true]);
         curl_exec($ch);
         $this->check_curl_connection_error($ch);
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -224,7 +224,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         return $http_code >= 200 && $http_code < 400;
     }
 
-    public function is_file($path)
+    public function is_file(string $path): bool
     {
         try {
             $parent = dirname($path);
@@ -257,7 +257,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function is_dir($path)
+    public function is_dir(string $path): bool
     {
         // Root is always a directory
         if ($path === '/') {
@@ -293,7 +293,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function mkdir($path)
+    public function mkdir(string $path): bool
     {
         $resolved = $this->resolve_path($path, 'command');
         $ch = $this->build_curl('/', [
@@ -304,7 +304,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         return true;
     }
 
-    public function scandir($path)
+    public function scandir(string $path): array
     {
         $resolved = $this->resolve_path($path);
         $list_path = rtrim($resolved, '/') . '/';
@@ -341,7 +341,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         return ['items' => $items, 'total' => count($items)];
     }
 
-    public function listDirectory($path)
+    public function listDirectory(string $path): array
     {
         $result = $this->scandir($path);
         return [
@@ -350,7 +350,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         ];
     }
 
-    public function getDetails($path)
+    public function getDetails(string $path): array|false
     {
         $parent   = dirname($path);
         $target   = basename($path);
@@ -396,7 +396,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         return false;
     }
 
-    public function rmdir($path)
+    public function rmdir(string $path): bool
     {
 
         // First, recursively delete all contents
@@ -430,7 +430,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function copy($source, $target)
+    public function copy(string $source, string $target): bool
     {
         try {
             return $this->copyFileInChunks($source, $target);
@@ -652,7 +652,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function move($source, $target)
+    public function move(string $source, string $target): bool
     {
         $source_resolved = $this->resolve_path($source, 'command');
         $target_resolved = $this->resolve_path($target, 'command');
@@ -667,7 +667,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         return $result !== false;
     }
 
-    public function unlink($path)
+    public function unlink(string $path): bool
     {
         $resolved = $this->resolve_path($path, 'command');
 
@@ -683,7 +683,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function get_contents($path)
+    public function get_contents(string $path): string|false
     {
         try {
             $ch = $this->build_curl($path);
@@ -693,7 +693,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function stream_contents($path)
+    public function stream_contents(string $path): bool
     {
         try {
             $ch = $this->build_curl($path);
@@ -716,7 +716,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function get_size($path)
+    public function get_size(string $path): int|false
     {
         try {
             $ch = $this->build_curl($path);
@@ -730,12 +730,12 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function put_contents($path, $content)
+    public function put_contents(string $path, string $content): bool
     {
         return $this->upload_content($path, $content);
     }
 
-    public function append_contents($path, $content)
+    public function append_contents(string $path, string $content): bool
     {
         $stream = null;
         try {

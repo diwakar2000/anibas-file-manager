@@ -24,22 +24,39 @@ class WorkerAjaxHandler
 
         // 1. Verify authorization securely (server-to-server token)
         if (! AsyncWorkerDispatcher::verify_secret($secret)) {
-            ActivityLogger::log('blocked', $secret, ' an attempt to run worker with invalid secret');
-            wp_die('Unauthorized worker request', 'Unauthorized', 401);
+            ActivityLogger::log_message('[WorkerAjaxHandler] Blocked worker request with invalid secret.');
+            wp_die('Unauthorized worker request', 'Unauthorized', ['response' => 401]);
         }
 
-        // 2. Prevent infinite loops / runaway processes by checking if the lock is free.
-        // run_worker() natively acquires the lock and will return immediately if it fails.
-        
-        // 3. Run the worker (this processes 1 chunk of 10 seconds max)
+        // 2. Keep the worker alive even if the dispatcher closed the socket
+        // (dispatch uses blocking=false, so the client side won't wait for us).
+        ignore_user_abort(true);
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
+
+        // 3. Release any active PHP session lock so concurrent requests
+        // (polling, re-dispatch, other plugin AJAX) are not blocked.
+        if (function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+        }
+
+        // 4. Run the worker (processes 1 chunk, time-sliced internally).
+        // run_worker() natively acquires the lock and returns immediately if another
+        // worker already holds it — so it's safe to call unconditionally.
         ActivityLogger::log_message('[WorkerAjaxHandler] Calling BackgroundProcessor::run_worker()');
         BackgroundProcessor::run_worker();
         ActivityLogger::log_message('[WorkerAjaxHandler] BackgroundProcessor::run_worker() completed for this slice.');
 
-        // 4. If there are still pending jobs after this slice, dispatch another async loopback
-        // to continue the work in a fresh PHP process, preventing timeout.
-        ActivityLogger::log_message('[WorkerAjaxHandler] Re-dispatching AsyncWorkerDispatcher::dispatch() to check/continue remaining jobs.');
-        AsyncWorkerDispatcher::dispatch();
+        // 5. Re-dispatch only if no other worker is currently processing. If the lock
+        // is still held, another worker is running and will re-dispatch itself when
+        // done — dispatching here would just pile up redundant loopback requests.
+        if (! BackgroundProcessor::is_worker_locked()) {
+            ActivityLogger::log_message('[WorkerAjaxHandler] Re-dispatching AsyncWorkerDispatcher::dispatch() to check/continue remaining jobs.');
+            AsyncWorkerDispatcher::dispatch();
+        } else {
+            ActivityLogger::log_message('[WorkerAjaxHandler] Skipping re-dispatch: another worker holds the lock.');
+        }
 
         // End the AJAX request cleanly
         ActivityLogger::log_message('[WorkerAjaxHandler] Ending AJAX request cleanly.');

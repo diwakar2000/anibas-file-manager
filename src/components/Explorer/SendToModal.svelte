@@ -2,6 +2,7 @@
   import { fileStore } from "../../stores/fileStore.svelte"
   import { toast } from "../../utils/toast"
   import type { FileItem } from "../../types/files"
+  import { checkFmTokenError, getFmToken } from "../../services/fileApi"
 
   let { file, onclose } = $props<{ file: FileItem; onclose: () => void }>()
 
@@ -23,10 +24,17 @@
     checking = true
 
     try {
-      const response = await fetch(`${config.ajaxURL}?action=${config.actions.getRemoteSettings}&nonce=${config.settingsNonce}`)
+      const url = new URL(config.ajaxURL)
+      url.searchParams.set('action', config.actions.getRemoteSettings)
+      url.searchParams.set('nonce', config.listNonce)
+      const fmToken = getFmToken()
+      if (fmToken) url.searchParams.set('fm_token', fmToken)
+
+      const response = await fetch(url.toString())
       const data = await response.json()
 
       if (!data.success) {
+        checkFmTokenError(data)
         loading = false
         checking = false
         return
@@ -43,57 +51,21 @@
       } else {
         // On local - can send to any configured remote
         const remoteStorages = [
-          { id: 'ftp', name: 'FTP', config: data.data.ftp, enabled: data.data.ftp?.enabled },
-          { id: 'sftp', name: 'SFTP', config: data.data.sftp, enabled: data.data.sftp?.enabled },
-          { id: 's3', name: 'Amazon S3', config: data.data.s3, enabled: data.data.s3?.enabled },
-          { id: 's3_compatible', name: 'S3 Compatible', config: data.data.s3_compatible, enabled: data.data.s3_compatible?.enabled }
+          { id: 'ftp', name: 'FTP', enabled: data.data.ftp?.enabled },
+          { id: 'sftp', name: 'SFTP', enabled: data.data.sftp?.enabled },
+          { id: 's3', name: 'Amazon S3', enabled: data.data.s3?.enabled },
+          { id: 's3_compatible', name: 'S3 Compatible', enabled: data.data.s3_compatible?.enabled }
         ].filter(s => s.enabled)
 
         // Add local option too (for same-storage copy to different location)
         availableStorages.push({ id: 'local', name: 'Local Files (current)', status: 'online' })
 
-        // Add remote storages with checking status
         for (const s of remoteStorages) {
-          availableStorages.push({ id: s.id, name: s.name, status: 'checking' })
+          availableStorages.push({ id: s.id, name: s.name, status: 'online' })
         }
       }
 
       storages = availableStorages
-
-      // Test remote connections
-      if (currentStorage === 'local') {
-        const remoteStorages = storages.filter(s => s.id !== 'local')
-        
-        const tests = remoteStorages.map(async (storage) => {
-          const settings = data.data[storage.id]
-          if (!settings) return
-
-          const formData = new FormData()
-          formData.append('action', config.actions.testRemoteConnection)
-          formData.append('nonce', config.settingsNonce)
-          formData.append('type', storage.id)
-          formData.append('config', JSON.stringify(settings))
-
-          try {
-            const res = await fetch(config.ajaxURL, { method: 'POST', body: formData })
-            const result = await res.json()
-            storages = storages.map(s =>
-              s.id === storage.id
-                ? { ...s, status: result.success ? 'online' : 'offline' }
-                : s
-            )
-          } catch (e) {
-            storages = storages.map(s =>
-              s.id === storage.id
-                ? { ...s, status: 'offline' }
-                : s
-            )
-          }
-        })
-
-        await Promise.all(tests)
-      }
-
       loading = false
       checking = false
     } catch (e) {

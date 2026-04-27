@@ -1,19 +1,19 @@
 {
   "name": "assets",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.6.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "VITE_ENTRY_GROUP=app vite build && VITE_ENTRY_GROUP=settings vite build",
     "watch": "trap 'kill 0' EXIT INT TERM; VITE_ENTRY_GROUP=app vite build --watch & VITE_ENTRY_GROUP=settings vite build --watch & wait",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
-    "zip": "bash zip.sh"
+    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@tsconfig/svelte": "^5.0.4",
+    "@types/node": "^24.12.2",
     "svelte": "^5.15.0",
     "svelte-check": "^4.1.1",
     "typescript": "~5.6.2",

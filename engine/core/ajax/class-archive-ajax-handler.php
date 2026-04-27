@@ -58,13 +58,13 @@ class ArchiveAjaxHandler extends AjaxHandler
 
         $job_id = anibas_fm_fetch_request_variable('post', 'job_id', '');
         if (empty($job_id)) {
-            wp_send_json_error(['error' => 'JobIdRequired', 'message' => esc_html__('Job ID required', 'anibas-file-manager')]);
+            $this->send_error(['error' => 'JobIdRequired', 'message' => esc_html__('Job ID required', 'anibas-file-manager')]);
         }
 
         $jobs = $this->get_archive_jobs();
         if (! isset($jobs[$job_id])) {
             // Already gone — treat as success
-            wp_send_json_success(['message' => esc_html__('Archive job not found (already cleaned up)', 'anibas-file-manager')]);
+            $this->send_success(['message' => esc_html__('Archive job not found (already cleaned up)', 'anibas-file-manager')]);
         }
 
         $job    = $jobs[$job_id];
@@ -89,7 +89,7 @@ class ArchiveAjaxHandler extends AjaxHandler
         }
 
         $this->remove_archive_job($job_id);
-        wp_send_json_success(['message' => esc_html__('Archive job cancelled', 'anibas-file-manager')]);
+        $this->send_success(['message' => esc_html__('Archive job cancelled', 'anibas-file-manager')]);
     }
 
     /* =========================================================
@@ -109,15 +109,15 @@ class ArchiveAjaxHandler extends AjaxHandler
         $storage       = anibas_fm_fetch_request_variable('post', 'storage', 'local');
 
         if (empty($source)) {
-            wp_send_json_error(array('error' => 'SourceRequired', 'message' => esc_html__('Source path required', 'anibas-file-manager')));
+            $this->send_error(array('error' => 'SourceRequired', 'message' => esc_html__('Source path required', 'anibas-file-manager')));
         }
         if (! in_array($format, ['zip', 'tar', 'anfm'], true)) {
-            wp_send_json_error(array('error' => 'InvalidFormat', 'message' => esc_html__('Invalid archive format', 'anibas-file-manager')));
+            $this->send_error(array('error' => 'InvalidFormat', 'message' => esc_html__('Invalid archive format', 'anibas-file-manager')));
         }
 
         // Archive engines use native PHP filesystem — only local storage is supported.
         if ($storage !== 'local') {
-            wp_send_json_error(array(
+            $this->send_error(array(
                 'error'   => 'RemoteNotSupported',
                 'message' => esc_html__('Archive creation is only supported for local storage. Please switch to local storage to archive files.', 'anibas-file-manager'),
             ));
@@ -125,13 +125,13 @@ class ArchiveAjaxHandler extends AjaxHandler
 
         $source_path = $this->validate_path($source);
         if (! $source_path) {
-            wp_send_json_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid source path', 'anibas-file-manager')));
+            $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid source path', 'anibas-file-manager')));
         }
 
         // ---- PRESCAN — format-independent, no engine files created ----
         if ($phase === 'prescan') {
             if (! is_dir($source_path) && ! is_file($source_path)) {
-                wp_send_json_error(array('error' => 'SourceNotFound', 'message' => esc_html__('Source does not exist', 'anibas-file-manager')));
+                $this->send_error(array('error' => 'SourceNotFound', 'message' => esc_html__('Source does not exist', 'anibas-file-manager')));
             }
 
             // Only sweep orphaned engine temp files when there is no active archive job
@@ -198,7 +198,7 @@ class ArchiveAjaxHandler extends AjaxHandler
                     }
                 }
             }
-            wp_send_json_success(array(
+            $this->send_success(array(
                 'phase'         => 'prescan_complete',
                 'total'         => $total,
                 'total_size'    => $total_size,
@@ -218,7 +218,7 @@ class ArchiveAjaxHandler extends AjaxHandler
 
                 // If output already exists and no conflict resolution was chosen, report conflict.
                 if (file_exists($output) && empty($conflict_mode)) {
-                    wp_send_json_success(array(
+                    $this->send_success(array(
                         'phase'       => 'conflict',
                         'output'      => basename($output),
                         'output_size' => filesize($output),
@@ -248,7 +248,7 @@ class ArchiveAjaxHandler extends AjaxHandler
                     $engine = ZipCreateEngine::get_instance($source_path, $output);
                 }
                 $engine->build_manifest();
-                wp_send_json_success(array(
+                $this->send_success(array(
                     'phase'  => 'scan_complete',
                     'info'   => $engine->get_manifest_info(),
                     'format' => $format,
@@ -285,9 +285,9 @@ class ArchiveAjaxHandler extends AjaxHandler
                     if (! empty($job_id)) {
                         $this->remove_archive_job($job_id);
                     }
-                    wp_send_json_success(array('phase' => 'complete', 'progress' => $prog, 'output' => basename($output)));
+                    $this->send_success(array('phase' => 'complete', 'progress' => $prog, 'output' => basename($output)));
                 }
-                wp_send_json_success(array('phase' => 'running', 'progress' => $prog));
+                $this->send_success(array('phase' => 'running', 'progress' => $prog));
             }
 
             if ($phase === 'cleanup') {
@@ -295,10 +295,10 @@ class ArchiveAjaxHandler extends AjaxHandler
                 if (! empty($job_id)) {
                     $this->remove_archive_job($job_id);
                 }
-                wp_send_json_success(array('message' => esc_html__('Cleaned up', 'anibas-file-manager')));
+                $this->send_success(array('message' => esc_html__('Cleaned up', 'anibas-file-manager')));
             }
         } catch (\Exception $e) {
-            wp_send_json_error(array('error' => esc_html($e->getMessage())));
+            $this->send_error(array('error' => esc_html($e->getMessage())));
         }
     }
 
@@ -314,16 +314,16 @@ class ArchiveAjaxHandler extends AjaxHandler
         $storage = anibas_fm_fetch_request_variable('post', 'storage', 'local');
 
         if (empty($path)) {
-            wp_send_json_error(array('error' => 'PathRequired', 'message' => esc_html__('Path required', 'anibas-file-manager')));
+            $this->send_error(array('error' => 'PathRequired', 'message' => esc_html__('Path required', 'anibas-file-manager')));
         }
 
         $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
         if (! in_array($ext, ['zip', 'tar', 'anfm'], true)) {
-            wp_send_json_error(array('error' => 'UnsupportedFormat', 'message' => esc_html__('Not a supported archive format', 'anibas-file-manager')));
+            $this->send_error(array('error' => 'UnsupportedFormat', 'message' => esc_html__('Not a supported archive format', 'anibas-file-manager')));
         }
 
         if ($storage !== 'local') {
-            wp_send_json_error(array(
+            $this->send_error(array(
                 'error'   => 'RemoteNotSupported',
                 'message' => esc_html__('Archive inspection is only supported for local storage.', 'anibas-file-manager'),
             ));
@@ -331,7 +331,7 @@ class ArchiveAjaxHandler extends AjaxHandler
 
         $full_path = $this->validate_path($path);
         if (! $full_path || ! is_file($full_path)) {
-            wp_send_json_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid archive path', 'anibas-file-manager')));
+            $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid archive path', 'anibas-file-manager')));
         }
         $filesize = filesize($full_path);
         $temp_path = null;
@@ -341,7 +341,7 @@ class ArchiveAjaxHandler extends AjaxHandler
                 $dest   = dirname($full_path);
                 $engine = ArchiveRestoreEngine::get_instance($full_path, $dest);
                 $header = $engine->read_header();
-                wp_send_json_success(array(
+                $this->send_success(array(
                     'valid'              => true,
                     'format'             => 'anfm',
                     'password_protected' => $header['password_protected'],
@@ -353,13 +353,13 @@ class ArchiveAjaxHandler extends AjaxHandler
                 $first_block = fread($fh, 512);
                 fclose($fh);
                 if (strlen($first_block) < 512 || trim($first_block, "\0") === '') {
-                    wp_send_json_success(array(
+                    $this->send_success(array(
                         'valid'  => false,
                         'format' => 'tar',
                         'reason' => esc_html__('Cannot read tar file — it may be empty or corrupted.', 'anibas-file-manager'),
                     ));
                 }
-                wp_send_json_success(array(
+                $this->send_success(array(
                     'valid'              => true,
                     'format'             => 'tar',
                     'password_protected' => false,
@@ -369,7 +369,7 @@ class ArchiveAjaxHandler extends AjaxHandler
                 $zip = new \ZipArchive();
                 $res = $zip->open($full_path, \ZipArchive::RDONLY);
                 if ($res !== true) {
-                    wp_send_json_success(array(
+                    $this->send_success(array(
                         'valid'  => false,
                         'format' => 'zip',
                         'reason' => esc_html__('Cannot open zip file — it may be corrupted or not a valid zip archive.', 'anibas-file-manager'),
@@ -377,7 +377,7 @@ class ArchiveAjaxHandler extends AjaxHandler
                 }
                 $count = $zip->numFiles;
                 $zip->close();
-                wp_send_json_success(array(
+                $this->send_success(array(
                     'valid'              => true,
                     'format'             => 'zip',
                     'password_protected' => false,
@@ -386,7 +386,7 @@ class ArchiveAjaxHandler extends AjaxHandler
                 ));
             }
         } catch (\Exception $e) {
-            wp_send_json_success(array(
+            $this->send_success(array(
                 'valid'  => false,
                 'format' => $ext,
                 'reason' => esc_html($e->getMessage()),
@@ -412,12 +412,12 @@ class ArchiveAjaxHandler extends AjaxHandler
         $storage  = anibas_fm_fetch_request_variable('post', 'storage', 'local');
 
         if (empty($path)) {
-            wp_send_json_error(array('error' => 'PathRequired', 'message' => esc_html__('Path required', 'anibas-file-manager')));
+            $this->send_error(array('error' => 'PathRequired', 'message' => esc_html__('Path required', 'anibas-file-manager')));
         }
 
         // Archive engines use native PHP filesystem — only local storage is supported.
         if ($storage !== 'local') {
-            wp_send_json_error(array(
+            $this->send_error(array(
                 'error'   => 'RemoteNotSupported',
                 'message' => esc_html__('Archive extraction is only supported for local storage. Please switch to local storage to extract files.', 'anibas-file-manager'),
             ));
@@ -425,7 +425,7 @@ class ArchiveAjaxHandler extends AjaxHandler
 
         $full_path = $this->validate_path($path);
         if (! $full_path || ! is_file($full_path)) {
-            wp_send_json_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid archive path', 'anibas-file-manager')));
+            $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid archive path', 'anibas-file-manager')));
         }
 
         $ext  = strtolower(pathinfo($full_path, PATHINFO_EXTENSION));
@@ -439,10 +439,10 @@ class ArchiveAjaxHandler extends AjaxHandler
             } elseif ($ext === 'zip') {
                 $this->restore_zip($full_path, $dest, $phase);
             } else {
-                wp_send_json_error(array('error' => esc_html__('Unsupported archive format', 'anibas-file-manager')));
+                $this->send_error(array('error' => esc_html__('Unsupported archive format', 'anibas-file-manager')));
             }
         } catch (\Exception $e) {
-            wp_send_json_error(array('error' => esc_html($e->getMessage())));
+            $this->send_error(array('error' => esc_html($e->getMessage())));
         }
     }
 
@@ -453,7 +453,7 @@ class ArchiveAjaxHandler extends AjaxHandler
 
         if ($phase === 'init') {
             $info = $engine->load_archive_manifest($pwd);
-            wp_send_json_success(array('phase' => 'ready', 'info' => $info));
+            $this->send_success(array('phase' => 'ready', 'info' => $info));
         }
 
         if ($phase === 'run') {
@@ -461,14 +461,14 @@ class ArchiveAjaxHandler extends AjaxHandler
             $prog = $engine->progress();
             if (! $more) {
                 $engine->cleanup();
-                wp_send_json_success(array('phase' => 'complete', 'progress' => $prog));
+                $this->send_success(array('phase' => 'complete', 'progress' => $prog));
             }
-            wp_send_json_success(array('phase' => 'running', 'progress' => $prog));
+            $this->send_success(array('phase' => 'running', 'progress' => $prog));
         }
 
         if ($phase === 'cleanup') {
             $engine->cleanup();
-            wp_send_json_success(array('message' => esc_html__('Cleaned up', 'anibas-file-manager')));
+            $this->send_success(array('message' => esc_html__('Cleaned up', 'anibas-file-manager')));
         }
     }
 
@@ -478,7 +478,7 @@ class ArchiveAjaxHandler extends AjaxHandler
 
         if ($phase === 'init') {
             $engine->build_manifest();
-            wp_send_json_success(array('phase' => 'ready', 'info' => array('total' => $engine->progress()['total'])));
+            $this->send_success(array('phase' => 'ready', 'info' => array('total' => $engine->progress()['total'])));
         }
 
         if ($phase === 'run') {
@@ -486,14 +486,14 @@ class ArchiveAjaxHandler extends AjaxHandler
             $prog = $engine->progress();
             if (! $more) {
                 $engine->cleanup();
-                wp_send_json_success(array('phase' => 'complete', 'progress' => $prog));
+                $this->send_success(array('phase' => 'complete', 'progress' => $prog));
             }
-            wp_send_json_success(array('phase' => 'running', 'progress' => $prog));
+            $this->send_success(array('phase' => 'running', 'progress' => $prog));
         }
 
         if ($phase === 'cleanup') {
             $engine->cleanup();
-            wp_send_json_success(array('message' => esc_html__('Cleaned up', 'anibas-file-manager')));
+            $this->send_success(array('message' => esc_html__('Cleaned up', 'anibas-file-manager')));
         }
     }
 
@@ -503,7 +503,7 @@ class ArchiveAjaxHandler extends AjaxHandler
 
         if ($phase === 'init') {
             $engine->build_manifest();
-            wp_send_json_success(array('phase' => 'ready', 'info' => array('total' => $engine->progress()['total'])));
+            $this->send_success(array('phase' => 'ready', 'info' => array('total' => $engine->progress()['total'])));
         }
 
         if ($phase === 'run') {
@@ -511,14 +511,14 @@ class ArchiveAjaxHandler extends AjaxHandler
             $prog = $engine->progress();
             if (! $more) {
                 $engine->cleanup();
-                wp_send_json_success(array('phase' => 'complete', 'progress' => $prog));
+                $this->send_success(array('phase' => 'complete', 'progress' => $prog));
             }
-            wp_send_json_success(array('phase' => 'running', 'progress' => $prog));
+            $this->send_success(array('phase' => 'running', 'progress' => $prog));
         }
 
         if ($phase === 'cleanup') {
             $engine->cleanup();
-            wp_send_json_success(array('message' => esc_html__('Cleaned up', 'anibas-file-manager')));
+            $this->send_success(array('message' => esc_html__('Cleaned up', 'anibas-file-manager')));
         }
     }
 }

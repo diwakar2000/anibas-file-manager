@@ -51,6 +51,7 @@
   let showEmptyFolderPasswordDialog = $state(false)
   let emptyFolderPassword = $state("")
   let isEmptyingFolder = $state(false)
+  const showRemoteTrashWarning = $derived(fileStore.currentStorage !== 'local' && !!(window as any).AnibasFM?.deleteToTrash)
 
   // Context menu state
   let showContextMenu = $state(false)
@@ -768,9 +769,14 @@
     <div class="modal-content" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="button" tabindex="0">
       <h3>Empty Folder</h3>
       <p>Delete all contents of <strong>"{file.name}"</strong>? The folder itself will be kept.</p>
+      {#if showRemoteTrashWarning}
+        <p class="modal-warning">
+          Remote storage is not moved to Anibas trash. This will delete the contents from the remote provider; recovery depends on that provider's own backups, versioning, or trash.
+        </p>
+      {/if}
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick={() => showEmptyFolderDialog = false}>Cancel</button>
-        <button class="btn btn-danger" onclick={confirmEmptyFolder}>Empty</button>
+        <button class="btn btn-danger" onclick={confirmEmptyFolder}>{showRemoteTrashWarning ? 'Delete Remote Contents' : 'Empty'}</button>
       </div>
     </div>
   </div>
@@ -781,6 +787,11 @@
     <div class="modal-content" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="button" tabindex="0">
       <h3>Delete Password Required</h3>
       <p>Enter the delete password to empty <strong>"{file.name}"</strong>.</p>
+      {#if showRemoteTrashWarning}
+        <p class="modal-warning">
+          Remote storage is not moved to Anibas trash. Confirming will delete the contents from the remote provider.
+        </p>
+      {/if}
       <input type="password" bind:value={emptyFolderPassword} placeholder="Delete password" class="modal-input" onkeydown={(e) => e?.key === "Enter" && handleEmptyFolderPasswordSubmit()} />
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick={() => { showEmptyFolderPasswordDialog = false; emptyFolderPassword = "" }}>Cancel</button>
@@ -935,7 +946,6 @@
 
   .is-deleting {
     opacity: 0.5;
-    pointer-events: none;
   }
 
   .modal-overlay {
@@ -1023,6 +1033,16 @@
     font-weight: 600;
     color: #333;
     word-break: break-all;
+  }
+
+  .modal-warning {
+    padding: 10px 12px;
+    margin: 12px 0 16px;
+    border-left: 4px solid #d63638;
+    background: #fcf0f1;
+    color: #5c1114;
+    font-weight: 600;
+    line-height: 1.4;
   }
 
   .btn-primary {

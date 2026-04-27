@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { checkFmTokenError, getFmToken } from '../../services/fileApi'
 	import { toast } from '../../utils/toast'
 
 	let { currentStorage, onSelect } = $props<{
@@ -35,58 +36,32 @@
 		checking = true
 
 		try {
-			const response = await fetch(`${config.ajaxURL}?action=${config.actions.getRemoteSettings}&nonce=${config.settingsNonce}`)
+			const url = new URL(config.ajaxURL)
+			url.searchParams.set('action', config.actions.getRemoteSettings)
+			url.searchParams.set('nonce', config.listNonce)
+			const fmToken = getFmToken()
+			if (fmToken) url.searchParams.set('fm_token', fmToken)
+
+			const response = await fetch(url.toString())
 			const data = await response.json()
 
 			if (!data.success) {
+				checkFmTokenError(data)
 				checking = false
 				return
 			}
 
 			const remoteStorages = [
-				{ id: 'ftp', name: 'FTP', config: data.data.ftp, enabled: data.data.ftp?.enabled },
-				{ id: 'sftp', name: 'SFTP', config: data.data.sftp, enabled: data.data.sftp?.enabled },
-				{ id: 's3', name: 'Amazon S3', config: data.data.s3, enabled: data.data.s3?.enabled },
-				{ id: 's3_compatible', name: 'S3 Compatible', config: data.data.s3_compatible, enabled: data.data.s3_compatible?.enabled }
+				{ id: 'ftp', name: 'FTP', enabled: data.data.ftp?.enabled },
+				{ id: 'sftp', name: 'SFTP', enabled: data.data.sftp?.enabled },
+				{ id: 's3', name: 'Amazon S3', enabled: data.data.s3?.enabled },
+				{ id: 's3_compatible', name: 'S3 Compatible', enabled: data.data.s3_compatible?.enabled }
 			].filter(s => s.enabled)
 
 			storages = [
 				{ id: 'local', name: 'Local Files', status: 'online' },
-				...remoteStorages.map(s => ({ id: s.id, name: s.name, status: 'checking' as const }))
+				...remoteStorages.map(s => ({ id: s.id, name: s.name, status: 'online' as const }))
 			]
-
-			const tests = remoteStorages.map(async (storage) => {
-				const formData = new FormData()
-				formData.append('action', config.actions.testRemoteConnection)
-				formData.append('nonce', config.settingsNonce)
-				formData.append('type', storage.id)
-				formData.append('config', JSON.stringify(storage.config))
-
-				try {
-					const res = await fetch(config.ajaxURL, { method: 'POST', body: formData })
-					const result = await res.json()
-					storages = storages.map(s =>
-						s.id === storage.id
-							? { ...s, status: result.success ? 'online' : 'offline' }
-							: s
-					)
-				} catch (e) {
-					console.error(`${storage.id} test error:`, e)
-					storages = storages.map(s =>
-						s.id === storage.id
-							? { ...s, status: 'offline' }
-							: s
-					)
-				}
-			})
-
-			await Promise.all(tests)
-
-			// If the currently selected storage went offline, reset to current
-			const sel = storages.find(s => s.id === selectedStorage)
-			if (sel && sel.status === 'offline') {
-				selectedStorage = currentStorage
-			}
 		} catch (e) {
 			console.error('Failed to load storages:', e)
 		} finally {

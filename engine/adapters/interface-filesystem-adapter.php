@@ -20,20 +20,67 @@ abstract class FileSystemAdapter
         return $this->storage_id;
     }
 
-    abstract public function validate_path($path);
-    abstract public function exists($path);
-    abstract public function is_file($path);
-    abstract public function is_dir($path);
-    abstract public function mkdir($path);
-    abstract public function scandir($path);
-    abstract public function listDirectory($path);
-    abstract public function rmdir($path);
-    abstract public function copy($source, $target);
-    abstract public function move($source, $target);
-    abstract public function unlink($path);
-    abstract public function put_contents($path, $content);
-    abstract public function append_contents($path, $content);
-    abstract public function get_contents($path);
+    abstract public function validate_path(string $path): string|false;
+    abstract public function exists(string $path): bool;
+    abstract public function is_file(string $path): bool;
+    abstract public function is_dir(string $path): bool;
+    abstract public function mkdir(string $path): bool;
+    abstract public function scandir(string $path): array;
+    abstract public function listDirectory(string $path): array;
+
+    /**
+     * Streaming directory iterator for queue-building (background jobs).
+     *
+     * Returns a chunk of entries plus a cursor for resumption. Designed to
+     * walk directories with millions of children without loading or sorting
+     * the whole listing in one call. Order is adapter-defined and may differ
+     * from listDirectory(); callers must not depend on it.
+     *
+     * Adapters with native pagination (e.g. S3 continuation tokens, local
+     * readdir) should override this with a true streaming implementation.
+     * The default below performs a single full listDirectory() call and is
+     * adequate only for adapters whose listings already fit in memory.
+     *
+     * @param string     $path     Validated path on this adapter.
+     * @param array|null $cursor   Opaque cursor from a previous call, or null to start.
+     * @param int        $maxItems Soft cap on entries returned in this call.
+     * @param array      $options  Adapter-specific options for background jobs.
+     * @return array{entries: array, next_cursor: array|null, has_more: bool}
+     *   entries: list of {name, is_folder, path, filesize?}
+     */
+    public function iterateDirectory(string $path, ?array $cursor = null, int $maxItems = 1000, array $options = []): array
+    {
+        // Default fallback: single-shot listDirectory(), drained on first call.
+        if (! empty($cursor['done'])) {
+            return ['entries' => [], 'next_cursor' => ['done' => true], 'has_more' => false];
+        }
+
+        $data  = $this->listDirectory($path);
+        $items = $data['items'] ?? [];
+
+        $entries = [];
+        foreach ($items as $item) {
+            $entries[] = [
+                'name'      => $item['name'] ?? '',
+                'is_folder' => ! empty($item['is_folder']),
+                'path'      => $item['path'] ?? '',
+                'filesize'  => $item['filesize'] ?? 0,
+            ];
+        }
+
+        return [
+            'entries'     => $entries,
+            'next_cursor' => ['done' => true],
+            'has_more'    => false,
+        ];
+    }
+    abstract public function rmdir(string $path): bool;
+    abstract public function copy(string $source, string $target): bool;
+    abstract public function move(string $source, string $target): bool;
+    abstract public function unlink(string $path): bool;
+    abstract public function put_contents(string $path, string $content): bool;
+    abstract public function append_contents(string $path, string $content): bool;
+    abstract public function get_contents(string $path): string|false;
 
     /**
      * Delete a file or folder, routing to trash when applicable.
@@ -47,7 +94,7 @@ abstract class FileSystemAdapter
      *   - ['job_id'=>...]  when work was enqueued for background processing
      *   - WP_Error         on failure (use ownership_hint() to enrich messages)
      */
-    public function delete($path)
+    public function delete(string $path)
     {
         if (! $this->exists($path)) {
             return new \WP_Error('not_found', __('File or folder not found', 'anibas-file-manager'));
@@ -145,7 +192,7 @@ abstract class FileSystemAdapter
 
         return $hints ? ' ' . implode(' ', $hints) : '';
     }
-    public function stream_contents($path)
+    public function stream_contents(string $path): bool
     {
         $content = $this->get_contents($path);
         if ($content !== false) {
@@ -155,15 +202,15 @@ abstract class FileSystemAdapter
         }
         return false;
     }
-    public function get_temporary_link($path, $duration = 3600)
+    public function get_temporary_link(string $path, int $duration = 3600): string|false
     {
         return false;
     }
-    public function get_size($path)
+    public function get_size(string $path): int|false
     {
         return false;
     }
-    public function is_empty($path)
+    public function is_empty(string $path): bool
     {
         return false;
     }
@@ -176,7 +223,7 @@ abstract class FileSystemAdapter
      * @param string $path Validated absolute path.
      * @return array|false
      */
-    public function getDetails($path)
+    public function getDetails(string $path): array|false
     {
         $name  = basename($path);
         $isDir = $this->is_dir($path);

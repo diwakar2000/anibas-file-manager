@@ -204,8 +204,7 @@ class StorageManager {
         $dir = wp_upload_dir()['basedir'] . '/anibas-fm-temp';
         if ( ! is_dir( $dir ) ) {
             wp_mkdir_p( $dir );
-            @file_put_contents( $dir . '/.htaccess', "Deny from all\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
-            @file_put_contents( $dir . '/index.php', "<?php\n// Silence is golden\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
+            anibas_fm_protect_dir( $dir );
         }
         return $dir;
     }

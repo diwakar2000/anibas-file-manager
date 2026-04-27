@@ -2,6 +2,7 @@
     import { onMount, onDestroy } from 'svelte';
     import { getLanguage } from './editorLanguage';
     import { toast } from '../../utils/toast';
+    import { checkFmTokenError, getFmToken } from '../../services/fileApi';
 
     const cfg: {
         ajaxURL: string;
@@ -13,6 +14,7 @@
         chunkBytes: number;
         actions: { getFileChunk: string; saveFile: string };
         nonce: string;
+        fmToken?: string | null;
     } = (window as any).AnibasFMEditor;
 
     // ── State ─────────────────────────────────────────────────────────────────
@@ -38,11 +40,14 @@
             fd.append('path',    cfg.path);
             fd.append('storage', cfg.storage);
             fd.append('offset',  String(offset));
+            const fmToken = cfg.fmToken ?? getFmToken();
+            if (fmToken) fd.append('fm_token', fmToken);
 
             const res  = await fetch(cfg.ajaxURL, { method: 'POST', body: fd });
             const json = await res.json();
 
             if (!json.success) {
+                checkFmTokenError(json);
                 throw new Error(json.data?.message || json.data?.error || 'Failed to load file');
             }
 
@@ -83,13 +88,16 @@
             fd.append('nonce',   cfg.nonce);
             fd.append('path',    cfg.path);
             fd.append('storage', cfg.storage);
+            const fmToken = cfg.fmToken ?? getFmToken();
+            if (fmToken) fd.append('fm_token', fmToken);
             fd.append('content', btoa(unescape(encodeURIComponent(content)))); // UTF-8 safe base64
 
             const res  = await fetch(cfg.ajaxURL, { method: 'POST', body: fd });
             const json = await res.json();
 
             if (!json.success) {
-                throw new Error(json.data?.message || 'Save failed');
+                checkFmTokenError(json);
+                throw new Error(json.data?.message || json.data?.error || 'Save failed');
             }
 
             isDirty = false;

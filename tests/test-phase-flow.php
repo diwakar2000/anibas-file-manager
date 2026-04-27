@@ -91,10 +91,6 @@ class PhaseFlowTest {
                 return $path;
             }
             
-            public function processSingleFile( $source, $target, $action ) {
-                return true;
-            }
-            
             public function resolveNameClash( $target ) {
                 return $target . '_copy';
             }

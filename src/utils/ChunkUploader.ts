@@ -21,6 +21,7 @@ export class ChunkUploader {
   private headers: Record<string, string>;
   private params: Record<string, any>;
   private aborted = false;
+  private uploadId = '';
   private uploadToken = '';
 
   constructor(options: UploadOptions) {
@@ -96,7 +97,11 @@ export class ChunkUploader {
       throw error;
     }
 
+    this.uploadId = result.data.upload_id;
     this.uploadToken = result.data.upload_token;
+    if (!this.uploadId || !this.uploadToken) {
+      throw new Error('Failed to initialize upload session');
+    }
     if (result.data.chunk_size) {
       this.chunkSize = result.data.chunk_size;
     }
@@ -109,6 +114,7 @@ export class ChunkUploader {
     formData.append('total_chunks', total.toString());
     formData.append('file_name', this.file.name);
     formData.append('file_size', this.file.size.toString());
+    formData.append('upload_id', this.uploadId);
     formData.append('upload_token', this.uploadToken);
 
     Object.entries(this.params).forEach(([key, value]) => {

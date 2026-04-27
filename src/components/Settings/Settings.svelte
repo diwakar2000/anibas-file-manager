@@ -108,7 +108,14 @@
 	}
 
 	async function loadRemoteSettings() {
-		const response = await fetch(`${config.ajaxURL}?action=${config.actions.getRemoteSettings}&nonce=${config.nonce}`);
+		const url = new URL(config.ajaxURL, window.location.origin)
+		url.searchParams.set('action', config.actions.getRemoteSettings)
+		url.searchParams.set('nonce', config.nonce)
+		if (authToken) {
+			url.searchParams.set('token', authToken)
+		}
+
+		const response = await fetch(url.toString());
 		const data = await response.json();
 		if (data.success) {
 			// Merge over defaults so newly-introduced fields (like is_passive) get
@@ -127,6 +134,9 @@
 		const formData = new FormData();
 		formData.append('action', config.actions.saveRemoteSettings);
 		formData.append('nonce', config.nonce);
+		if (authToken) {
+			formData.append('token', authToken);
+		}
 		formData.append('settings', JSON.stringify({ ftp, sftp, s3, s3_compatible: s3c }));
 
 		const response = await fetch(config.ajaxURL, { method: 'POST', body: formData });
@@ -173,13 +183,13 @@
 
 				<form onsubmit={(e) => { e.preventDefault(); saveRemoteSettings(); }}>
 					{#if activeTab === 'ftp'}
-						<FTPSettings bind:settings={ftp} />
+						<FTPSettings bind:settings={ftp} {authToken} />
 					{:else if activeTab === 'sftp'}
-						<SFTPSettings bind:settings={sftp} />
+						<SFTPSettings bind:settings={sftp} {authToken} />
 					{:else if activeTab === 's3'}
-						<S3Settings bind:settings={s3} />
+						<S3Settings bind:settings={s3} {authToken} />
 					{:else if activeTab === 's3c'}
-						<S3CompatibleSettings bind:settings={s3c} />
+						<S3CompatibleSettings bind:settings={s3c} {authToken} />
 					{/if}
 
 					<p class="submit">

@@ -1,7 +1,9 @@
 <script lang="ts">
-    import { listFileBackups, restoreFileBackup, listSiteBackups } from "../../services/fileApi";
+    import { deleteFileBackup, deleteFileBackupTree, deleteSiteBackup, listFileBackups, restoreFileBackup, listSiteBackups } from "../../services/fileApi";
 
     type Tab = 'files' | 'site';
+    let { authToken = null } = $props<{ authToken?: string | null }>();
+
     let activeTab = $state<Tab>('files');
 
     let fileGroups = $state<any[]>([]);
@@ -11,6 +13,7 @@
     let loadedSite = $state(false);
     let error = $state<string | null>(null);
     let restoring = $state<string | null>(null);
+    let deleting = $state<string | null>(null);
     let restoredMessage = $state<string | null>(null);
 
     let expandedGroups = $state<Record<string, boolean>>({});
@@ -22,7 +25,7 @@
         isLoading = true;
         error = null;
         try {
-            fileGroups = await listFileBackups();
+            fileGroups = await listFileBackups(authToken);
             loadedFiles = true;
         } catch (e: any) {
             error = e?.message || 'Failed to load file backups';
@@ -35,7 +38,7 @@
         isLoading = true;
         error = null;
         try {
-            siteBackups = await listSiteBackups();
+            siteBackups = await listSiteBackups(authToken);
             loadedSite = true;
         } catch (e: any) {
             error = e?.message || 'Failed to load site backups';
@@ -59,7 +62,7 @@
         restoredMessage = null;
         error = null;
         try {
-            const data = await restoreFileBackup(key, version);
+            const data = await restoreFileBackup(key, version, authToken);
             restoredMessage = data?.message
                 ? data.message + (data.restored_to ? ' → ' + data.restored_to : '')
                 : 'Backup restored';
@@ -67,6 +70,61 @@
             error = e?.message || 'Failed to restore backup';
         } finally {
             restoring = null;
+        }
+    }
+
+    async function removeFileBackup(key: string, version: string) {
+        const token = 'file__' + key + '__' + version;
+        if (!confirm('Delete this backup version?')) return;
+        deleting = token;
+        restoredMessage = null;
+        error = null;
+        try {
+            const data = await deleteFileBackup(key, version, authToken);
+            fileGroups = fileGroups
+                .map((group) => group.key !== key
+                    ? group
+                    : { ...group, versions: group.versions.filter((ver: any) => ver.name !== version) })
+                .filter((group) => group.versions.length > 0);
+            restoredMessage = data?.message || 'Backup deleted';
+        } catch (e: any) {
+            error = e?.message || 'Failed to delete backup';
+        } finally {
+            deleting = null;
+        }
+    }
+
+    async function removeFileBackupTree(key: string) {
+        const token = 'filetree__' + key;
+        if (!confirm('Delete the full backup history for this file?')) return;
+        deleting = token;
+        restoredMessage = null;
+        error = null;
+        try {
+            const data = await deleteFileBackupTree(key, authToken);
+            fileGroups = fileGroups.filter((group) => group.key !== key);
+            restoredMessage = data?.message || 'Backup history deleted';
+        } catch (e: any) {
+            error = e?.message || 'Failed to delete backup history';
+        } finally {
+            deleting = null;
+        }
+    }
+
+    async function removeSiteBackup(name: string) {
+        const token = 'site__' + name;
+        if (!confirm('Delete this site backup?')) return;
+        deleting = token;
+        restoredMessage = null;
+        error = null;
+        try {
+            const data = await deleteSiteBackup(name, authToken);
+            siteBackups = siteBackups.filter((item) => item.name !== name);
+            restoredMessage = data?.message || 'Backup deleted';
+        } catch (e: any) {
+            error = e?.message || 'Failed to delete site backup';
+        } finally {
+            deleting = null;
         }
     }
 
@@ -122,65 +180,101 @@
         <div class="backup-msg success">{restoredMessage}</div>
     {/if}
 
-    {#if isLoading}
-        <div class="backup-state">Loading…</div>
-    {:else if activeTab === 'files'}
-        {#if fileGroups.length === 0}
-            <div class="backup-state">No file backups yet. They are created automatically when you edit a file.</div>
-        {:else}
-            <div class="backup-list">
-                {#each fileGroups as group}
-                    <div class="backup-group">
-                        <button type="button" class="backup-group-header" onclick={() => toggleGroup(group.key)}>
-                            <span class="chevron" class:open={expandedGroups[group.key]}>▸</span>
-                            <div class="backup-info">
-                                <span class="backup-name" title={group.source}>{group.basename}</span>
-                                <span class="backup-meta">
-                                    {group.storage} • {group.source} • {group.versions.length} {group.versions.length === 1 ? 'version' : 'versions'}
-                                </span>
-                            </div>
-                        </button>
-                        {#if expandedGroups[group.key]}
-                            <div class="backup-versions">
-                                {#each group.versions as ver}
-                                    {@const token = group.key + '__' + ver.name}
-                                    <div class="backup-version">
-                                        <div class="backup-info">
-                                            <span class="backup-name">{formatDate(ver.mtime)}</span>
-                                            <span class="backup-meta">{formatSize(ver.filesize)} • {ver.name}</span>
-                                        </div>
-                                        <button
-                                            type="button"
-                                            class="btn btn-secondary btn-sm"
-                                            onclick={() => restore(group.key, ver.name)}
-                                            disabled={restoring === token}
-                                        >
-                                            {restoring === token ? 'Restoring…' : 'Restore'}
-                                        </button>
+    <div class="backup-results">
+        {#if isLoading}
+            <div class="backup-state">Loading…</div>
+        {:else if activeTab === 'files'}
+            {#if fileGroups.length === 0}
+                <div class="backup-state">No file backups yet. They are created automatically when you edit a file.</div>
+            {:else}
+                <div class="backup-list">
+                    {#each fileGroups as group}
+                        <div class="backup-group">
+                            <div class="backup-group-top">
+                                <button type="button" class="backup-group-header" onclick={() => toggleGroup(group.key)}>
+                                    <span class="chevron" class:open={expandedGroups[group.key]}>▸</span>
+                                    <div class="backup-info">
+                                        <span class="backup-name" title={group.source}>{group.basename}</span>
+                                        <span class="backup-meta">
+                                            {group.storage} • {group.source} • {group.versions.length} {group.versions.length === 1 ? 'version' : 'versions'}
+                                        </span>
                                     </div>
-                                {/each}
+                                </button>
+                                <button
+                                    type="button"
+                                    class="backup-icon-btn group-delete-btn"
+                                    onclick={() => removeFileBackupTree(group.key)}
+                                    disabled={deleting === 'filetree__' + group.key}
+                                    title="Delete all backups for this file"
+                                    aria-label="Delete all backups for this file"
+                                >
+                                    {deleting === 'filetree__' + group.key ? '...' : '×'}
+                                </button>
                             </div>
-                        {/if}
-                    </div>
-                {/each}
-            </div>
-        {/if}
-    {:else}
-        {#if siteBackups.length === 0}
-            <div class="backup-state">No full-site backups yet. Use the <strong>Site Backup</strong> card above to create one.</div>
-        {:else}
-            <div class="backup-list">
-                {#each siteBackups as item}
-                    <div class="backup-item">
-                        <div class="backup-info">
-                            <span class="backup-name" title={item.name}>{item.name}</span>
-                            <span class="backup-meta">{formatDate(item.mtime)} • {formatSize(item.filesize)} • {item.format.toUpperCase()}</span>
+                            {#if expandedGroups[group.key]}
+                                <div class="backup-versions">
+                                    {#each group.versions as ver}
+                                        {@const token = group.key + '__' + ver.name}
+                                        <div class="backup-version">
+                                            <div class="backup-info">
+                                                <span class="backup-name">{formatDate(ver.mtime)}</span>
+                                                <span class="backup-meta">{formatSize(ver.filesize)} • {ver.name}</span>
+                                            </div>
+                                            <div class="backup-actions">
+                                                <button
+                                                    type="button"
+                                                    class="btn btn-secondary btn-sm"
+                                                    onclick={() => restore(group.key, ver.name)}
+                                                    disabled={restoring === token || deleting === 'file__' + group.key + '__' + ver.name}
+                                                >
+                                                    {restoring === token ? 'Restoring…' : 'Restore'}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    class="backup-icon-btn"
+                                                    onclick={() => removeFileBackup(group.key, ver.name)}
+                                                    disabled={deleting === 'file__' + group.key + '__' + ver.name || restoring === token}
+                                                    title="Delete backup"
+                                                    aria-label="Delete backup"
+                                                >
+                                                    {deleting === 'file__' + group.key + '__' + ver.name ? '...' : '×'}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    {/each}
+                                </div>
+                            {/if}
                         </div>
-                    </div>
-                {/each}
-            </div>
+                    {/each}
+                </div>
+            {/if}
+        {:else}
+            {#if siteBackups.length === 0}
+                <div class="backup-state">No full-site backups yet. Use the <strong>Site Backup</strong> card above to create one.</div>
+            {:else}
+                <div class="backup-list">
+                    {#each siteBackups as item}
+                        <div class="backup-item">
+                            <div class="backup-info">
+                                <span class="backup-name" title={item.name}>{item.name}</span>
+                                <span class="backup-meta">{formatDate(item.mtime)} • {formatSize(item.filesize)} • {item.format.toUpperCase()}</span>
+                            </div>
+                            <button
+                                type="button"
+                                class="backup-icon-btn"
+                                onclick={() => removeSiteBackup(item.name)}
+                                disabled={deleting === 'site__' + item.name}
+                                title="Delete backup"
+                                aria-label="Delete backup"
+                            >
+                                {deleting === 'site__' + item.name ? '...' : '×'}
+                            </button>
+                        </div>
+                    {/each}
+                </div>
+            {/if}
         {/if}
-    {/if}
+    </div>
 </div>
 
 <style>
@@ -219,9 +313,14 @@
     }
     .backup-msg.error { background: #fcf0f1; color: #a00; border: 1px solid #eba3a7; }
     .backup-msg.success { background: #edfaef; color: #1e6b2a; border: 1px solid #a7d9b0; }
-    .backup-list {
-        max-height: 350px;
+    .backup-results {
+        max-height: 360px;
+        max-height: min(420px, 52vh);
         overflow-y: auto;
+        overscroll-behavior: contain;
+        padding-right: 4px;
+    }
+    .backup-list {
         display: flex;
         flex-direction: column;
         gap: 8px;
@@ -239,7 +338,17 @@
         align-items: center;
         padding: 10px 15px;
     }
-    .backup-group { overflow: hidden; }
+    .backup-group-top {
+        display: flex;
+        align-items: stretch;
+        gap: 8px;
+        padding: 0 10px 0 0;
+    }
+    .backup-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
     .backup-group-header {
         display: flex;
         align-items: center;
@@ -250,6 +359,8 @@
         border: none;
         cursor: pointer;
         text-align: left;
+        flex: 1 1 auto;
+        min-width: 0;
     }
     .backup-group-header:hover { background: #f0f0f1; }
     .chevron {
@@ -257,6 +368,34 @@
         transition: transform 0.15s ease;
         color: #646970;
         font-size: 12px;
+    }
+    .backup-icon-btn {
+        width: 28px;
+        height: 28px;
+        border: 1px solid #dcdcde;
+        border-radius: 4px;
+        background: #fff;
+        color: #b32d2e;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 16px;
+        line-height: 1;
+        padding: 0;
+        flex: 0 0 28px;
+    }
+    .backup-icon-btn:hover:not(:disabled) {
+        background: #fcf0f1;
+        border-color: #d63638;
+    }
+    .backup-icon-btn:disabled {
+        opacity: 0.6;
+        cursor: default;
+    }
+    .group-delete-btn {
+        align-self: center;
+        margin-right: 4px;
     }
     .chevron.open { transform: rotate(90deg); }
     .backup-versions {

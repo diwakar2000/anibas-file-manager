@@ -52,7 +52,9 @@ class FinalizeAssemblyPhase extends OperationPhase
         }
 
         // Delete assembly token after successful completion
-        $token_key = 'anibas_fm_upload_' . md5($job['file_name'] . $job['file_size'] . $job['user_id']) . '_assembly';
+        $token_key = ! empty($job['upload_id'])
+            ? 'anibas_fm_upload_' . $job['upload_id'] . '_' . $job['user_id'] . '_assembly'
+            : 'anibas_fm_upload_' . md5($job['file_name'] . $job['file_size'] . $job['user_id']) . '_assembly';
         delete_transient($token_key);
     }
 

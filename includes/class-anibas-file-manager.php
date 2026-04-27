@@ -175,6 +175,7 @@ class Anibas_File_Manager {
 		 */
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/operations/interface-operation-phases.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/operations/class-phase-executor.php';
+		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/operations/class-job-queue-spool.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/operations/phases/class-assembly-phase.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/operations/phases/class-finalize-assembly-phase.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/operations/phases/class-initialize-phase.php';

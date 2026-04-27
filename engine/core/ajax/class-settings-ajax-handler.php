@@ -34,7 +34,7 @@ class SettingsAjaxHandler extends AjaxHandler
         $valid_password = ! empty($stored_hash) && wp_check_password($password, $stored_hash);
 
         if (! empty($stored_hash) && ! $valid_token && ! $valid_password) {
-            wp_send_json_error(esc_html__('Invalid authentication', 'anibas-file-manager'), 401);
+            $this->send_error(esc_html__('Invalid authentication', 'anibas-file-manager'), 401);
         }
 
         $new_password = anibas_fm_fetch_request_variable('post', 'new_password', '');
@@ -82,7 +82,7 @@ class SettingsAjaxHandler extends AjaxHandler
             if (! empty($existing_delete_hash)) {
                 $current_delete_password = anibas_fm_fetch_request_variable('post', 'current_delete_password', '');
                 if (empty($current_delete_password) || ! wp_check_password($current_delete_password, $existing_delete_hash)) {
-                    wp_send_json_error(esc_html__('Current delete password is incorrect.', 'anibas-file-manager'));
+                    $this->send_error(esc_html__('Current delete password is incorrect.', 'anibas-file-manager'));
                 }
             }
             $updates['delete_password_hash'] = ! empty($delete_password) ? wp_hash_password($delete_password) : '';
@@ -97,7 +97,7 @@ class SettingsAjaxHandler extends AjaxHandler
             if (! empty($existing_fm_hash)) {
                 $fm_current = anibas_fm_fetch_request_variable('post', 'fm_current_password', '');
                 if (empty($fm_current) || ! wp_check_password($fm_current, $existing_fm_hash)) {
-                    wp_send_json_error(esc_html__('Current file manager password is incorrect.', 'anibas-file-manager'));
+                    $this->send_error(esc_html__('Current file manager password is incorrect.', 'anibas-file-manager'));
                 }
             }
             $fm_password = anibas_fm_fetch_request_variable('post', 'fm_password', '');
@@ -127,50 +127,102 @@ class SettingsAjaxHandler extends AjaxHandler
         }
 
         anibas_fm_update_option($updates);
-        wp_send_json_success(array('message' => esc_html__('Settings saved successfully', 'anibas-file-manager')));
+        $this->send_success(array('message' => esc_html__('Settings saved successfully', 'anibas-file-manager')));
     }
 
     public function get_remote_settings()
     {
-        $this->check_save_settings_privilege();
+        $nonce = anibas_fm_fetch_request_variable('request', 'nonce');
 
-        $settings      = anibas_fm_get_remote_settings();
-        $secret_fields = anibas_fm_remote_secret_fields();
+        if (wp_verify_nonce($nonce, ANIBAS_FM_NONCE_SETTINGS)) {
+            $this->check_admin_privilege();
+            $this->check_settings_auth();
 
-        // Never return decrypted secrets to the client. Send a presence flag
-        // so the UI can show "••••••" instead of leaking the value.
-        foreach ($settings as $storage => $conn) {
-            if (! is_array($conn)) continue;
-            foreach ($secret_fields as $f) {
-                if (isset($conn[$f]) && $conn[$f] !== '') {
-                    $settings[$storage][$f]         = '';
-                    $settings[$storage][$f . '_set'] = true;
+            $settings      = anibas_fm_get_remote_settings();
+            $secret_fields = anibas_fm_remote_secret_fields();
+
+            foreach ($settings as $storage => $conn) {
+                if (! is_array($conn)) continue;
+                foreach ($secret_fields as $f) {
+                    if (isset($conn[$f]) && $conn[$f] !== '') {
+                        $settings[$storage][$f]         = '';
+                        $settings[$storage][$f . '_set'] = true;
+                    }
                 }
             }
+
+            $this->send_success($settings);
         }
 
-        wp_send_json_success($settings);
+        if (wp_verify_nonce($nonce, ANIBAS_FM_NONCE_LIST)) {
+            $this->check_admin_privilege();
+            $this->check_fm_token();
+
+            $settings = anibas_fm_get_remote_settings();
+            $summary = array();
+
+            foreach (array('ftp', 'sftp', 's3', 's3_compatible') as $storage) {
+                $is_available = ! empty($settings[$storage]['enabled'])
+                    && $this->saved_remote_connection_passes($storage, $settings[$storage]);
+
+                $summary[$storage] = array(
+                    'enabled' => $is_available,
+                );
+            }
+
+            $this->send_success($summary);
+        }
+
+        $this->send_error(esc_html__('Invalid nonce.', 'anibas-file-manager'), 401);
+    }
+
+    private function saved_remote_connection_passes(string $storage, array $config): bool
+    {
+        $cache_key = 'anibas_fm_remote_ok_v3_' . $storage . '_' . md5(wp_json_encode($config));
+        $cached = get_transient($cache_key);
+
+        if ($cached === '1' || $cached === '0') {
+            return $cached === '1';
+        }
+
+        try {
+            $result = match ($storage) {
+                'ftp' => RemoteStorageTester::test_ftp($config),
+                'sftp' => RemoteStorageTester::test_sftp($config),
+                's3' => RemoteStorageTester::test_s3($config),
+                's3_compatible' => RemoteStorageTester::test_s3_compatible($config),
+                default => array('success' => false),
+            };
+        } catch (\Throwable $e) {
+            $result = array('success' => false);
+        }
+
+        $success = ! empty($result['success']);
+        set_transient($cache_key, $success ? '1' : '0', MINUTE_IN_SECONDS);
+
+        return $success;
     }
 
     public function save_remote_settings()
     {
         $this->check_save_settings_privilege();
+        $this->check_settings_auth();
 
         $raw      = json_decode(stripslashes(anibas_fm_fetch_request_variable('post', 'settings', '')), true);
         $sanitized = anibas_fm_sanitize_remote_settings($raw);
         update_option('anibas_fm_remote_connections', $sanitized);
-        wp_send_json_success();
+        $this->send_success();
     }
 
     public function test_remote_connection()
     {
-        $this->check_nonce(ANIBAS_FM_NONCE_SETTINGS);
-        $this->check_admin_privilege();
+        $this->check_save_settings_privilege();
+        $this->check_settings_auth();
 
         $type   = sanitize_text_field(wp_unslash($_POST['type'] ?? ''));
         $config = json_decode(wp_unslash($_POST['config'] ?? ''), true);
         if (! is_array($config)) {
-            wp_send_json_error(esc_html__('Invalid config', 'anibas-file-manager'));
+            $this->send_error(esc_html__('Invalid config', 'anibas-file-manager'));
         }
 
         // If a secret field is blank, fall back to the stored (decrypted) value
@@ -191,9 +243,9 @@ class SettingsAjaxHandler extends AjaxHandler
         };
 
         if ($result['success']) {
-            wp_send_json_success($result);
+            $this->send_success($result);
         } else {
-            wp_send_json_error($result['message']);
+            $this->send_error($result['message']);
         }
     }
 }
