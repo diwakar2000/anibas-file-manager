@@ -36,6 +36,11 @@ class BackupAjaxHandler extends AjaxHandler
 
         $path    = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'path', ''));
         $storage = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'storage', 'local'));
+        $job_id  = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'job_id', ''));
+
+        if (! empty($job_id)) {
+            $this->continue_file_backup_job($job_id);
+        }
 
         if (empty($path)) {
             $this->send_error(array('error' => esc_html__('Path required', 'anibas-file-manager')));
@@ -47,10 +52,18 @@ class BackupAjaxHandler extends AjaxHandler
                 $this->send_error(array('error' => esc_html__('File not found', 'anibas-file-manager')));
             }
             $dest = anibas_fm_prepare_file_backup_target('local', $full_path);
-            if (! $dest || ! @copy($full_path, $dest)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_copy
+            if (! $dest) {
                 $this->send_error(array('error' => esc_html__('Backup failed', 'anibas-file-manager')));
             }
-            $this->send_success(array('message' => esc_html__('File backed up', 'anibas-file-manager')));
+            $job = $this->create_file_copy_job(array(
+                'operation' => 'backup_local',
+                'storage'   => 'local',
+                'source'    => $full_path,
+                'target'    => $dest,
+                'tmp'       => dirname($dest) . '/.tmp-' . basename($dest) . '-' . wp_generate_password(6, false),
+                'message'   => esc_html__('File backed up', 'anibas-file-manager'),
+            ));
+            $this->process_file_backup_job($job);
         }
 
         $adapter = StorageManager::get_instance()->get_adapter($storage);
@@ -61,15 +74,19 @@ class BackupAjaxHandler extends AjaxHandler
         if (! $full_path || ! $adapter->is_file($full_path)) {
             $this->send_error(array('error' => esc_html__('File not found', 'anibas-file-manager')));
         }
-        $content = $adapter->get_contents($full_path);
-        if ($content === false) {
-            $this->send_error(array('error' => esc_html__('Failed to read remote file', 'anibas-file-manager')));
-        }
         $dest = anibas_fm_prepare_file_backup_target($storage, $full_path);
-        if (! $dest || @file_put_contents($dest, $content) === false) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
+        if (! $dest) {
             $this->send_error(array('error' => esc_html__('Backup failed', 'anibas-file-manager')));
         }
-        $this->send_success(array('message' => esc_html__('File backed up', 'anibas-file-manager')));
+        $job = $this->create_file_copy_job(array(
+            'operation' => 'backup_remote',
+            'storage'   => $storage,
+            'source'    => $full_path,
+            'target'    => $dest,
+            'tmp'       => dirname($dest) . '/.tmp-' . basename($dest) . '-' . wp_generate_password(6, false),
+            'message'   => esc_html__('File backed up', 'anibas-file-manager'),
+        ));
+        $this->process_file_backup_job($job);
     }
 
     public function list_file_backups()
@@ -126,6 +143,11 @@ class BackupAjaxHandler extends AjaxHandler
     {
         $this->check_backup_privilege();
 
+        $job_id  = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'job_id', ''));
+        if (! empty($job_id)) {
+            $this->continue_file_backup_job($job_id);
+        }
+
         $key     = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'key', ''));
         $version = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'version', ''));
 
@@ -156,27 +178,6 @@ class BackupAjaxHandler extends AjaxHandler
             $this->send_error(array('error' => esc_html__('Backup metadata is corrupt', 'anibas-file-manager')));
         }
 
-        // Conflict handling: if target exists, rename existing file to -old-N suffix.
-        // Sibling names are pre-fetched once so the candidate-name search is an in-memory
-        // lookup — avoids a per-iteration remote existence call (which on S3 = 2 requests).
-        $rename_existing = function (string $path, array $sibling_names, callable $rename): ?string {
-            $target_name = basename($path);
-            if (! in_array($target_name, $sibling_names, true)) return null; // No conflict
-            $info = pathinfo($path);
-            $base = $info['filename'];
-            $ext  = isset($info['extension']) ? '.' . $info['extension'] : '';
-            $dir  = $info['dirname'];
-            $n    = 1;
-            $max  = 1000; // Safety bound in case the sibling list is incomplete
-            do {
-                $candidate_name = $base . '-old-' . $n . $ext;
-                $candidate      = $dir . '/' . $candidate_name;
-                $n++;
-            } while (in_array($candidate_name, $sibling_names, true) && $n <= $max);
-            if (in_array($candidate_name, $sibling_names, true)) return null;
-            return $rename($path, $candidate) ? $candidate : null;
-        };
-
         if ($storage === 'local') {
             $target = $this->validate_local_restore_target($target);
             if (! $target) {
@@ -187,29 +188,15 @@ class BackupAjaxHandler extends AjaxHandler
                 wp_mkdir_p($restore_dir);
             }
 
-            // If target exists, rename existing file to -old-N suffix
-            $sibling_names = is_dir($restore_dir)
-                ? array_values(array_diff(@scandir($restore_dir) ?: [], array('.', '..')))
-                : array();
-            $renamed_path = $rename_existing($target, $sibling_names, function ($from, $to) {
-                return @rename($from, $to);
-            });
-
-            // Restore backup to original target path
-            if (! @copy($backup, $target)) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_copy
-                // Attempt to restore original file if rename happened
-                if ($renamed_path) {
-                    @rename($renamed_path, $target);
-                }
-                $this->send_error(array('error' => esc_html__('Failed to restore backup', 'anibas-file-manager')));
-            }
-            $display = '/' . ltrim(str_replace(wp_normalize_path(ABSPATH), '', wp_normalize_path($target)), '/');
-            ActivityLogger::log('restored_file_backup', basename($target), 'file-backup');
-            $this->send_success(array(
-                'message'     => esc_html__('Backup restored', 'anibas-file-manager'),
-                'restored_to' => $display,
-                'renamed_existing' => $renamed_path ? basename($renamed_path) : null,
+            $job = $this->create_file_copy_job(array(
+                'operation' => 'restore_local',
+                'storage'   => 'local',
+                'source'    => $backup,
+                'target'    => $target,
+                'tmp'       => $restore_dir . '/.anfm-restore-' . wp_generate_password(8, false) . '-' . basename($target),
+                'message'   => esc_html__('Backup restored', 'anibas-file-manager'),
             ));
+            $this->process_file_backup_job($job);
         }
 
         $adapter = StorageManager::get_instance()->get_adapter($storage);
@@ -217,36 +204,17 @@ class BackupAjaxHandler extends AjaxHandler
             $this->send_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
         }
 
-        // If target exists on remote, rename existing file to -old-N suffix.
-        // Fetch the target's sibling names in one remote call (scandir) and reuse
-        // the list for conflict checks, instead of calling is_file() per candidate.
         $remote_dir = rtrim(dirname($target), '/');
-        try {
-            $sibling_names = $adapter->listDirectory($remote_dir)['items'] ?? [];
-            if (! is_array($sibling_names)) $sibling_names = array();
-        } catch (\Exception) {
-            $sibling_names = array();
-        }
-        $renamed_path = $rename_existing($target, $sibling_names, function ($from, $to) use ($adapter) {
-            return $adapter->move($from, $to);
-        });
-
-        // Restore backup to original target path
-        $content = @file_get_contents($backup);
-        if ($content === false || ! $adapter->put_contents($target, $content)) {
-            // Attempt to restore original file if rename happened
-            if ($renamed_path) {
-                $adapter->move($renamed_path, $target);
-            }
-            $this->send_error(array('error' => esc_html__('Failed to restore backup to remote storage', 'anibas-file-manager')));
-        }
-        ActivityLogger::log('restored_file_backup', basename($target), 'file-backup');
-        $this->send_success(array(
-            'message'     => esc_html__('Backup restored', 'anibas-file-manager'),
-            'restored_to' => $target,
-            'storage'     => $storage,
-            'renamed_existing' => $renamed_path ? basename($renamed_path) : null,
+        $remote_tmp = $remote_dir . '/.anfm-restore-' . wp_generate_password(8, false) . '-' . basename($target);
+        $job = $this->create_file_copy_job(array(
+            'operation' => 'restore_remote',
+            'storage'   => $storage,
+            'source'    => $backup,
+            'target'    => $target,
+            'tmp'       => $remote_tmp,
+            'message'   => esc_html__('Backup restored', 'anibas-file-manager'),
         ));
+        $this->process_file_backup_job($job);
     }
 
     private function validate_local_restore_target(string $target): string|false
@@ -355,6 +323,458 @@ class BackupAjaxHandler extends AjaxHandler
         return $path === $root || str_starts_with($path . '/', trailingslashit($root));
     }
 
+    private function create_file_copy_job(array $data): array
+    {
+        $job_id = 'file_' . wp_generate_password(12, false);
+        $job = array_merge(array(
+            'job_id'       => $job_id,
+            'user_id'      => get_current_user_id(),
+            'operation'    => '',
+            'storage'      => 'local',
+            'source'       => '',
+            'target'       => '',
+            'tmp'          => '',
+            'offset'       => 0,
+            'total_size'   => 0,
+            'message'      => '',
+            'created_at'   => time(),
+            'stack'        => array(),
+        ), $data);
+
+        $job['job_id'] = $job_id;
+        $size_info = $this->file_backup_job_size_info($job);
+        $job['total_size'] = $size_info['size'];
+        $job['total_size_known'] = $size_info['known'];
+        set_transient($this->file_backup_job_key($job_id), $job, 2 * HOUR_IN_SECONDS);
+        return $job;
+    }
+
+    private function continue_file_backup_job(string $job_id): void
+    {
+        $job = $this->load_file_backup_job($job_id);
+        if (! $job) {
+            $this->send_error(array('error' => esc_html__('Backup job not found or expired', 'anibas-file-manager')));
+        }
+        $this->process_file_backup_job($job);
+    }
+
+    private function load_file_backup_job(string $job_id): array|false
+    {
+        if (! preg_match('/^file_[A-Za-z0-9]{12}$/', $job_id)) {
+            return false;
+        }
+        $job = get_transient($this->file_backup_job_key($job_id));
+        if (! is_array($job) || (int) ($job['user_id'] ?? 0) !== get_current_user_id()) {
+            return false;
+        }
+        return $job;
+    }
+
+    private function save_file_backup_job(array $job): void
+    {
+        set_transient($this->file_backup_job_key((string) $job['job_id']), $job, 2 * HOUR_IN_SECONDS);
+    }
+
+    private function delete_file_backup_job(array $job): void
+    {
+        delete_transient($this->file_backup_job_key((string) $job['job_id']));
+    }
+
+    private function file_backup_job_key(string $job_id): string
+    {
+        return 'anibas_fm_file_backup_job_' . $job_id;
+    }
+
+    private function process_file_backup_job(array $job): void
+    {
+        $operation = (string) ($job['operation'] ?? '');
+        if ($operation === 'backup_remote') {
+            $done = $this->process_remote_download_job($job);
+        } elseif ($operation === 'restore_remote') {
+            $done = $this->process_remote_upload_job($job);
+        } elseif ($operation === 'delete_tree') {
+            $done = $this->process_delete_tree_job($job);
+        } else {
+            $done = $this->process_local_copy_job($job);
+        }
+
+        if (! $done) {
+            $this->save_file_backup_job($job);
+            $this->send_success(array(
+                'status'  => 'running',
+                'job_id'  => $job['job_id'],
+                'progress' => $this->file_backup_job_progress($job),
+            ));
+        }
+
+        $result = $this->finalize_file_backup_job($job);
+        $this->delete_file_backup_job($job);
+        $this->send_success(array_merge(array(
+            'status'  => 'complete',
+            'job_id'  => $job['job_id'],
+            'message' => $job['message'],
+        ), $result));
+    }
+
+    private function process_local_copy_job(array &$job): bool
+    {
+        $source = (string) ($job['source'] ?? '');
+        $tmp    = (string) ($job['tmp'] ?? '');
+        if (! is_file($source) || $tmp === '') {
+            $this->send_error(array('error' => esc_html__('Backup source is missing', 'anibas-file-manager')));
+        }
+
+        $dir = dirname($tmp);
+        if (! is_dir($dir)) {
+            wp_mkdir_p($dir);
+        }
+
+        $total = (int) @filesize($source);
+        $job['total_size'] = max((int) ($job['total_size'] ?? 0), $total);
+        if ($total === 0) {
+            if (@file_put_contents($tmp, '') === false) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
+                $this->send_error(array('error' => esc_html__('Failed to create backup file', 'anibas-file-manager')));
+            }
+            $job['offset'] = 0;
+            return true;
+        }
+
+        $offset = max(0, (int) ($job['offset'] ?? 0));
+        $src = @fopen($source, 'rb');
+        $dst = @fopen($tmp, $offset > 0 ? 'c+b' : 'wb');
+        if (! $src || ! $dst) {
+            if ($src) fclose($src);
+            if ($dst) fclose($dst);
+            $this->send_error(array('error' => esc_html__('Failed to open backup file', 'anibas-file-manager')));
+        }
+        if ($offset > 0) {
+            fseek($src, $offset);
+            fseek($dst, $offset);
+        }
+
+        $started = microtime(true);
+        $chunk_size = $this->file_backup_chunk_size();
+        while (! feof($src)) {
+            $chunk = fread($src, $chunk_size);
+            if ($chunk === false) {
+                fclose($src);
+                fclose($dst);
+                $this->send_error(array('error' => esc_html__('Failed to read backup file', 'anibas-file-manager')));
+            }
+            if ($chunk === '') {
+                break;
+            }
+            $written = fwrite($dst, $chunk);
+            if ($written === false || $written !== strlen($chunk)) {
+                fclose($src);
+                fclose($dst);
+                $this->send_error(array('error' => esc_html__('Failed to write backup file', 'anibas-file-manager')));
+            }
+            $offset += $written;
+            $job['offset'] = $offset;
+            if ((microtime(true) - $started) >= $this->file_backup_time_budget()) {
+                fclose($src);
+                fclose($dst);
+                return false;
+            }
+        }
+
+        fclose($src);
+        fclose($dst);
+        return $offset >= $total;
+    }
+
+    private function process_remote_download_job(array &$job): bool
+    {
+        $adapter = StorageManager::get_instance()->get_adapter((string) $job['storage']);
+        if (! $adapter) {
+            $this->send_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
+        }
+        $tmp = (string) $job['tmp'];
+        $dir = dirname($tmp);
+        if (! is_dir($dir)) {
+            wp_mkdir_p($dir);
+        }
+        $result = $adapter->download_to_local_chunked((string) $job['source'], $tmp, (int) $job['offset'], $this->file_backup_chunk_size());
+        $job['offset'] = (int) ($result['bytes_copied'] ?? $job['offset']);
+        $status = (int) ($result['status'] ?? 0);
+        if ($status === 9) {
+            return true;
+        }
+        if ($status === 10) {
+            return false;
+        }
+        if ((int) ($job['offset'] ?? 0) === 0 && ! empty($job['total_size_known']) && (int) ($job['total_size'] ?? 0) === 0) {
+            if (@file_put_contents($tmp, '') !== false) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
+                return true;
+            }
+        }
+        $this->send_error(array('error' => esc_html__('Failed to read remote file', 'anibas-file-manager')));
+    }
+
+    private function process_remote_upload_job(array &$job): bool
+    {
+        $adapter = StorageManager::get_instance()->get_adapter((string) $job['storage']);
+        if (! $adapter) {
+            $this->send_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
+        }
+        $result = $adapter->upload_from_local_chunked((string) $job['source'], (string) $job['tmp'], (int) $job['offset'], $this->file_backup_chunk_size());
+        $job['offset'] = (int) ($result['bytes_copied'] ?? $job['offset']);
+        $status = (int) ($result['status'] ?? 0);
+        if ($status === 9) {
+            return true;
+        }
+        if ($status === 10) {
+            return false;
+        }
+        $this->send_error(array('error' => esc_html__('Failed to restore backup to remote storage', 'anibas-file-manager')));
+    }
+
+    private function process_delete_tree_job(array &$job): bool
+    {
+        $root = (string) ($job['source'] ?? '');
+        $stack = ! empty($job['stack']) && is_array($job['stack']) ? $job['stack'] : array($root);
+        $started = microtime(true);
+        $deleted = 0;
+
+        while (! empty($stack)) {
+            $dir = end($stack);
+            if (! is_string($dir) || ! $this->path_is_inside($dir, $root)) {
+                $this->send_error(array('error' => esc_html__('Invalid backup delete path', 'anibas-file-manager')));
+            }
+            if (! is_dir($dir)) {
+                array_pop($stack);
+                continue;
+            }
+
+            $handle = @opendir($dir);
+            if (! $handle) {
+                $this->send_error(array('error' => esc_html__('Failed to delete backup history', 'anibas-file-manager')));
+            }
+
+            $descended = false;
+            $paused = false;
+            $found = false;
+            while (($name = readdir($handle)) !== false) {
+                if ($name === '.' || $name === '..') {
+                    continue;
+                }
+                $found = true;
+                $full = wp_normalize_path($dir . '/' . $name);
+                if (! $this->path_is_inside($full, $root)) {
+                    closedir($handle);
+                    $this->send_error(array('error' => esc_html__('Invalid backup delete path', 'anibas-file-manager')));
+                }
+                if (is_dir($full) && ! is_link($full)) {
+                    $stack[] = $full;
+                    $descended = true;
+                    break;
+                }
+                if (! @unlink($full)) {
+                    closedir($handle);
+                    $this->send_error(array('error' => esc_html__('Failed to delete backup history', 'anibas-file-manager')));
+                }
+                $deleted++;
+                if ($deleted >= 1000 || (microtime(true) - $started) >= $this->file_backup_time_budget()) {
+                    $paused = true;
+                    break;
+                }
+            }
+            closedir($handle);
+
+            if ($paused || $descended) {
+                $job['stack'] = $stack;
+                return false;
+            }
+            if (! $found) {
+                if (! @rmdir($dir)) {
+                    $this->send_error(array('error' => esc_html__('Failed to delete backup history', 'anibas-file-manager')));
+                }
+                array_pop($stack);
+            }
+        }
+
+        $job['stack'] = array();
+        return true;
+    }
+
+    private function finalize_file_backup_job(array $job): array
+    {
+        $operation = (string) ($job['operation'] ?? '');
+        if ($operation === 'delete_tree') {
+            ActivityLogger::log('deleted_file_backup_tree', (string) ($job['key'] ?? basename((string) $job['source'])), 'file-backup');
+            return array();
+        }
+
+        if ($operation === 'backup_local' || $operation === 'backup_remote') {
+            if (! @rename((string) $job['tmp'], (string) $job['target'])) {
+                $this->send_error(array('error' => esc_html__('Backup failed', 'anibas-file-manager')));
+            }
+            return array();
+        }
+
+        if ($operation === 'restore_local') {
+            return $this->finalize_local_restore_job($job);
+        }
+
+        if ($operation === 'restore_remote') {
+            return $this->finalize_remote_restore_job($job);
+        }
+
+        return array();
+    }
+
+    private function finalize_local_restore_job(array $job): array
+    {
+        $target = (string) $job['target'];
+        $renamed_path = $this->rename_existing_local_target($target);
+        if ($renamed_path === false) {
+            $this->send_error(array('error' => esc_html__('Failed to rename existing file', 'anibas-file-manager')));
+        }
+        if (! @rename((string) $job['tmp'], $target)) {
+            if (is_string($renamed_path)) {
+                @rename($renamed_path, $target);
+            }
+            $this->send_error(array('error' => esc_html__('Failed to restore backup', 'anibas-file-manager')));
+        }
+        $display = '/' . ltrim(str_replace(wp_normalize_path(ABSPATH), '', wp_normalize_path($target)), '/');
+        ActivityLogger::log('restored_file_backup', basename($target), 'file-backup');
+        return array(
+            'restored_to'      => $display,
+            'renamed_existing' => is_string($renamed_path) ? basename($renamed_path) : null,
+        );
+    }
+
+    private function finalize_remote_restore_job(array $job): array
+    {
+        $adapter = StorageManager::get_instance()->get_adapter((string) $job['storage']);
+        if (! $adapter) {
+            $this->send_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
+        }
+
+        $target = (string) $job['target'];
+        $renamed_path = $this->rename_existing_remote_target($adapter, $target);
+        if ($renamed_path === false) {
+            $this->send_error(array('error' => esc_html__('Failed to rename existing remote file', 'anibas-file-manager')));
+        }
+        if (! $adapter->move((string) $job['tmp'], $target)) {
+            if (is_string($renamed_path)) {
+                $adapter->move($renamed_path, $target);
+            }
+            $this->send_error(array('error' => esc_html__('Failed to restore backup to remote storage', 'anibas-file-manager')));
+        }
+        ActivityLogger::log('restored_file_backup', basename($target), 'file-backup');
+        return array(
+            'restored_to'      => $target,
+            'storage'          => (string) $job['storage'],
+            'renamed_existing' => is_string($renamed_path) ? basename($renamed_path) : null,
+        );
+    }
+
+    private function rename_existing_local_target(string $target): string|false|null
+    {
+        if (! file_exists($target)) {
+            return null;
+        }
+
+        $candidate = $this->next_available_local_old_name($target);
+        return $candidate !== null && @rename($target, $candidate) ? $candidate : false;
+    }
+
+    private function next_available_local_old_name(string $path): ?string
+    {
+        $info = pathinfo($path);
+        $base = $info['filename'];
+        $ext  = isset($info['extension']) ? '.' . $info['extension'] : '';
+        $dir  = $info['dirname'];
+
+        for ($n = 1; $n <= 1000; $n++) {
+            $candidate = $dir . '/' . $base . '-old-' . $n . $ext;
+            if (! file_exists($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private function rename_existing_remote_target($adapter, string $target): string|false|null
+    {
+        if (! $adapter->exists($target)) {
+            return null;
+        }
+
+        $candidate = $this->next_available_remote_old_name($adapter, $target);
+        return $candidate !== null && $adapter->move($target, $candidate) ? $candidate : false;
+    }
+
+    private function next_available_remote_old_name($adapter, string $path): ?string
+    {
+        $info = pathinfo($path);
+        $base = $info['filename'];
+        $ext  = isset($info['extension']) ? '.' . $info['extension'] : '';
+        $dir  = $info['dirname'];
+
+        for ($n = 1; $n <= 1000; $n++) {
+            $candidate = $dir . '/' . $base . '-old-' . $n . $ext;
+            if (! $adapter->exists($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private function file_backup_job_size_info(array $job): array
+    {
+        $operation = (string) ($job['operation'] ?? '');
+        if ($operation === 'backup_remote') {
+            $adapter = StorageManager::get_instance()->get_adapter((string) $job['storage']);
+            if ($adapter) {
+                $size = $adapter->get_size((string) $job['source']);
+                if ($size !== false) {
+                    return array('size' => (int) $size, 'known' => true);
+                }
+                $details = $adapter->getDetails((string) $job['source']);
+                if (is_array($details)) {
+                    $detail_size = $details['size'] ?? $details['filesize'] ?? null;
+                    if (is_numeric($detail_size)) {
+                        return array('size' => (int) $detail_size, 'known' => true);
+                    }
+                }
+            }
+            return array('size' => 0, 'known' => false);
+        }
+        return is_file((string) $job['source'])
+            ? array('size' => (int) @filesize((string) $job['source']), 'known' => true)
+            : array('size' => 0, 'known' => false);
+    }
+
+    private function file_backup_job_progress(array $job): array
+    {
+        $total = (int) ($job['total_size'] ?? 0);
+        $offset = (int) ($job['offset'] ?? 0);
+        return array(
+            'bytes_processed' => $offset,
+            'total_size'      => $total,
+            'percent'         => $total > 0 ? round(min(100, ($offset / $total) * 100), 2) : 0,
+        );
+    }
+
+    private function file_backup_chunk_size(): int
+    {
+        $chunk_size = intval(anibas_fm_get_option('chunk_size', ANIBAS_FM_DEFAULT_CHUNK_SIZE));
+        if ($chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN) $chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
+        if ($chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX) $chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
+        return $chunk_size;
+    }
+
+    private function file_backup_time_budget(): int
+    {
+        $max_time = (int) ini_get('max_execution_time');
+        return $max_time > 0 ? max(1, (int) floor($max_time * 0.6)) : 20;
+    }
+
     public function delete_file_backup()
     {
         $this->check_backup_privilege();
@@ -411,6 +831,11 @@ class BackupAjaxHandler extends AjaxHandler
     {
         $this->check_backup_privilege();
 
+        $job_id = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'job_id', ''));
+        if (! empty($job_id)) {
+            $this->continue_file_backup_job($job_id);
+        }
+
         $key = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'key', ''));
 
         if (! preg_match('/^[a-f0-9]{32}$/', $key)) {
@@ -425,12 +850,16 @@ class BackupAjaxHandler extends AjaxHandler
             $this->send_error(array('error' => esc_html__('Backup group not found', 'anibas-file-manager')));
         }
 
-        if (! anibas_fm_recursive_rmdir($src_dir)) {
-            $this->send_error(array('error' => esc_html__('Failed to delete backup history', 'anibas-file-manager')));
-        }
-
-        ActivityLogger::log('deleted_file_backup_tree', $key, 'file-backup');
-        $this->send_success(array('message' => esc_html__('Backup history deleted', 'anibas-file-manager')));
+        $job = $this->create_file_copy_job(array(
+            'operation' => 'delete_tree',
+            'source'    => $src_dir,
+            'target'    => $src_dir,
+            'tmp'       => '',
+            'key'       => $key,
+            'message'   => esc_html__('Backup history deleted', 'anibas-file-manager'),
+            'stack'     => array($src_dir),
+        ));
+        $this->process_file_backup_job($job);
     }
 
     public function list_site_backups()

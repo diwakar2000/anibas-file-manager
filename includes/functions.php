@@ -783,6 +783,16 @@ if ( ! function_exists( 'anibas_fm_purge_trash' ) ) {
 add_action( ANIBAS_FM_TRASH_CRON_HOOK, 'anibas_fm_purge_trash' );
 add_action( ANIBAS_FM_TEMP_CRON_HOOK, 'anibas_fm_purge_temp' );
 add_action( ANIBAS_FM_BACKUP_CRON_HOOK, 'anibas_fm_purge_old_backups' );
+add_action( ANIBAS_FM_OAUTH_REFRESH_CRON_HOOK, array( '\\Anibas\\RemoteOAuthManager', 'refresh_due_tokens' ) );
+
+if ( ! function_exists( 'anibas_fm_ensure_oauth_refresh_cron' ) ) {
+    function anibas_fm_ensure_oauth_refresh_cron(): void {
+        if ( ! wp_next_scheduled( ANIBAS_FM_OAUTH_REFRESH_CRON_HOOK ) ) {
+            wp_schedule_event( time() + 300, 'hourly', ANIBAS_FM_OAUTH_REFRESH_CRON_HOOK );
+        }
+    }
+}
+add_action( 'init', 'anibas_fm_ensure_oauth_refresh_cron' );
 
 /* =========================================================
    BACKUP HELPERS
@@ -918,9 +928,45 @@ if ( ! function_exists( 'anibas_fm_get_file_backups_dir' ) ) {
     }
 }
 
+if ( ! function_exists( 'anibas_fm_get_archive_restore_state_dir' ) ) {
+    /**
+     * Get a protected per-restore state directory outside the extraction target.
+     *
+     * @param string $archive Absolute archive path.
+     * @param string $dest    Absolute extraction destination.
+     * @param string $format  Archive format namespace.
+     * @return string|false
+     */
+    function anibas_fm_get_archive_restore_state_dir( $archive, $dest, $format ) {
+        $root = anibas_fm_get_backup_dir() . '/archive-restore-state';
+        if ( ! is_dir( $root ) ) {
+            wp_mkdir_p( $root );
+            anibas_fm_protect_dir( $root );
+        }
+        if ( ! is_dir( $root ) ) {
+            return false;
+        }
+
+        $format = strtolower( preg_replace( '/[^a-z0-9_-]/i', '', (string) $format ) );
+        if ( $format === '' ) {
+            $format = 'archive';
+        }
+
+        $key = md5( wp_normalize_path( $archive ) . '|' . wp_normalize_path( $dest ) );
+        $dir = $root . '/' . $format . '-' . $key;
+        if ( ! is_dir( $dir ) ) {
+            wp_mkdir_p( $dir );
+        }
+
+        return is_dir( $dir ) ? $dir : false;
+    }
+}
+
 if ( ! function_exists( 'anibas_fm_is_file_backup_internal_name' ) ) {
     function anibas_fm_is_file_backup_internal_name( $name ) {
-        return in_array( $name, array( '.source', '.htaccess', 'index.php' ), true );
+        return in_array( $name, array( '.source', '.htaccess', 'index.php' ), true )
+            || str_starts_with( (string) $name, '.tmp-' )
+            || str_starts_with( (string) $name, '.anfm-restore-' );
     }
 }
 
@@ -994,6 +1040,9 @@ if ( ! function_exists( 'anibas_fm_encrypt_value' ) ) {
         if ( ! is_string( $plaintext ) || $plaintext === '' ) {
             return $plaintext;
         }
+        if ( strpos( $plaintext, 'afm1:' ) === 0 ) {
+            return $plaintext;
+        }
         if ( ! function_exists( 'openssl_encrypt' ) ) {
             return $plaintext;
         }
@@ -1035,12 +1084,406 @@ if ( ! function_exists( 'anibas_fm_decrypt_value' ) ) {
     }
 }
 
+if ( ! function_exists( 'anibas_fm_remote_storage_providers' ) ) {
+    /**
+     * Remote storage provider schema used by backend validation and frontend forms.
+     *
+     * Third-party providers may extend this via the filter, but runtime adapter
+     * creation still needs matching trusted PHP code.
+     */
+    function anibas_fm_remote_storage_providers() {
+        $enabled_when = array( 'enabled' => true );
+        $providers = array(
+            'ftp' => array(
+                'id'           => 'ftp',
+                'label'        => __( 'FTP/FTPS', 'anibas-file-manager' ),
+                'order'        => 10,
+                'adapter_factory' => array( 'Anibas\\StorageManager', 'create_ftp_adapter' ),
+                'tester'       => array( 'Anibas\\RemoteStorageTester', 'test_ftp' ),
+                'capabilities' => array(
+                    'browse'           => true,
+                    'upload'           => true,
+                    'download'         => true,
+                    'rename'           => true,
+                    'delete'           => true,
+                    'emptyFolder'      => true,
+                    'chunkedTransfer'  => true,
+                    'providerTrash'    => false,
+                ),
+                'settings'     => array(
+                    'enable_label' => __( 'Enable FTP/FTPS Connection', 'anibas-file-manager' ),
+                    'sections'     => array(
+                        array(
+                            'id'     => 'connection',
+                            'label'  => __( 'Connection', 'anibas-file-manager' ),
+                            'fields' => array(
+                                array( 'key' => 'enabled', 'type' => 'toggle', 'default' => false ),
+                                array( 'key' => 'host', 'type' => 'text', 'label' => __( 'Host', 'anibas-file-manager' ), 'required' => true, 'maxLength' => 255, 'placeholder' => 'ftp.example.com', 'showWhen' => $enabled_when ),
+                                array( 'key' => 'port', 'type' => 'number', 'label' => __( 'Port', 'anibas-file-manager' ), 'default' => 21, 'min' => 1, 'max' => 65535, 'showWhen' => $enabled_when ),
+                                array( 'key' => 'username', 'type' => 'text', 'label' => __( 'Username', 'anibas-file-manager' ), 'required' => true, 'maxLength' => 255, 'showWhen' => $enabled_when ),
+                                array( 'key' => 'password', 'type' => 'password', 'label' => __( 'Password', 'anibas-file-manager' ), 'secret' => true, 'maxLength' => 255, 'showWhen' => $enabled_when ),
+                                array( 'key' => 'base_path', 'type' => 'text', 'label' => __( 'Base Path', 'anibas-file-manager' ), 'default' => '/', 'maxLength' => 512, 'placeholder' => '/', 'showWhen' => $enabled_when ),
+                            ),
+                        ),
+                        array(
+                            'id'     => 'options',
+                            'label'  => __( 'Options', 'anibas-file-manager' ),
+                            'fields' => array(
+                                array( 'key' => 'use_ssl', 'type' => 'checkbox', 'label' => __( 'Use SSL (FTPS)', 'anibas-file-manager' ), 'default' => false, 'showWhen' => $enabled_when ),
+                                array( 'key' => 'is_passive', 'type' => 'checkbox', 'label' => __( 'Passive Mode', 'anibas-file-manager' ), 'default' => true, 'help' => __( 'Passive mode works on most networks. Disable only if your server requires Active mode.', 'anibas-file-manager' ), 'showWhen' => $enabled_when ),
+                                array( 'key' => 'insecure_ssl', 'type' => 'checkbox', 'label' => __( 'Allow insecure SSL', 'anibas-file-manager' ), 'default' => false, 'hidden' => true ),
+                            ),
+                        ),
+                    ),
+                ),
+                'ajax'         => array( 'testConnection' => ANIBAS_FM_TEST_REMOTE_CONNECTION ),
+            ),
+            'sftp' => array(
+                'id'           => 'sftp',
+                'label'        => __( 'SFTP', 'anibas-file-manager' ),
+                'order'        => 20,
+                'adapter_factory' => array( 'Anibas\\StorageManager', 'create_sftp_adapter' ),
+                'tester'       => array( 'Anibas\\RemoteStorageTester', 'test_sftp' ),
+                'capabilities' => array(
+                    'browse'           => true,
+                    'upload'           => true,
+                    'download'         => true,
+                    'rename'           => true,
+                    'delete'           => true,
+                    'emptyFolder'      => true,
+                    'chunkedTransfer'  => true,
+                    'providerTrash'    => false,
+                ),
+                'settings'     => array(
+                    'enable_label' => __( 'Enable SFTP Connection', 'anibas-file-manager' ),
+                    'sections'     => array(
+                        array(
+                            'id'     => 'connection',
+                            'label'  => __( 'Connection', 'anibas-file-manager' ),
+                            'fields' => array(
+                                array( 'key' => 'enabled', 'type' => 'toggle', 'default' => false ),
+                                array( 'key' => 'host', 'type' => 'text', 'label' => __( 'Host', 'anibas-file-manager' ), 'required' => true, 'maxLength' => 255, 'placeholder' => 'sftp.example.com', 'showWhen' => $enabled_when ),
+                                array( 'key' => 'port', 'type' => 'number', 'label' => __( 'Port', 'anibas-file-manager' ), 'default' => 22, 'min' => 1, 'max' => 65535, 'showWhen' => $enabled_when ),
+                                array( 'key' => 'username', 'type' => 'text', 'label' => __( 'Username', 'anibas-file-manager' ), 'required' => true, 'maxLength' => 255, 'showWhen' => $enabled_when ),
+                                array( 'key' => 'password', 'type' => 'password', 'label' => __( 'Password', 'anibas-file-manager' ), 'secret' => true, 'maxLength' => 255, 'placeholder' => __( 'Leave empty if using key', 'anibas-file-manager' ), 'showWhen' => $enabled_when ),
+                                array( 'key' => 'private_key', 'type' => 'password', 'label' => __( 'Private Key Path', 'anibas-file-manager' ), 'secret' => true, 'maxLength' => 512, 'placeholder' => '/path/to/key', 'showWhen' => $enabled_when ),
+                                array( 'key' => 'base_path', 'type' => 'text', 'label' => __( 'Base Path', 'anibas-file-manager' ), 'default' => '/', 'maxLength' => 512, 'placeholder' => '/', 'showWhen' => $enabled_when ),
+                            ),
+                        ),
+                    ),
+                ),
+                'ajax'         => array( 'testConnection' => ANIBAS_FM_TEST_REMOTE_CONNECTION ),
+            ),
+            's3' => array(
+                'id'           => 's3',
+                'label'        => __( 'Amazon S3', 'anibas-file-manager' ),
+                'order'        => 30,
+                'adapter_factory' => array( 'Anibas\\StorageManager', 'create_s3_adapter' ),
+                'tester'       => array( 'Anibas\\RemoteStorageTester', 'test_s3' ),
+                'capabilities' => array(
+                    'browse'           => true,
+                    'upload'           => true,
+                    'download'         => true,
+                    'rename'           => true,
+                    'delete'           => true,
+                    'emptyFolder'      => true,
+                    'chunkedTransfer'  => true,
+                    'providerTrash'    => false,
+                ),
+                'settings'     => array(
+                    'enable_label' => __( 'Enable Amazon S3', 'anibas-file-manager' ),
+                    'sections'     => array(
+                        array(
+                            'id'     => 'bucket',
+                            'label'  => __( 'Bucket', 'anibas-file-manager' ),
+                            'fields' => array(
+                                array( 'key' => 'enabled', 'type' => 'toggle', 'default' => false ),
+                                array( 'key' => 'region', 'type' => 'text', 'label' => __( 'Region', 'anibas-file-manager' ), 'default' => 'us-east-1', 'maxLength' => 100, 'placeholder' => 'us-east-1', 'showWhen' => $enabled_when ),
+                                array( 'key' => 'bucket', 'type' => 'text', 'label' => __( 'Bucket', 'anibas-file-manager' ), 'required' => true, 'maxLength' => 255, 'placeholder' => 'my-bucket', 'showWhen' => $enabled_when ),
+                                array( 'key' => 'access_key', 'type' => 'text', 'label' => __( 'Access Key', 'anibas-file-manager' ), 'required' => true, 'maxLength' => 255, 'showWhen' => $enabled_when ),
+                                array( 'key' => 'secret_key', 'type' => 'password', 'label' => __( 'Secret Key', 'anibas-file-manager' ), 'required' => true, 'secret' => true, 'maxLength' => 255, 'showWhen' => $enabled_when ),
+                                array( 'key' => 'prefix', 'type' => 'text', 'label' => __( 'Prefix', 'anibas-file-manager' ), 'maxLength' => 512, 'placeholder' => 'uploads/', 'showWhen' => $enabled_when ),
+                                array( 'key' => 'chunk_size', 'type' => 'number', 'label' => __( 'Chunk Size', 'anibas-file-manager' ), 'default' => 5242880, 'min' => ANIBAS_FM_CHUNK_SIZE_MIN, 'max' => ANIBAS_FM_CHUNK_SIZE_MAX, 'hidden' => true ),
+                            ),
+                        ),
+                    ),
+                ),
+                'ajax'         => array( 'testConnection' => ANIBAS_FM_TEST_REMOTE_CONNECTION ),
+            ),
+            's3_compatible' => array(
+                'id'           => 's3_compatible',
+                'label'        => __( 'S3 Compatible', 'anibas-file-manager' ),
+                'order'        => 40,
+                'adapter_factory' => array( 'Anibas\\StorageManager', 'create_s3_compatible_adapter' ),
+                'tester'       => array( 'Anibas\\RemoteStorageTester', 'test_s3_compatible' ),
+                'capabilities' => array(
+                    'browse'           => true,
+                    'upload'           => true,
+                    'download'         => true,
+                    'rename'           => true,
+                    'delete'           => true,
+                    'emptyFolder'      => true,
+                    'chunkedTransfer'  => true,
+                    'providerTrash'    => false,
+                ),
+                'settings'     => array(
+                    'enable_label' => __( 'Enable S3 Compatible Storage', 'anibas-file-manager' ),
+                    'sections'     => array(
+                        array(
+                            'id'     => 'bucket',
+                            'label'  => __( 'Bucket', 'anibas-file-manager' ),
+                            'fields' => array(
+                                array( 'key' => 'enabled', 'type' => 'toggle', 'default' => false ),
+                                array( 'key' => 'endpoint', 'type' => 'url', 'label' => __( 'Endpoint URL', 'anibas-file-manager' ), 'required' => true, 'maxLength' => 255, 'placeholder' => 'https://minio.example.com', 'showWhen' => $enabled_when ),
+                                array( 'key' => 'region', 'type' => 'text', 'label' => __( 'Region', 'anibas-file-manager' ), 'default' => 'us-east-1', 'maxLength' => 100, 'placeholder' => 'us-east-1', 'showWhen' => $enabled_when ),
+                                array( 'key' => 'bucket', 'type' => 'text', 'label' => __( 'Bucket', 'anibas-file-manager' ), 'required' => true, 'maxLength' => 255, 'placeholder' => 'my-bucket', 'showWhen' => $enabled_when ),
+                                array( 'key' => 'access_key', 'type' => 'text', 'label' => __( 'Access Key', 'anibas-file-manager' ), 'required' => true, 'maxLength' => 255, 'showWhen' => $enabled_when ),
+                                array( 'key' => 'secret_key', 'type' => 'password', 'label' => __( 'Secret Key', 'anibas-file-manager' ), 'required' => true, 'secret' => true, 'maxLength' => 255, 'showWhen' => $enabled_when ),
+                                array( 'key' => 'prefix', 'type' => 'text', 'label' => __( 'Prefix', 'anibas-file-manager' ), 'maxLength' => 512, 'placeholder' => 'uploads/', 'showWhen' => $enabled_when ),
+                                array( 'key' => 'path_style', 'type' => 'checkbox', 'label' => __( 'Path-style URLs', 'anibas-file-manager' ), 'default' => true, 'hidden' => true ),
+                                array( 'key' => 'chunk_size', 'type' => 'number', 'label' => __( 'Chunk Size', 'anibas-file-manager' ), 'default' => 5242880, 'min' => ANIBAS_FM_CHUNK_SIZE_MIN, 'max' => ANIBAS_FM_CHUNK_SIZE_MAX, 'hidden' => true ),
+                            ),
+                        ),
+                    ),
+                ),
+                'ajax'         => array( 'testConnection' => ANIBAS_FM_TEST_REMOTE_CONNECTION ),
+            ),
+            'gdrive' => array(
+                'id'           => 'gdrive',
+                'label'        => __( 'Google Drive', 'anibas-file-manager' ),
+                'order'        => 50,
+                'adapter_factory' => array( 'Anibas\\StorageManager', 'create_gdrive_adapter' ),
+                'tester'       => array( 'Anibas\\RemoteStorageTester', 'test_gdrive' ),
+                'oauth'        => class_exists( '\\Anibas\\RemoteOAuthManager' ) ? \Anibas\RemoteOAuthManager::manifest( 'gdrive' ) : null,
+                'capabilities' => array(
+                    'browse'           => true,
+                    'upload'           => true,
+                    'download'         => true,
+                    'rename'           => true,
+                    'delete'           => true,
+                    'emptyFolder'      => true,
+                    'chunkedTransfer'  => true,
+                    'providerTrash'    => false,
+                    'temporaryLink'    => false,
+                ),
+                'settings'     => array(
+                    'enable_label' => __( 'Enable Google Drive', 'anibas-file-manager' ),
+                    'sections'     => array(
+                        array(
+                            'id'     => 'connection',
+                            'fields' => array(
+                                array( 'key' => 'enabled', 'type' => 'toggle', 'default' => false ),
+                                array( 'key' => 'client_id', 'type' => 'text', 'label' => __( 'Client ID', 'anibas-file-manager' ), 'required' => true, 'maxLength' => 255 ),
+                                array( 'key' => 'client_secret', 'type' => 'password', 'label' => __( 'Client Secret', 'anibas-file-manager' ), 'required' => true, 'secret' => true, 'maxLength' => 255 ),
+                                array( 'key' => 'refresh_token', 'type' => 'password', 'label' => __( 'Refresh Token', 'anibas-file-manager' ), 'secret' => true, 'maxLength' => 2048, 'hidden' => true ),
+                                array( 'key' => 'access_token', 'type' => 'password', 'label' => __( 'Access Token', 'anibas-file-manager' ), 'secret' => true, 'maxLength' => 2048, 'hidden' => true ),
+                                array( 'key' => 'root_folder_id', 'type' => 'text', 'label' => __( 'Root Folder ID', 'anibas-file-manager' ), 'default' => 'root', 'maxLength' => 255, 'hidden' => true ),
+                            ),
+                        ),
+                        array(
+                            'id'     => 'options',
+                            'fields' => array(
+                                array( 'key' => 'supports_all_drives', 'type' => 'checkbox', 'label' => __( 'Support shared drives', 'anibas-file-manager' ), 'default' => true, 'hidden' => true ),
+                                array( 'key' => 'chunk_size', 'type' => 'number', 'label' => __( 'Chunk Size', 'anibas-file-manager' ), 'default' => ANIBAS_FM_DEFAULT_CHUNK_SIZE, 'min' => ANIBAS_FM_CHUNK_SIZE_MIN, 'max' => ANIBAS_FM_CHUNK_SIZE_MAX, 'hidden' => true ),
+                                array( 'key' => 'token_expires_at', 'type' => 'integer', 'label' => __( 'Token Expires At', 'anibas-file-manager' ), 'hidden' => true ),
+                                array( 'key' => 'token_scope', 'type' => 'text', 'label' => __( 'Token Scope', 'anibas-file-manager' ), 'maxLength' => 2048, 'hidden' => true ),
+                                array( 'key' => 'oauth_connected_at', 'type' => 'integer', 'label' => __( 'OAuth Connected At', 'anibas-file-manager' ), 'hidden' => true ),
+                            ),
+                        ),
+                    ),
+                ),
+                'ajax'         => array( 'testConnection' => ANIBAS_FM_TEST_REMOTE_CONNECTION ),
+            ),
+            'onedrive' => array(
+                'id'           => 'onedrive',
+                'label'        => __( 'OneDrive', 'anibas-file-manager' ),
+                'order'        => 60,
+                'adapter_factory' => array( 'Anibas\\StorageManager', 'create_onedrive_adapter' ),
+                'tester'       => array( 'Anibas\\RemoteStorageTester', 'test_onedrive' ),
+                'oauth'        => class_exists( '\\Anibas\\RemoteOAuthManager' ) ? \Anibas\RemoteOAuthManager::manifest( 'onedrive' ) : null,
+                'capabilities' => array(
+                    'browse'           => true,
+                    'upload'           => true,
+                    'download'         => true,
+                    'rename'           => true,
+                    'delete'           => true,
+                    'emptyFolder'      => true,
+                    'chunkedTransfer'  => true,
+                    'providerTrash'    => false,
+                    'temporaryLink'    => true,
+                ),
+                'settings'     => array(
+                    'enable_label' => __( 'Enable OneDrive', 'anibas-file-manager' ),
+                    'sections'     => array(
+                        array(
+                            'id'     => 'connection',
+                            'fields' => array(
+                                array( 'key' => 'enabled', 'type' => 'toggle', 'default' => false ),
+                                array( 'key' => 'tenant', 'type' => 'text', 'label' => __( 'Tenant', 'anibas-file-manager' ), 'default' => 'common', 'maxLength' => 128, 'hidden' => true ),
+                                array( 'key' => 'client_id', 'type' => 'text', 'label' => __( 'Client ID', 'anibas-file-manager' ), 'required' => true, 'maxLength' => 255 ),
+                                array( 'key' => 'client_secret', 'type' => 'password', 'label' => __( 'Client Secret', 'anibas-file-manager' ), 'required' => true, 'secret' => true, 'maxLength' => 255 ),
+                                array( 'key' => 'refresh_token', 'type' => 'password', 'label' => __( 'Refresh Token', 'anibas-file-manager' ), 'secret' => true, 'maxLength' => 2048, 'hidden' => true ),
+                                array( 'key' => 'access_token', 'type' => 'password', 'label' => __( 'Access Token', 'anibas-file-manager' ), 'secret' => true, 'maxLength' => 2048, 'hidden' => true ),
+                            ),
+                        ),
+                        array(
+                            'id'     => 'options',
+                            'fields' => array(
+                                array( 'key' => 'drive_id', 'type' => 'text', 'label' => __( 'Drive ID', 'anibas-file-manager' ), 'maxLength' => 255, 'hidden' => true ),
+                                array( 'key' => 'root_path', 'type' => 'text', 'label' => __( 'Root Path', 'anibas-file-manager' ), 'default' => '/', 'maxLength' => 512, 'hidden' => true ),
+                                array( 'key' => 'chunk_size', 'type' => 'number', 'label' => __( 'Chunk Size', 'anibas-file-manager' ), 'default' => ANIBAS_FM_DEFAULT_CHUNK_SIZE, 'min' => ANIBAS_FM_CHUNK_SIZE_MIN, 'max' => ANIBAS_FM_CHUNK_SIZE_MAX, 'hidden' => true ),
+                                array( 'key' => 'token_expires_at', 'type' => 'integer', 'label' => __( 'Token Expires At', 'anibas-file-manager' ), 'hidden' => true ),
+                                array( 'key' => 'token_scope', 'type' => 'text', 'label' => __( 'Token Scope', 'anibas-file-manager' ), 'maxLength' => 2048, 'hidden' => true ),
+                                array( 'key' => 'oauth_connected_at', 'type' => 'integer', 'label' => __( 'OAuth Connected At', 'anibas-file-manager' ), 'hidden' => true ),
+                            ),
+                        ),
+                    ),
+                ),
+                'ajax'         => array( 'testConnection' => ANIBAS_FM_TEST_REMOTE_CONNECTION ),
+            ),
+            'dropbox' => array(
+                'id'           => 'dropbox',
+                'label'        => __( 'Dropbox', 'anibas-file-manager' ),
+                'order'        => 70,
+                'adapter_factory' => array( 'Anibas\\StorageManager', 'create_dropbox_adapter' ),
+                'tester'       => array( 'Anibas\\RemoteStorageTester', 'test_dropbox' ),
+                'oauth'        => class_exists( '\\Anibas\\RemoteOAuthManager' ) ? \Anibas\RemoteOAuthManager::manifest( 'dropbox' ) : null,
+                'capabilities' => array(
+                    'browse'           => true,
+                    'upload'           => true,
+                    'download'         => true,
+                    'rename'           => true,
+                    'delete'           => true,
+                    'emptyFolder'      => true,
+                    'chunkedTransfer'  => true,
+                    'providerTrash'    => false,
+                    'temporaryLink'    => true,
+                ),
+                'settings'     => array(
+                    'enable_label' => __( 'Enable Dropbox', 'anibas-file-manager' ),
+                    'sections'     => array(
+                        array(
+                            'id'     => 'connection',
+                            'fields' => array(
+                                array( 'key' => 'enabled', 'type' => 'toggle', 'default' => false ),
+                                array( 'key' => 'app_key', 'type' => 'text', 'label' => __( 'App Key', 'anibas-file-manager' ), 'required' => true, 'maxLength' => 255 ),
+                                array( 'key' => 'refresh_token', 'type' => 'password', 'label' => __( 'Refresh Token', 'anibas-file-manager' ), 'secret' => true, 'maxLength' => 2048, 'hidden' => true ),
+                                array( 'key' => 'access_token', 'type' => 'password', 'label' => __( 'Access Token', 'anibas-file-manager' ), 'secret' => true, 'maxLength' => 2048, 'hidden' => true ),
+                            ),
+                        ),
+                        array(
+                            'id'     => 'options',
+                            'fields' => array(
+                                array( 'key' => 'root_path', 'type' => 'text', 'label' => __( 'Root Path', 'anibas-file-manager' ), 'default' => '/', 'maxLength' => 512, 'hidden' => true ),
+                                array( 'key' => 'chunk_size', 'type' => 'number', 'label' => __( 'Chunk Size', 'anibas-file-manager' ), 'default' => ANIBAS_FM_DEFAULT_CHUNK_SIZE, 'min' => ANIBAS_FM_CHUNK_SIZE_MIN, 'max' => ANIBAS_FM_CHUNK_SIZE_MAX, 'hidden' => true ),
+                                array( 'key' => 'token_expires_at', 'type' => 'integer', 'label' => __( 'Token Expires At', 'anibas-file-manager' ), 'hidden' => true ),
+                                array( 'key' => 'token_scope', 'type' => 'text', 'label' => __( 'Token Scope', 'anibas-file-manager' ), 'maxLength' => 2048, 'hidden' => true ),
+                                array( 'key' => 'oauth_connected_at', 'type' => 'integer', 'label' => __( 'OAuth Connected At', 'anibas-file-manager' ), 'hidden' => true ),
+                            ),
+                        ),
+                    ),
+                ),
+                'ajax'         => array( 'testConnection' => ANIBAS_FM_TEST_REMOTE_CONNECTION ),
+            ),
+        );
+
+        $providers = apply_filters( 'anibas_fm_remote_storage_providers', $providers );
+
+        return is_array( $providers ) ? $providers : array();
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_remote_storage_fields' ) ) {
+    function anibas_fm_remote_storage_fields( array $provider ) {
+        $fields = array();
+        foreach ( $provider['settings']['sections'] ?? array() as $section ) {
+            foreach ( $section['fields'] ?? array() as $field ) {
+                if ( ! empty( $field['key'] ) ) {
+                    $fields[ $field['key'] ] = $field;
+                }
+            }
+        }
+        return $fields;
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_remote_oauth_credential_fields' ) ) {
+    function anibas_fm_remote_oauth_credential_fields( string $storage ): array {
+        $providers = anibas_fm_remote_storage_providers();
+        $provider = $providers[ $storage ] ?? null;
+        if ( ! is_array( $provider ) || empty( $provider['oauth'] ) ) {
+            return array();
+        }
+
+        $fields = array();
+        foreach ( anibas_fm_remote_storage_fields( $provider ) as $key => $field ) {
+            if ( ! empty( $field['required'] ) && $key !== 'enabled' ) {
+                $fields[] = $key;
+            }
+        }
+
+        return array_values( array_unique( $fields ) );
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_remote_connection_has_oauth_token' ) ) {
+    function anibas_fm_remote_connection_has_oauth_token( array $connection ): bool {
+        return trim( (string) ( $connection['refresh_token'] ?? '' ) ) !== ''
+            || trim( (string) ( $connection['access_token'] ?? '' ) ) !== ''
+            || ! empty( $connection['refresh_token_set'] )
+            || ! empty( $connection['access_token_set'] );
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_remote_storage_manifest' ) ) {
+    function anibas_fm_remote_storage_manifest() {
+        $providers = anibas_fm_remote_storage_providers();
+        uasort( $providers, function ( $a, $b ) {
+            return (int) ( $a['order'] ?? 100 ) <=> (int) ( $b['order'] ?? 100 );
+        } );
+
+        $out = array();
+        foreach ( $providers as $id => $provider ) {
+            $factory = $provider['adapter_factory'] ?? null;
+            $has_settings_schema = ! empty( $provider['settings']['sections'] ) && is_array( $provider['settings']['sections'] );
+            if ( ! $has_settings_schema && ( ! $factory || ! is_callable( $factory ) ) ) {
+                continue;
+            }
+            unset( $provider['tester'], $provider['adapter_factory'] );
+            if ( empty( $provider['oauth'] ) ) {
+                unset( $provider['oauth'] );
+            }
+            $provider['id'] = $provider['id'] ?? $id;
+            $out[ $id ] = $provider;
+        }
+
+        return array(
+            'version'   => 1,
+            'providers' => $out,
+        );
+    }
+}
+
 if ( ! function_exists( 'anibas_fm_remote_secret_fields' ) ) {
     /**
      * Fields within a remote-storage connection that should be encrypted at rest.
      */
-    function anibas_fm_remote_secret_fields() {
-        return array( 'password', 'secret_key', 'private_key' );
+    function anibas_fm_remote_secret_fields( $storage = null ) {
+        $providers = anibas_fm_remote_storage_providers();
+        $fields = array();
+
+        foreach ( $providers as $id => $provider ) {
+            if ( $storage !== null && $storage !== $id ) {
+                continue;
+            }
+            foreach ( anibas_fm_remote_storage_fields( $provider ) as $key => $field ) {
+                if ( ! empty( $field['secret'] ) ) {
+                    $fields[] = $key;
+                }
+            }
+        }
+
+        return array_values( array_unique( $fields ) );
     }
 }
 
@@ -1055,9 +1498,9 @@ if ( ! function_exists( 'anibas_fm_encrypt_remote_settings' ) ) {
         if ( ! is_array( $settings ) ) {
             return array();
         }
-        $secret_fields = anibas_fm_remote_secret_fields();
         foreach ( $settings as $storage => $conn ) {
             if ( ! is_array( $conn ) ) continue;
+            $secret_fields = anibas_fm_remote_secret_fields( $storage );
             foreach ( $secret_fields as $f ) {
                 if ( isset( $conn[ $f ] ) && is_string( $conn[ $f ] ) && $conn[ $f ] !== '' ) {
                     $settings[ $storage ][ $f ] = anibas_fm_encrypt_value( $conn[ $f ] );
@@ -1079,9 +1522,9 @@ if ( ! function_exists( 'anibas_fm_decrypt_remote_settings' ) ) {
         if ( ! is_array( $settings ) ) {
             return array();
         }
-        $secret_fields = anibas_fm_remote_secret_fields();
         foreach ( $settings as $storage => $conn ) {
             if ( ! is_array( $conn ) ) continue;
+            $secret_fields = anibas_fm_remote_secret_fields( $storage );
             foreach ( $secret_fields as $f ) {
                 if ( isset( $conn[ $f ] ) && is_string( $conn[ $f ] ) ) {
                     $settings[ $storage ][ $f ] = anibas_fm_decrypt_value( $conn[ $f ] );
@@ -1122,37 +1565,71 @@ if ( ! function_exists( 'anibas_fm_sanitize_remote_settings' ) ) {
             $existing = array();
         }
 
-        $allowed = array(
-            'ftp'           => array( 'enabled', 'host', 'port', 'username', 'password', 'base_path', 'use_ssl', 'insecure_ssl', 'is_passive' ),
-            'sftp'          => array( 'enabled', 'host', 'port', 'username', 'password', 'private_key', 'base_path' ),
-            's3'            => array( 'enabled', 'access_key', 'secret_key', 'region', 'bucket', 'prefix', 'chunk_size' ),
-            's3_compatible' => array( 'enabled', 'access_key', 'secret_key', 'region', 'endpoint', 'bucket', 'prefix', 'path_style', 'chunk_size' ),
-        );
-        $bool_keys = array( 'enabled', 'use_ssl', 'insecure_ssl', 'path_style', 'is_passive' );
-        $int_keys  = array( 'port', 'chunk_size' );
+        $providers = anibas_fm_remote_storage_providers();
 
         $out = array();
-        foreach ( $allowed as $storage => $keys ) {
+        foreach ( $providers as $storage => $provider ) {
             if ( ! isset( $input[ $storage ] ) || ! is_array( $input[ $storage ] ) ) {
                 continue;
             }
+            $fields = anibas_fm_remote_storage_fields( $provider );
             $row = array();
-            foreach ( $keys as $k ) {
+            foreach ( $fields as $k => $field ) {
                 if ( ! array_key_exists( $k, $input[ $storage ] ) ) continue;
                 $v = $input[ $storage ][ $k ];
-                if ( in_array( $k, $bool_keys, true ) ) {
+                $type = $field['type'] ?? 'text';
+                if ( in_array( $type, array( 'toggle', 'checkbox', 'boolean' ), true ) ) {
                     $row[ $k ] = (bool) $v;
-                } elseif ( in_array( $k, $int_keys, true ) ) {
-                    $row[ $k ] = (int) $v;
+                } elseif ( in_array( $type, array( 'number', 'integer' ), true ) ) {
+                    $value = (int) $v;
+                    if ( isset( $field['min'] ) ) {
+                        $value = max( (int) $field['min'], $value );
+                    }
+                    if ( isset( $field['max'] ) ) {
+                        $value = min( (int) $field['max'], $value );
+                    }
+                    $row[ $k ] = $value;
                 } else {
-                    $row[ $k ] = is_scalar( $v ) ? (string) $v : '';
+                    $value = is_scalar( $v ) ? sanitize_text_field( (string) $v ) : '';
+                    if ( $type === 'url' ) {
+                        $value = esc_url_raw( $value );
+                    }
+                    if ( isset( $field['maxLength'] ) ) {
+                        $value = substr( $value, 0, (int) $field['maxLength'] );
+                    }
+                    $row[ $k ] = $value;
+                }
+            }
+
+            foreach ( $fields as $k => $field ) {
+                if ( empty( $field['hidden'] )
+                    || ! isset( $existing[ $storage ][ $k ] )
+                    || ! array_key_exists( $k, $row )
+                    || ! is_string( $row[ $k ] )
+                    || $row[ $k ] !== '' ) {
+                    continue;
+                }
+                $row[ $k ] = $existing[ $storage ][ $k ];
+            }
+
+            if ( isset( $existing[ $storage ] )
+                && is_array( $existing[ $storage ] )
+                && anibas_fm_remote_connection_has_oauth_token( $existing[ $storage ] ) ) {
+                foreach ( anibas_fm_remote_oauth_credential_fields( $storage ) as $credential_key ) {
+                    if ( ( ! isset( $row[ $credential_key ] ) || $row[ $credential_key ] === '' )
+                        && isset( $existing[ $storage ][ $credential_key ] ) ) {
+                        $row[ $credential_key ] = $existing[ $storage ][ $credential_key ];
+                    }
                 }
             }
 
             // Preserve previously stored secrets when the client sends empty.
-            foreach ( anibas_fm_remote_secret_fields() as $sf ) {
-                if ( in_array( $sf, $keys, true )
-                    && ( ! isset( $row[ $sf ] ) || $row[ $sf ] === '' )
+            foreach ( anibas_fm_remote_secret_fields( $storage ) as $sf ) {
+                if ( ! empty( $input[ $storage ][ $sf . '_clear' ] ) ) {
+                    unset( $row[ $sf ] );
+                    continue;
+                }
+                if ( ( ! isset( $row[ $sf ] ) || $row[ $sf ] === '' )
                     && isset( $existing[ $storage ][ $sf ] ) ) {
                     $row[ $sf ] = $existing[ $storage ][ $sf ];
                 }

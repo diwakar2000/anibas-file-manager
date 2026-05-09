@@ -18,7 +18,7 @@
       onclick={loadMore}
       disabled={fileStore.isLoading}
     >
-      {fileStore.isLoading ? "Loading..." : `Load More (${data.total_items - (data.page * data.page_size)} remaining)`}
+      {fileStore.isLoading ? "Loading..." : "Load More"}
     </button>
   </div>
 {/if}

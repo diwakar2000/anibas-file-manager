@@ -7,6 +7,7 @@
         restoreTrash as apiRestoreTrash,
         emptyTrashBin,
         deleteTrashItem as apiDeleteTrashItem,
+        verifyDeletePassword,
         getJobStatus as apiGetJobStatus,
     } from "../../services/fileApi";
 
@@ -89,6 +90,20 @@
         await fetchTrash(Math.min(Math.max(1, page), trashTotalPages));
     }
 
+    async function getDeleteAuthToken(): Promise<string | undefined> {
+        if (!hasDeletePassword) return undefined;
+        if (!trashPassword.trim()) {
+            passwordRequired = true;
+            throw new Error("DeletePasswordRequired");
+        }
+        try {
+            return await verifyDeletePassword(trashPassword);
+        } catch {
+            passwordRequired = true;
+            throw new Error("Invalid password");
+        }
+    }
+
     async function restoreTrash(trashName: string) {
         restoringItem = trashName;
         try {
@@ -111,7 +126,8 @@
         if (!confirm(__("Are you sure you want to permanently delete all items in the trash?"))) return;
         isEmptying = true;
         try {
-            const data = await emptyTrashBin(trashPassword);
+            const token = await getDeleteAuthToken();
+            const data = await emptyTrashBin(token);
             const jobIds: string[] = Array.isArray(data?.job_ids) ? data.job_ids : [];
 
             if (jobIds.length > 0) {
@@ -155,7 +171,8 @@
         if (!confirm(__("Are you sure you want to permanently delete this item?"))) return;
         deletingItem = trashName;
         try {
-            const data = await apiDeleteTrashItem(trashName, trashPassword);
+            const token = await getDeleteAuthToken();
+            const data = await apiDeleteTrashItem(trashName, token);
             const jobId: string | undefined = data?.job_id;
 
             if (jobId) {

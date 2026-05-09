@@ -3,6 +3,7 @@
   import { toast } from "../../utils/toast"
   import type { FileItem } from "../../types/files"
   import { checkFmTokenError, getFmToken } from "../../services/fileApi"
+  import { getEnabledRemoteStorages, getStorageLabel } from "../../utils/storageProviders"
 
   let { file, onclose } = $props<{ file: FileItem; onclose: () => void }>()
 
@@ -50,12 +51,7 @@
         availableStorages.push({ id: 'local', name: 'Local Files', status: 'online' })
       } else {
         // On local - can send to any configured remote
-        const remoteStorages = [
-          { id: 'ftp', name: 'FTP', enabled: data.data.ftp?.enabled },
-          { id: 'sftp', name: 'SFTP', enabled: data.data.sftp?.enabled },
-          { id: 's3', name: 'Amazon S3', enabled: data.data.s3?.enabled },
-          { id: 's3_compatible', name: 'S3 Compatible', enabled: data.data.s3_compatible?.enabled }
-        ].filter(s => s.enabled)
+        const remoteStorages = getEnabledRemoteStorages(data.data, config)
 
         // Add local option too (for same-storage copy to different location)
         availableStorages.push({ id: 'local', name: 'Local Files (current)', status: 'online' })
@@ -116,14 +112,7 @@
   }
 
   function getStorageName(id: string): string {
-    const names: Record<string, string> = {
-      'local': 'Local Files',
-      'ftp': 'FTP',
-      'sftp': 'SFTP',
-      's3': 'Amazon S3',
-      's3_compatible': 'S3 Compatible'
-    }
-    return names[id] || id
+    return getStorageLabel(id, config)
   }
 </script>
 

@@ -36,7 +36,7 @@ namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-use Exception, RecursiveDirectoryIterator, RecursiveIteratorIterator;
+use Exception;
 
 class ArchiveCreateEngine {
 
@@ -53,6 +53,7 @@ class ArchiveCreateEngine {
     private string $output;
 
     private string $scan_manifest_file;
+    private string $archive_manifest_entries_file;
     private string $state_file;
     private string $lock_file;
 
@@ -85,6 +86,7 @@ class ArchiveCreateEngine {
         }
 
         $this->scan_manifest_file = $output . '.scan.json';
+        $this->archive_manifest_entries_file = $output . '.files.jsonl';
         $this->state_file         = $output . '.state.json';
         $this->lock_file          = $output . '.lock';
 
@@ -189,46 +191,21 @@ class ArchiveCreateEngine {
         if ( file_exists( $this->scan_manifest_file ) ) {
             return;
         }
+        do {
+            $result = $this->build_manifest_step( PHP_INT_MAX );
+        } while ( empty( $result['complete'] ) );
+    }
 
-        $entries       = [];
-        $max_file_size = 0;
-        $max_file_name = '';
-
-        if ( is_file( $this->source ) ) {
-            $size = filesize( $this->source );
-            $name = basename( $this->source );
-            $entries[] = [ 'path' => $this->source, 'name' => $name, 'size' => $size ];
-            $max_file_size = $size;
-            $max_file_name = $name;
-        } else {
-            $base_len = strlen( $this->source ) + 1;
-            $iterator = new RecursiveIteratorIterator(
-                new RecursiveDirectoryIterator( $this->source, RecursiveDirectoryIterator::SKIP_DOTS ),
-                RecursiveIteratorIterator::SELF_FIRST
-            );
-            foreach ( $iterator as $item ) {
-                if ( $item->isFile() ) {
-                    $full = $item->getPathname();
-                    $rel  = substr( $full, $base_len );
-                    $size = $item->getSize();
-                    $entries[] = [ 'path' => $full, 'name' => $rel, 'size' => $size ];
-                    if ( $size > $max_file_size ) {
-                        $max_file_size = $size;
-                        $max_file_name = $rel;
-                    }
-                }
-            }
-        }
-
-        $tmp = $this->scan_manifest_file . '.tmp';
-        file_put_contents( $tmp, wp_json_encode( [
-            'total'         => count( $entries ),
-            'total_size'    => array_sum( array_column( $entries, 'size' ) ),
-            'max_file_size' => $max_file_size,
-            'max_file_name' => $max_file_name,
-            'entries'       => $entries,
-        ] ) );
-        rename( $tmp, $this->scan_manifest_file );
+    public function build_manifest_step( ?int $time_budget = null ): array {
+        $base_path = is_file( $this->source ) ? dirname( $this->source ) : $this->source;
+        return ArchiveManifestStore::build_step(
+            array( $this->source ),
+            $base_path,
+            $this->scan_manifest_file,
+            false,
+            array(),
+            $time_budget
+        );
     }
 
     /**
@@ -238,13 +215,7 @@ class ArchiveCreateEngine {
         if ( ! file_exists( $this->scan_manifest_file ) ) {
             throw new Exception( 'Manifest not built. Call build_manifest() first.' );
         }
-        $m = json_decode( file_get_contents( $this->scan_manifest_file ), true );
-        return [
-            'total'         => (int) ( $m['total'] ?? 0 ),
-            'total_size'    => (int) ( $m['total_size'] ?? 0 ),
-            'max_file_size' => (int) ( $m['max_file_size'] ?? 0 ),
-            'max_file_name' => $m['max_file_name'] ?? '',
-        ];
+        return ArchiveManifestStore::read_info( $this->scan_manifest_file );
     }
 
     /* ------------------------------------- */
@@ -260,7 +231,6 @@ class ArchiveCreateEngine {
                 'archive_pos'        => self::HEADER_SIZE,
                 'chunks_written'     => 0,
                 'current_file_start' => self::HEADER_SIZE,
-                'file_entries'       => [],
                 'bytes_processed'    => 0,
                 'key_material_hex'   => '',
                 'password_protected' => false,
@@ -278,7 +248,6 @@ class ArchiveCreateEngine {
             'archive_pos'        => self::HEADER_SIZE,
             'chunks_written'     => 0,
             'current_file_start' => self::HEADER_SIZE,
-            'file_entries'       => [],
             'bytes_processed'    => 0,
             'salt_hex'           => '',
         ];
@@ -353,10 +322,12 @@ class ArchiveCreateEngine {
                 throw new Exception( 'Scan manifest not built. Call build_manifest() first.' );
             }
 
-            $scan    = json_decode( file_get_contents( $this->scan_manifest_file ), true );
-            $entries = $scan['entries'];
-            $total   = count( $entries );
-            $state   = $this->load_state();
+            $scan = ArchiveManifestStore::read_manifest( $this->scan_manifest_file );
+            if ( ! ArchiveManifestStore::is_valid_manifest( $scan ) ) {
+                throw new Exception( 'Invalid scan manifest file' );
+            }
+            $total = (int) ( $scan['total'] ?? 0 );
+            $state = $this->load_state();
 
             $password_protected = ! empty( $password );
 
@@ -382,12 +353,17 @@ class ArchiveCreateEngine {
                 $start = microtime( true );
 
                 while ( $state['cursor'] < $total ) {
-                    $entry     = $entries[ $state['cursor'] ];
+                    $entry = ArchiveManifestStore::current_entry( $scan, $state );
+                    if ( ! $entry ) {
+                        $state['cursor'] = $total;
+                        $this->save_state( $state );
+                        break;
+                    }
                     $file_path = $entry['path'];
 
                     // Skip missing files
-                    if ( ! file_exists( $file_path ) ) {
-                        $state['cursor']++;
+                    if ( ! file_exists( $file_path ) || ! is_file( $file_path ) ) {
+                        ArchiveManifestStore::advance_entry( $scan, $state );
                         $state['file_offset']        = 0;
                         $state['chunks_written']     = 0;
                         $state['current_file_start'] = $state['archive_pos'];
@@ -396,6 +372,14 @@ class ArchiveCreateEngine {
                     }
 
                     $src = fopen( $file_path, 'rb' );
+                    if ( ! $src ) {
+                        ArchiveManifestStore::advance_entry( $scan, $state );
+                        $state['file_offset']        = 0;
+                        $state['chunks_written']     = 0;
+                        $state['current_file_start'] = $state['archive_pos'];
+                        $this->save_state( $state );
+                        continue;
+                    }
                     if ( $state['file_offset'] > 0 ) {
                         fseek( $src, $state['file_offset'] );
                     }
@@ -426,14 +410,14 @@ class ArchiveCreateEngine {
                     fclose( $src );
 
                     // File complete — record entry for archive manifest
-                    $state['file_entries'][] = [
+                    $this->append_archive_manifest_entry( (int) $state['cursor'], [
                         'name'   => $entry['name'],
                         'size'   => $entry['size'],
                         'offset' => $state['current_file_start'],
                         'chunks' => $state['chunks_written'],
-                    ];
+                    ] );
 
-                    $state['cursor']++;
+                    ArchiveManifestStore::advance_entry( $scan, $state );
                     $state['file_offset']        = 0;
                     $state['chunks_written']     = 0;
                     $state['current_file_start'] = $state['archive_pos'];
@@ -451,7 +435,7 @@ class ArchiveCreateEngine {
                 $is_protected = ! empty( $state['password_protected'] );
                 $key = self::resolve_key( $password, $key_material, $is_protected );
 
-                $manifest_json   = wp_json_encode( [ 'files' => $state['file_entries'] ] );
+                $manifest_json   = $this->build_archive_manifest_json( $state );
                 $manifest_offset = $state['archive_pos'];
 
                 $fh = fopen( $this->output, 'r+b' );
@@ -477,6 +461,66 @@ class ArchiveCreateEngine {
         }
     }
 
+    private function append_archive_manifest_entry( int $cursor, array $entry ): void {
+        $line = wp_json_encode( array(
+            'cursor' => $cursor,
+            'entry'  => $entry,
+        ) ) . "\n";
+        file_put_contents( $this->archive_manifest_entries_file, $line, FILE_APPEND | LOCK_EX ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
+    }
+
+    private function build_archive_manifest_json( array $state ): string {
+        $tmp_manifest = $this->archive_manifest_entries_file . '.tmp';
+        $out = fopen( $tmp_manifest, 'wb' );
+        if ( ! $out ) {
+            throw new Exception( 'Failed to prepare archive manifest' );
+        }
+
+        fwrite( $out, '{"files":[' );
+        $first = true;
+
+        if ( ! empty( $state['file_entries'] ) && is_array( $state['file_entries'] ) ) {
+            foreach ( $state['file_entries'] as $entry ) {
+                if ( ! is_array( $entry ) ) {
+                    continue;
+                }
+                fwrite( $out, $first ? '' : ',' );
+                fwrite( $out, wp_json_encode( $entry ) );
+                $first = false;
+            }
+        }
+
+        if ( is_file( $this->archive_manifest_entries_file ) ) {
+            $in = fopen( $this->archive_manifest_entries_file, 'rb' );
+            if ( $in ) {
+                $last_cursor = -1;
+                while ( ( $line = fgets( $in ) ) !== false ) {
+                    $row = json_decode( trim( $line ), true );
+                    if ( ! is_array( $row ) ) {
+                        continue;
+                    }
+                    $cursor = isset( $row['cursor'] ) ? (int) $row['cursor'] : $last_cursor + 1;
+                    $entry  = isset( $row['entry'] ) && is_array( $row['entry'] ) ? $row['entry'] : $row;
+                    if ( $cursor <= $last_cursor ) {
+                        continue;
+                    }
+                    fwrite( $out, $first ? '' : ',' );
+                    fwrite( $out, wp_json_encode( $entry ) );
+                    $first = false;
+                    $last_cursor = $cursor;
+                }
+                fclose( $in );
+            }
+        }
+
+        fwrite( $out, ']}' );
+        fclose( $out );
+
+        $json = (string) file_get_contents( $tmp_manifest ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
+        wp_delete_file( $tmp_manifest );
+        return $json;
+    }
+
     /* ------------------------------------- */
     /* PROGRESS                              */
     /* ------------------------------------- */
@@ -486,7 +530,7 @@ class ArchiveCreateEngine {
             return [ 'current' => 0, 'total' => 0, 'percent' => 0, 'bytes_processed' => 0, 'total_size' => 0, 'phase' => 'init' ];
         }
 
-        $scan  = json_decode( file_get_contents( $this->scan_manifest_file ), true );
+        $scan  = ArchiveManifestStore::read_manifest( $this->scan_manifest_file );
         $state = $this->load_state();
 
         $total      = (int) ( $scan['total'] ?? 0 );
@@ -509,10 +553,10 @@ class ArchiveCreateEngine {
 
     public function cleanup( bool $remove_output = false ) {
         $files = [
-            $this->scan_manifest_file,
+            $this->archive_manifest_entries_file,
+            $this->archive_manifest_entries_file . '.tmp',
             $this->state_file,
             $this->lock_file,
-            $this->scan_manifest_file . '.tmp',
             $this->state_file . '.tmp',
         ];
         if ( $remove_output ) {
@@ -523,6 +567,7 @@ class ArchiveCreateEngine {
                 wp_delete_file( $f );
             }
         }
+        ArchiveManifestStore::cleanup( $this->scan_manifest_file );
     }
 
     public function is_complete(): bool {

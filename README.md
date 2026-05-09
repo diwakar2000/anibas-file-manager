@@ -1,10 +1,10 @@
 # Anibas File Manager
 
-A full-featured, secure, and modern file manager for WordPress. Manage local files and remote storage, edit code, create archives, and run site backups—all directly from your WordPress dashboard.
+A full-featured, secure, and modern file manager for WordPress. Manage local files and cloud storage, edit code, preview media, create archives, and run site backups directly from your WordPress dashboard.
 
-**Version:** 1.0.0  
-**Author:** Diwakar Dahal  
-**License:** GPL-2.0+  
+**Version:** 1.1.0<br>
+**Author:** Diwakar Dahal<br>
+**License:** GPL-2.0+<br>
 **Requires:** WordPress 6.0+, PHP 8.0+
 
 ---
@@ -21,12 +21,20 @@ A full-featured, secure, and modern file manager for WordPress. Manage local fil
 
 ## ✨ Features
 
+### What's New Since 1.0.0
+- **New cloud providers:** Google Drive, OneDrive, and Dropbox support with OAuth connection flows.
+- **Smarter settings:** Remote storage settings are now generated from a backend provider manifest, so new providers share the same settings and validation flow.
+- **Large-folder resilience:** Remote listings, archive scans, delete jobs, and backup flows were hardened for paginated/cloud directories and long-running operations.
+- **Backup organization:** Backup files now have a dedicated **Settings -> Backups** page, while backup creation remains under **Settings -> General**.
+- **Security hardening:** Storage-bound delete tokens, safer trash password handling, protected backup state files, and stricter remote path confinement.
+
 ### 📁 Advanced File & Folder Operations
 - **Intuitive UI:** Browse files with an expandable sidebar tree and paginated list/grid views.
 - **Full Control:** Create, rename, duplicate, copy, move, and delete files or folders.
 - **Conflict Resolution:** Seamlessly handle file conflicts during transfers (skip, overwrite, or auto-rename).
 - **Rich Previews:** Preview images, videos, audio, PDFs, and text files inline.
-- **Cross-Storage Transfers:** Easily move files between different storage backends (e.g., Local to S3) using the "Send To" modal.
+- **Cross-Storage Transfers:** Move files between different storage backends (for example, Local to S3 or Dropbox to Local) using the "Send To" modal.
+- **Remote Pagination:** Large remote folders are paginated in the UI and scanned incrementally by background jobs.
 
 ### 🗑️ Smart Trash System
 - **Soft Delete:** Items are moved to a `.trash` directory instead of being permanently deleted.
@@ -41,31 +49,58 @@ A full-featured, secure, and modern file manager for WordPress. Manage local fil
 
 ### 🗜️ Archive & Backup Management
 - **Archives:** Create and extract ZIP, TAR, and custom ANFM archives directly in the browser.
-- **Site Backups:** Generate full site backups (`.tar`) with phase-based execution to prevent timeouts.
+- **Resumable Archive Jobs:** Archive creation and extraction run in bounded steps, with status tracking and resume/cancel controls for interrupted work.
+- **Site Backups:** Generate full site backups (`.tar` or encrypted `.anfm`) with phase-based execution to prevent timeouts.
 - **File Backups:** Maintain a rolling backup history for individual files (default: 5 snapshots per file).
+- **Dedicated Backup Browser:** View, restore, and delete file backups from **Settings -> Backups -> Single File Backups**; view and delete full-site archives from **Full Site Backups**.
+- **Protected Storage:** Backup files are stored in a hidden, protected directory under `wp-content/.anibas-backups-{random}` and are excluded from normal file-manager browsing.
 
 ### ☁️ Multi-Storage Backends
 Switch between storage providers natively without leaving the WordPress dashboard:
 - **Local:** Direct `WP_Filesystem` operations.
 - **FTP/FTPS:** cURL-based, active & passive modes.
 - **SFTP:** SSH-powered via phpseclib + cURL fallback.
-- **S3-Compatible:** Connect to AWS S3, DigitalOcean Spaces, Wasabi, MinIO, or Cloudflare R2 using a lightweight, native client.
+- **Amazon S3:** Native S3 client with paginated listing, multipart upload, and chunked worker operations.
+- **S3-Compatible:** Connect to DigitalOcean Spaces, Wasabi, MinIO, Cloudflare R2, or other S3-compatible providers.
+- **Google Drive:** OAuth-backed browsing, upload, download, preview, and transfer support.
+- **OneDrive:** OAuth-backed Microsoft Graph storage support.
+- **Dropbox:** OAuth-backed Dropbox storage support, including folder traversal and upload sessions.
 
 ### 🚀 Resumable Chunked Uploads
 - **Reliable Uploads:** Large files are uploaded in chunks (1–20 MB) with parallel assembly.
 - **Resumable:** Interrupted uploads automatically continue where they left off.
-- **S3 Integration:** Direct multipart upload support for cloud storage.
+- **Cloud Integration:** Remote uploads use provider-aware chunking/multipart sessions for S3, Google Drive, OneDrive, and Dropbox where supported.
+- **Empty File Support:** Zero-byte files are handled consistently across local and remote storage.
 
 ### ⚙️ Asynchronous Background Processing
 - **Non-blocking Operations:** Heavy tasks (large folder copies, remote syncs) run as queueable background jobs.
 - **Phase-based Execution:** Operations are split into time-bounded phases (Init → List → Transfer → Wrap-up) to bypass PHP timeouts.
 - **Real-time Progress:** Monitor job status and progress directly from the UI.
+- **Queued Delete & Empty Folder:** Large delete, move-to-trash, and empty-folder operations are processed in bounded queue slices instead of one long request.
+- **Worker Dispatch:** Upload assembly and background operations dispatch workers immediately, so jobs do not depend on a later status poll to begin.
 
 ### 🛡️ Iron-clad Security
 - **Strict Capabilities:** `manage_options` check on all operations.
-- **Nonces & Tokens:** Action-specific WordPress nonces and one-time delete tokens.
+- **Nonces & Tokens:** Action-specific WordPress nonces, file-manager/session tokens, settings tokens, and storage-bound one-time delete tokens.
 - **Path Protection:** Multi-layer validation prevents directory traversal. Hardcoded blocked paths protect critical WP files (`wp-config.php`, `.git`, etc.).
+- **Remote Boundaries:** FTP, SFTP, S3-compatible, Google Drive, OneDrive, and Dropbox requests stay confined to their configured base path/root.
 - **Password Gates:** Optional master password, settings lock, and delete-confirmation checks with brute-force lockout.
+- **Encrypted Credentials:** Remote connection secrets and OAuth tokens are encrypted at rest with AES-256-GCM.
+
+---
+
+## Release Notes
+
+### 1.1.0
+- Added Google Drive, OneDrive, and Dropbox storage providers with OAuth connection, refresh, and disconnect flows.
+- Added generated remote-storage settings forms backed by the PHP provider manifest.
+- Improved remote pagination, cloud uploads, streaming previews/downloads, and zero-byte file handling across adapters.
+- Hardened background jobs for large copy/move/delete/empty-folder/archive/backup/upload-assembly flows.
+- Added the dedicated **Settings -> Backups** page for file backup history and full-site backup archives.
+- Strengthened delete/trash/auth token handling, archive restore state storage, and remote path containment.
+
+### 1.0.0
+- Initial public release.
 
 ---
 
@@ -134,6 +169,15 @@ define('ANIBAS_FM_FILE_BACKUP_KEEP', 5);
 
 // Editor
 define('ANIBAS_FM_EDITOR_MAX_BYTES', 10 * 1024 * 1024);
+
+// OAuth cloud app credentials
+define('ANIBAS_FM_GOOGLE_DRIVE_CLIENT_ID', '...');
+define('ANIBAS_FM_GOOGLE_DRIVE_CLIENT_SECRET', '...');
+define('ANIBAS_FM_ONEDRIVE_CLIENT_ID', '...');
+define('ANIBAS_FM_ONEDRIVE_CLIENT_SECRET', '...');
+define('ANIBAS_FM_ONEDRIVE_TENANT', 'common');
+define('ANIBAS_FM_DROPBOX_APP_KEY', '...');
+define('ANIBAS_FM_OAUTH_REFRESH_WINDOW', 10 * MINUTE_IN_SECONDS);
 ```
 </details>
 

@@ -169,7 +169,7 @@
         </p>
     {:else}
         <p class="description">
-            Full site archives created from the <strong>Site Backup</strong> card. Restoring is not available here — listing only.
+            Full site archives created from General settings. Restoring is not available here - listing only.
         </p>
     {/if}
 
@@ -250,7 +250,7 @@
             {/if}
         {:else}
             {#if siteBackups.length === 0}
-                <div class="backup-state">No full-site backups yet. Use the <strong>Site Backup</strong> card above to create one.</div>
+                <div class="backup-state">No full-site backups yet. Use the Site Backup card in General settings to create one.</div>
             {:else}
                 <div class="backup-list">
                     {#each siteBackups as item}
@@ -278,6 +278,43 @@
 </div>
 
 <style>
+    .card {
+        margin-bottom: 30px;
+        padding-bottom: 30px;
+        border-bottom: 1px solid #eee;
+    }
+    .max-w-100 {
+        max-width: 100%;
+    }
+    h3 {
+        margin: 0 0 5px;
+        font-size: 18px;
+    }
+    .description {
+        color: #666;
+        margin: 0 0 20px;
+        font-size: 14px;
+    }
+    .btn {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 4px;
+        font-size: 14px;
+        cursor: pointer;
+        font-weight: 500;
+    }
+    .btn-secondary {
+        background: #f0f0f1;
+        color: #2c3338;
+        border: 1px solid #8c8f94;
+    }
+    .btn-secondary:hover:not(:disabled) {
+        background: #e5e5e5;
+    }
+    .btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+    }
     .backups-tabs {
         display: flex;
         gap: 4px;

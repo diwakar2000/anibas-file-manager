@@ -48,7 +48,7 @@
     {#if fileStore.isExpanded(path)}
         <div class="node-children">
             {#if fileStore.directoryCache[path]}
-                {#each fileStore.getFolders(path) as child (child.path)}
+                {#each fileStore.getFolders(path) as child, index (child.ui_key || `${child.path}:${index}`)}
                     <TreeNode path={child.path} />
                 {:else}
                     {#if fileStore.isLoading && !fileStore.directoryCache[path]}

@@ -1,7 +1,6 @@
 <script lang="ts">
     import PathSelector from "./PathSelector.svelte";
     import BackupModal from "../Shared/BackupModal.svelte";
-    import BackupsList from "./BackupsList.svelte";
 
     const config = (window as any).AnibasFMSettings;
     const CHUNK_SIZE_MIN = Number(config.chunkSizeMin ?? 1048576);
@@ -398,8 +397,6 @@
                     {backupRunning ? "Backup In Progress..." : "Start Backup"}
                 </button>
             </div>
-
-            <BackupsList {authToken} />
 
             <div class="card max-w-100">
                 <h3>Remote File Backups</h3>
