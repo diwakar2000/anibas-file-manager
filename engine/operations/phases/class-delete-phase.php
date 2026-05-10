@@ -19,6 +19,9 @@ class DeletePhase extends OperationPhase
         if (! empty($job['recreate_trash_root'])) {
             $work_queue['must_recreate_trash_root'] = true;
         }
+        if ($this->should_recreate_keep_root($job)) {
+            $work_queue['must_recreate_keep_root'] = true;
+        }
 
         if (! isset($work_queue['files_to_process'])) {
             $work_queue['files_to_process'] = [];
@@ -98,12 +101,16 @@ class DeletePhase extends OperationPhase
         }
 
         $this->recreate_trash_root_if_needed($job, $work_queue);
+        $this->recreate_kept_root_if_needed($job, $work_queue, $fs);
     }
 
     private function process_entry(array $entry, $fs, array &$job, bool $trash_mode, bool $allow_trash_root): void
     {
         $path = $entry['source'] ?? '';
         if ($path === '') {
+            return;
+        }
+        if ($this->should_keep_root($job, $path)) {
             return;
         }
         $job['current_file'] = basename($path);
@@ -187,6 +194,9 @@ class DeletePhase extends OperationPhase
         if ($path === '') {
             return;
         }
+        if ($this->should_keep_root($job, $path)) {
+            return;
+        }
         $job['current_file'] = basename($path) . '/';
         try {
             $result = method_exists($fs, 'queuedRmdir')
@@ -226,7 +236,30 @@ class DeletePhase extends OperationPhase
         if (! empty($work_queue['must_recreate_trash_root']) && empty($work_queue['trash_root_recreated'])) {
             return false;
         }
+        if (! empty($work_queue['must_recreate_keep_root']) && empty($work_queue['keep_root_recreated'])) {
+            return false;
+        }
         return true;
+    }
+
+    private function should_keep_root(array $job, string $path): bool
+    {
+        if (empty($job['keep_root'])) {
+            return false;
+        }
+
+        $root = rtrim((string) ($job['source_root'] ?? ''), "/\\" . DIRECTORY_SEPARATOR);
+        $here = rtrim($path, "/\\" . DIRECTORY_SEPARATOR);
+        return $root !== '' && $root === $here;
+    }
+
+    private function should_recreate_keep_root(array $job): bool
+    {
+        if (empty($job['keep_root'])) {
+            return false;
+        }
+
+        return ! empty($job['recreate_keep_root']) || (string) ($job['storage'] ?? 'local') !== 'local';
     }
 
     private function recreate_trash_root_if_needed(array &$job, array &$work_queue): void
@@ -263,6 +296,34 @@ class DeletePhase extends OperationPhase
         }
 
         $work_queue['trash_root_recreated'] = true;
+    }
+
+    private function recreate_kept_root_if_needed(array &$job, array &$work_queue, $fs): void
+    {
+        if (! $this->should_recreate_keep_root($job) || ! empty($work_queue['keep_root_recreated'])) {
+            return;
+        }
+
+        $root = (string) ($job['source_root'] ?? '');
+        if ($root === '') {
+            $work_queue['keep_root_recreated'] = true;
+            return;
+        }
+
+        try {
+            $exists = method_exists($fs, 'is_dir') ? $fs->is_dir($root) : false;
+            if (! $exists && method_exists($fs, 'mkdir') && ! $fs->mkdir($root)) {
+                throw new \RuntimeException(esc_html__('Unable to recreate emptied folder.', 'anibas-file-manager'));
+            }
+
+            ActivityLogger::get_instance()->log_message('DeletePhase: kept root recreated for ' . $root);
+        } catch (\Throwable $e) {
+            $job['failed_count']++;
+            $job['errors'][] = esc_html__('Emptied folder could not be recreated: ', 'anibas-file-manager') . $e->getMessage();
+            ActivityLogger::get_instance()->log_message('DeletePhase: kept root recreate failed: ' . $e->getMessage());
+        }
+
+        $work_queue['keep_root_recreated'] = true;
     }
 
     public function next_phase()

@@ -205,7 +205,11 @@ class AuthAjaxHandler extends AjaxHandler
     {
         $this->check_delete_privilege();
 
-        $path = anibas_fm_fetch_request_variable('post', 'path', '');
+        $path    = anibas_fm_fetch_request_variable('post', 'path', '');
+        $storage = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'storage', 'local'));
+        if ($storage === '') {
+            $storage = 'local';
+        }
 
         if (empty($path)) {
             $this->send_error(array('error' => esc_html__('Path required', 'anibas-file-manager')));
@@ -213,7 +217,7 @@ class AuthAjaxHandler extends AjaxHandler
 
         $user_id = get_current_user_id();
         $token = wp_generate_password(32, false);
-        $token_key = 'anibas_fm_delete_token_' . $user_id . '_' . md5($path);
+        $token_key = 'anibas_fm_delete_token_' . $user_id . '_' . md5($storage . '|' . $path);
 
         // Store token for 1 minute
         set_transient($token_key, $token, 60);

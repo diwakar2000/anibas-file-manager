@@ -17,19 +17,25 @@ class FinalizeAssemblyPhase extends OperationPhase
     {
         $storage = $job['storage'];
         $log     = ActivityLogger::get_instance();
+        $job['current_file'] = $job['file_name'];
+        $job['current_file_size'] = (int) ($job['file_size'] ?? 0);
 
         if ($storage === 'local') {
+            $job['current_phase'] = 'finalize';
             $log->log_message('[Finalize] Moving "' . $job['file_name'] . '" to local destination: ' . $job['destination']);
             $final_path = $this->finalize_local($job);
+            $job['current_file_bytes'] = $job['current_file_size'];
             $this->verify_file_size($job, $final_path, $storage);
             $this->cleanup_temp($job['temp_dir']);
             $job['s3_upload_done'] = true;
             $log->log_message('[Finalize] Local finalize complete: ' . $final_path);
         } elseif ($this->is_s3_storage($storage)) {
+            $job['current_phase'] = 'remote_upload';
             $done = $this->finalize_s3($job);
             $job['s3_upload_done'] = $done;
             if ($done) {
                 $final_path = rtrim($job['destination'], '/') . '/' . $job['file_name'];
+                $job['current_file_bytes'] = $job['current_file_size'];
                 $log->log_message('[Finalize] S3 multipart upload complete for "' . $job['file_name'] . '". Verifying size.');
                 $this->verify_file_size($job, $final_path, $storage);
                 $this->cleanup_temp($job['temp_dir']);
@@ -39,12 +45,29 @@ class FinalizeAssemblyPhase extends OperationPhase
                 $state     = get_option($state_key, []);
                 $uploaded  = $state['offset'] ?? 0;
                 $total     = $state['total_size'] ?? ($job['file_size'] ?? 0);
+                $job['current_file_bytes'] = (int) $uploaded;
+                $job['current_file_size'] = (int) $total;
                 $log->log_message(sprintf('[Finalize] S3 upload in progress: %s / %s (part %d)', size_format($uploaded), size_format($total), $state['part_number'] ?? 1));
                 return; // caller will invoke again next poll
             }
+        } elseif ($this->requires_local_upload_assembly($storage)) {
+            $job['current_phase'] = 'remote_upload';
+            $done = $this->finalize_chunked_remote($job, $storage);
+            $job['s3_upload_done'] = $done;
+            if ($done) {
+                $final_path = rtrim($job['destination'], '/') . '/' . $job['file_name'];
+                $job['current_file_bytes'] = $job['current_file_size'];
+                $this->verify_file_size($job, $final_path, $storage);
+                $this->cleanup_temp($job['temp_dir']);
+                $log->log_message('[Finalize] Remote chunked upload complete: ' . $final_path);
+            } else {
+                return;
+            }
         } else {
+            $job['current_phase'] = 'finalize';
             $log->log_message('[Finalize] Uploading "' . $job['file_name'] . '" to remote storage: ' . $storage);
             $final_path = $this->finalize_remote($job, $storage);
+            $job['current_file_bytes'] = $job['current_file_size'];
             $this->verify_file_size($job, $final_path, $storage);
             $this->cleanup_temp($job['temp_dir']);
             $job['s3_upload_done'] = true;
@@ -94,6 +117,34 @@ class FinalizeAssemblyPhase extends OperationPhase
         return $result;
     }
 
+    private function finalize_chunked_remote(&$job, $storage): bool
+    {
+        $local_file  = $job['temp_dir'] . '/' . $job['file_name'];
+        $remote_path = rtrim($job['destination'], '/') . '/' . $job['file_name'];
+        if (! file_exists($local_file)) {
+            throw new \Exception(esc_html__('Assembled file not found locally: ', 'anibas-file-manager') . esc_html($local_file));
+        }
+
+        $adapter = StorageManager::get_instance()->get_adapter($storage);
+        $offset  = (int) ($job['remote_upload_offset'] ?? 0);
+        $job['current_file_bytes'] = $offset;
+        $result  = $adapter->upload_from_local_chunked($local_file, $remote_path, $offset);
+
+        if ($result['status'] === 9) {
+            $job['remote_upload_offset'] = $result['bytes_copied'];
+            $job['current_file_bytes'] = $result['bytes_copied'];
+            return true;
+        }
+        if ($result['status'] === 10) {
+            $job['remote_upload_offset'] = $result['bytes_copied'];
+            $job['current_file_bytes'] = $result['bytes_copied'];
+            $job['current_phase'] = ($result['phase'] ?? '') === 'remote_commit' ? 'remote_commit' : 'remote_upload';
+            return false;
+        }
+
+        throw new \Exception(esc_html__('Remote upload failed with status ', 'anibas-file-manager') . esc_html($result['status']));
+    }
+
     private function verify_file_size(&$job, $final_path, $storage)
     {
         $expected_size = 0;
@@ -117,29 +168,11 @@ class FinalizeAssemblyPhase extends OperationPhase
             if (file_exists($final_path)) {
                 $actual_size = filesize($final_path);
             }
-        } elseif ($this->is_s3_storage($storage)) {
-            // Use headObject for direct, consistent size check — faster and more reliable than listDirectory
-            $adapter = StorageManager::get_instance()->get_adapter($storage);
-            if (method_exists($adapter, 'get_file_size')) {
-                $size = $adapter->get_file_size($final_path);
-                $actual_size = $size !== false ? (int) $size : 0;
-            }
-            if ($actual_size === 0) {
-            }
         } else {
             $adapter = StorageManager::get_instance()->get_adapter($storage);
-            $dir_path = dirname($final_path);
-            $file_name = basename($final_path);
-            $items = $adapter->listDirectory($dir_path);
-
-            foreach ($items['items'] as $item) {
-                if ($item['name'] === $file_name) {
-                    $actual_size = $item['filesize'] ?? 0;
-                    break;
-                }
-            }
-
-            if ($actual_size === 0) {
+            if ($adapter) {
+                $size = $this->remote_file_size($adapter, $final_path);
+                $actual_size = $size !== null ? $size : 0;
             }
         }
 
@@ -160,6 +193,32 @@ class FinalizeAssemblyPhase extends OperationPhase
                 )
             );
         }
+    }
+
+    private function remote_file_size($adapter, string $path): ?int
+    {
+        foreach (array('get_file_size', 'get_size') as $method) {
+            if (! method_exists($adapter, $method)) {
+                continue;
+            }
+            $size = $adapter->{$method}($path);
+            if ($size !== false && is_numeric($size)) {
+                return (int) $size;
+            }
+        }
+
+        if (method_exists($adapter, 'getDetails')) {
+            $details = $adapter->getDetails($path);
+            if (is_array($details)) {
+                foreach (array('filesize', 'size') as $key) {
+                    if (isset($details[$key]) && is_numeric($details[$key])) {
+                        return (int) $details[$key];
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     private function finalize_local(&$job)
@@ -221,6 +280,12 @@ class FinalizeAssemblyPhase extends OperationPhase
         }
 
         return $final_file;
+    }
+
+    private function requires_local_upload_assembly($storage): bool
+    {
+        $adapter = StorageManager::get_instance()->get_adapter($storage);
+        return $adapter && method_exists($adapter, 'requires_local_upload_assembly') && $adapter->requires_local_upload_assembly();
     }
 
     private function cleanup_temp($temp_dir)

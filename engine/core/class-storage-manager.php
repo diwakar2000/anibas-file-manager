@@ -31,20 +31,11 @@ class StorageManager {
 
         $settings = anibas_fm_get_remote_settings();
 
-        if ( ! empty( $settings['ftp']['enabled'] ) ) {
-            $this->adapter_configs['ftp'] = $settings['ftp'];
-        }
-
-        if ( ! empty( $settings['sftp']['enabled'] ) ) {
-            $this->adapter_configs['sftp'] = $settings['sftp'];
-        }
-
-        if ( ! empty( $settings['s3']['enabled'] ) ) {
-            $this->adapter_configs['s3'] = $settings['s3'];
-        }
-
-        if ( ! empty( $settings['s3_compatible']['enabled'] ) ) {
-            $this->adapter_configs['s3_compatible'] = $settings['s3_compatible'];
+        foreach ( anibas_fm_remote_storage_providers() as $storage => $provider ) {
+            $factory = $provider['adapter_factory'] ?? null;
+            if ( ! empty( $settings[ $storage ]['enabled'] ) && $factory && is_callable( $factory ) ) {
+                $this->adapter_configs[ $storage ] = $settings[ $storage ];
+            }
         }
     }
 
@@ -58,70 +49,104 @@ class StorageManager {
 
         $c = $this->adapter_configs[ $storage ];
 
-        switch ( $storage ) {
-            case 'local':
-                return new LocalFileSystemAdapter();
-
-            case 'ftp':
-                // is_passive defaults to true: existing connections that pre-date
-                // this setting still get passive mode (the historical hardcoded value).
-                $is_passive = array_key_exists( 'is_passive', $c ) ? (bool) $c['is_passive'] : true;
-                return new FTPFileSystemAdapter(
-                    $c['host'],
-                    $c['username'],
-                    $c['password'],
-                    $c['base_path'] ?? '/',
-                    $c['use_ssl'] ?? false,
-                    $c['port'] ?? 21,
-                    $is_passive,
-                    ! empty( $c['insecure_ssl'] )
-                );
-
-            case 'sftp':
-                return new SFTPFileSystemAdapter(
-                    $c['host'],
-                    $c['username'],
-                    $c['password'] ?? null,
-                    $c['private_key'] ?? null,
-                    $c['base_path'] ?? '/',
-                    $c['port'] ?? 22
-                );
-
-            case 's3':
-                $s3_client = new AnibasS3Client(
-                    $c['access_key'],
-                    $c['secret_key'],
-                    $c['region']   ?? 'us-east-1',
-                    $c['endpoint'] ?? null,
-                    ! empty( $c['path_style'] )
-                );
-                $chunk_size = isset( $c['chunk_size'] ) ? (int) $c['chunk_size'] : 5242880;
-                return new S3FileSystemAdapter(
-                    $s3_client,
-                    $c['bucket'],
-                    $c['prefix'] ?? '',
-                    $chunk_size
-                );
-
-            case 's3_compatible':
-                $s3_client = new AnibasS3Client(
-                    $c['access_key'],
-                    $c['secret_key'],
-                    $c['region']   ?? 'us-east-1',
-                    $c['endpoint'],           // endpoint is required for S3-compatible
-                    true                      // always path-style for S3-compatible services
-                );
-                $chunk_size = isset( $c['chunk_size'] ) ? (int) $c['chunk_size'] : 5242880;
-                return new S3FileSystemAdapter(
-                    $s3_client,
-                    $c['bucket'],
-                    $c['prefix'] ?? '',
-                    $chunk_size
-                );
-
-            default:
-                return null;
+        if ( $storage === 'local' ) {
+            return new LocalFileSystemAdapter();
         }
+
+        $providers = anibas_fm_remote_storage_providers();
+        $factory = $providers[ $storage ]['adapter_factory'] ?? null;
+        if ( ! $factory || ! is_callable( $factory ) ) {
+            return null;
+        }
+
+        return call_user_func( $factory, $c );
+    }
+
+    public static function create_ftp_adapter( array $c ) {
+        $is_passive = array_key_exists( 'is_passive', $c ) ? (bool) $c['is_passive'] : true;
+        return new FTPFileSystemAdapter(
+            $c['host'],
+            $c['username'],
+            $c['password'],
+            $c['base_path'] ?? '/',
+            $c['use_ssl'] ?? false,
+            $c['port'] ?? 21,
+            $is_passive,
+            ! empty( $c['insecure_ssl'] )
+        );
+    }
+
+    public static function create_sftp_adapter( array $c ) {
+        return new SFTPFileSystemAdapter(
+            $c['host'],
+            $c['username'],
+            $c['password'] ?? null,
+            $c['private_key'] ?? null,
+            $c['base_path'] ?? '/',
+            $c['port'] ?? 22
+        );
+    }
+
+    public static function create_s3_adapter( array $c ) {
+        $s3_client = new AnibasS3Client(
+            $c['access_key'],
+            $c['secret_key'],
+            $c['region']   ?? 'us-east-1',
+            $c['endpoint'] ?? null,
+            ! empty( $c['path_style'] )
+        );
+        $chunk_size = isset( $c['chunk_size'] ) ? (int) $c['chunk_size'] : 5242880;
+        return new S3FileSystemAdapter(
+            $s3_client,
+            $c['bucket'],
+            $c['prefix'] ?? '',
+            $chunk_size
+        );
+    }
+
+    public static function create_s3_compatible_adapter( array $c ) {
+        $s3_client = new AnibasS3Client(
+            $c['access_key'],
+            $c['secret_key'],
+            $c['region']   ?? 'us-east-1',
+            $c['endpoint'],
+            true
+        );
+        $chunk_size = isset( $c['chunk_size'] ) ? (int) $c['chunk_size'] : 5242880;
+        return new S3FileSystemAdapter(
+            $s3_client,
+            $c['bucket'],
+            $c['prefix'] ?? '',
+            $chunk_size
+        );
+    }
+
+    public static function create_gdrive_adapter( array $c ) {
+        $chunk_size = isset( $c['chunk_size'] ) ? (int) $c['chunk_size'] : ANIBAS_FM_DEFAULT_CHUNK_SIZE;
+        return new GoogleDriveFileSystemAdapter(
+            new AnibasGoogleDriveClient( $c ),
+            $c['root_folder_id'] ?? 'root',
+            $chunk_size
+        );
+    }
+
+    public static function create_onedrive_adapter( array $c ) {
+        $chunk_size = isset( $c['chunk_size'] ) ? (int) $c['chunk_size'] : ANIBAS_FM_DEFAULT_CHUNK_SIZE;
+        return new OneDriveFileSystemAdapter(
+            new AnibasOneDriveClient( $c ),
+            $c['drive_id'] ?? '',
+            $c['root_path'] ?? '/',
+            $chunk_size
+        );
+    }
+
+    public static function create_dropbox_adapter( array $c ) {
+        $chunk_size = isset( $c['chunk_size'] ) ? (int) $c['chunk_size'] : ANIBAS_FM_DEFAULT_CHUNK_SIZE;
+        return new DropboxFileSystemAdapter(
+            new AnibasDropboxClient( $c ),
+            $c['root_path'] ?? '/',
+            $chunk_size
+        );
     }
 
     public function get_adapter( $storage = null ) {

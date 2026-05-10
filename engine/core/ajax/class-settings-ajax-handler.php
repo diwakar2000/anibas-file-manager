@@ -5,8 +5,7 @@ namespace Anibas;
 if (! defined('ABSPATH')) exit;
 
 /**
- * AJAX endpoints for plugin settings: general settings save, remote storage
- * connection config get/save, and remote connection testing.
+ * AJAX endpoints for plugin settings and remote-storage connection management.
  */
 class SettingsAjaxHandler extends AjaxHandler
 {
@@ -18,7 +17,10 @@ class SettingsAjaxHandler extends AjaxHandler
             ANIBAS_FM_GET_REMOTE_SETTINGS    => 'get_remote_settings',
             ANIBAS_FM_SAVE_REMOTE_SETTINGS   => 'save_remote_settings',
             ANIBAS_FM_TEST_REMOTE_CONNECTION => 'test_remote_connection',
+            ANIBAS_FM_REMOTE_OAUTH_START     => 'start_remote_oauth',
+            ANIBAS_FM_REMOTE_OAUTH_REVOKE    => 'revoke_remote_oauth',
         ]);
+        add_action('admin_post_' . ANIBAS_FM_REMOTE_OAUTH_CALLBACK, array($this, 'remote_oauth_callback'));
     }
 
     public function save_settings()
@@ -140,12 +142,21 @@ class SettingsAjaxHandler extends AjaxHandler
             $this->check_admin_privilege();
             $this->check_settings_auth();
 
-            $settings      = anibas_fm_get_remote_settings();
-            $secret_fields = anibas_fm_remote_secret_fields();
+            $settings = anibas_fm_get_remote_settings();
+            $providers = anibas_fm_remote_storage_providers();
 
             foreach ($settings as $storage => $conn) {
                 if (! is_array($conn)) continue;
-                foreach ($secret_fields as $f) {
+                if (isset($providers[$storage])) {
+                    $settings[$storage] = array_intersect_key($conn, anibas_fm_remote_storage_fields($providers[$storage]));
+                    $conn = $settings[$storage];
+                }
+                if (! empty($providers[$storage]['oauth']) && anibas_fm_remote_connection_has_oauth_token($conn)) {
+                    foreach (anibas_fm_remote_oauth_credential_fields($storage) as $credential_key) {
+                        unset($settings[$storage][$credential_key], $conn[$credential_key]);
+                    }
+                }
+                foreach (anibas_fm_remote_secret_fields($storage) as $f) {
                     if (isset($conn[$f]) && $conn[$f] !== '') {
                         $settings[$storage][$f]         = '';
                         $settings[$storage][$f . '_set'] = true;
@@ -163,12 +174,18 @@ class SettingsAjaxHandler extends AjaxHandler
             $settings = anibas_fm_get_remote_settings();
             $summary = array();
 
-            foreach (array('ftp', 'sftp', 's3', 's3_compatible') as $storage) {
+            foreach (anibas_fm_remote_storage_providers() as $storage => $provider) {
+                $factory = $provider['adapter_factory'] ?? null;
+                if (! $factory || ! is_callable($factory)) {
+                    continue;
+                }
+
                 $is_available = ! empty($settings[$storage]['enabled'])
                     && $this->saved_remote_connection_passes($storage, $settings[$storage]);
 
                 $summary[$storage] = array(
                     'enabled' => $is_available,
+                    'label'   => $provider['label'] ?? $storage,
                 );
             }
 
@@ -188,13 +205,7 @@ class SettingsAjaxHandler extends AjaxHandler
         }
 
         try {
-            $result = match ($storage) {
-                'ftp' => RemoteStorageTester::test_ftp($config),
-                'sftp' => RemoteStorageTester::test_sftp($config),
-                's3' => RemoteStorageTester::test_s3($config),
-                's3_compatible' => RemoteStorageTester::test_s3_compatible($config),
-                default => array('success' => false),
-            };
+            $result = $this->test_remote_storage($storage, $config);
         } catch (\Throwable $e) {
             $result = array('success' => false);
         }
@@ -230,24 +241,69 @@ class SettingsAjaxHandler extends AjaxHandler
         // If a secret field is blank, fall back to the stored (decrypted) value
         // so admins can re-test a saved connection without re-entering creds.
         $stored = anibas_fm_get_remote_settings();
-        foreach (anibas_fm_remote_secret_fields() as $f) {
+        foreach (anibas_fm_remote_secret_fields($type) as $f) {
+            if ((! isset($config[$f]) || $config[$f] === '') && isset($stored[$type][$f])) {
+                $config[$f] = $stored[$type][$f];
+            }
+        }
+        foreach (anibas_fm_remote_oauth_credential_fields($type) as $f) {
             if ((! isset($config[$f]) || $config[$f] === '') && isset($stored[$type][$f])) {
                 $config[$f] = $stored[$type][$f];
             }
         }
 
-        $result = match ($type) {
-            'ftp' => RemoteStorageTester::test_ftp($config),
-            'sftp' => RemoteStorageTester::test_sftp($config),
-            's3' => RemoteStorageTester::test_s3($config),
-            's3_compatible' => RemoteStorageTester::test_s3_compatible($config),
-            default => ['success' => false, 'message' => esc_html__('Invalid type', 'anibas-file-manager')]
-        };
+        $result = $this->test_remote_storage($type, $config);
 
         if ($result['success']) {
             $this->send_success($result);
         } else {
-            $this->send_error($result['message']);
+            $this->send_error($result['message'] ?? esc_html__('Connection test failed', 'anibas-file-manager'));
         }
+    }
+
+    public function start_remote_oauth()
+    {
+        $this->check_save_settings_privilege();
+        $this->check_settings_auth();
+
+        $provider = sanitize_key(wp_unslash($_POST['provider'] ?? ''));
+        $result = RemoteOAuthManager::start($provider);
+        if (is_wp_error($result)) {
+            $this->send_wp_error($result, 400);
+        }
+
+        $this->send_success($result);
+    }
+
+    public function remote_oauth_callback()
+    {
+        RemoteOAuthManager::handle_callback();
+    }
+
+    public function revoke_remote_oauth()
+    {
+        $this->check_save_settings_privilege();
+        $this->check_settings_auth();
+
+        $provider = sanitize_key(wp_unslash($_POST['provider'] ?? ''));
+        $result = RemoteOAuthManager::revoke_and_disconnect($provider);
+        if (is_wp_error($result)) {
+            $this->send_wp_error($result, 400);
+        }
+
+        $this->send_success($result);
+    }
+
+    private function test_remote_storage(string $type, array $config): array
+    {
+        $providers = anibas_fm_remote_storage_providers();
+        $tester = $providers[$type]['tester'] ?? null;
+
+        if (! $tester || ! is_callable($tester)) {
+            return ['success' => false, 'message' => esc_html__('Invalid type', 'anibas-file-manager')];
+        }
+
+        $result = call_user_func($tester, $config);
+        return is_array($result) ? $result : ['success' => false, 'message' => esc_html__('Connection test failed', 'anibas-file-manager')];
     }
 }

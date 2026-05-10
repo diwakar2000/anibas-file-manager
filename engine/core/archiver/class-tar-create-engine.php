@@ -28,7 +28,7 @@ namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-use Exception, RecursiveDirectoryIterator, RecursiveIteratorIterator;
+use Exception;
 
 class TarCreateEngine {
 
@@ -113,68 +113,21 @@ class TarCreateEngine {
         if ( file_exists( $this->manifest_file ) ) {
             return;
         }
+        do {
+            $result = $this->build_manifest_step( PHP_INT_MAX );
+        } while ( empty( $result['complete'] ) );
+    }
 
-        $entries       = [];
-        $max_file_size = 0;
-        $max_file_name = '';
-
-        if ( is_file( $this->source ) ) {
-            $size = filesize( $this->source );
-            $name = basename( $this->source );
-            $entries[] = [
-                'path'  => $this->source,
-                'name'  => $name,
-                'size'  => $size,
-                'isdir' => false,
-            ];
-            $max_file_size = $size;
-            $max_file_name = $name;
-        } else {
-            $base_len = strlen( $this->source ) + 1;
-            $iterator = new RecursiveIteratorIterator(
-                new RecursiveDirectoryIterator(
-                    $this->source,
-                    RecursiveDirectoryIterator::SKIP_DOTS
-                ),
-                RecursiveIteratorIterator::SELF_FIRST
-            );
-
-            foreach ( $iterator as $item ) {
-                $full_path     = $item->getPathname();
-                $relative_path = substr( $full_path, $base_len );
-
-                if ( $item->isDir() ) {
-                    $entries[] = [
-                        'path'  => $full_path,
-                        'name'  => $relative_path,
-                        'size'  => 0,
-                        'isdir' => true,
-                    ];
-                } else {
-                    $size = $item->getSize();
-                    $entries[] = [
-                        'path'  => $full_path,
-                        'name'  => $relative_path,
-                        'size'  => $size,
-                        'isdir' => false,
-                    ];
-                    if ( $size > $max_file_size ) {
-                        $max_file_size = $size;
-                        $max_file_name = $relative_path;
-                    }
-                }
-            }
-        }
-
-        $tmp = $this->manifest_file . '.tmp';
-        file_put_contents( $tmp, wp_json_encode( [
-            'total'         => count( $entries ),
-            'total_size'    => array_sum( array_column( $entries, 'size' ) ),
-            'max_file_size' => $max_file_size,
-            'max_file_name' => $max_file_name,
-            'entries'       => $entries,
-        ] ) );
-        rename( $tmp, $this->manifest_file );
+    public function build_manifest_step( ?int $time_budget = null ): array {
+        $base_path = is_file( $this->source ) ? dirname( $this->source ) : $this->source;
+        return ArchiveManifestStore::build_step(
+            array( $this->source ),
+            $base_path,
+            $this->manifest_file,
+            true,
+            array(),
+            $time_budget
+        );
     }
 
     /* ------------------------------------- */
@@ -186,14 +139,7 @@ class TarCreateEngine {
             throw new Exception( 'Manifest not built. Call build_manifest() first.' );
         }
 
-        $manifest = json_decode( file_get_contents( $this->manifest_file ), true );
-
-        return [
-            'total'         => isset( $manifest['total'] ) ? (int) $manifest['total'] : 0,
-            'total_size'    => isset( $manifest['total_size'] ) ? (int) $manifest['total_size'] : 0,
-            'max_file_size' => isset( $manifest['max_file_size'] ) ? (int) $manifest['max_file_size'] : 0,
-            'max_file_name' => isset( $manifest['max_file_name'] ) ? $manifest['max_file_name'] : '',
-        ];
+        return ArchiveManifestStore::read_info( $this->manifest_file );
     }
 
     /* ------------------------------------- */
@@ -244,7 +190,10 @@ class TarCreateEngine {
             return false;
         }
 
-        return strpos( $real, $base ) === 0;
+        $base = untrailingslashit( wp_normalize_path( $base ) );
+        $real = untrailingslashit( wp_normalize_path( $real ) );
+
+        return $real === $base || str_starts_with( $real . '/', trailingslashit( $base ) );
     }
 
     /* ------------------------------------- */
@@ -359,15 +308,14 @@ class TarCreateEngine {
                 throw new Exception( 'Manifest not built. Call build_manifest() first.' );
             }
 
-            $manifest = json_decode( file_get_contents( $this->manifest_file ), true );
+            $manifest = ArchiveManifestStore::read_manifest( $this->manifest_file );
 
-            if ( ! is_array( $manifest ) || ! isset( $manifest['entries'] ) ) {
+            if ( ! ArchiveManifestStore::is_valid_manifest( $manifest ) ) {
                 throw new Exception( 'Invalid manifest file' );
             }
 
-            $entries = $manifest['entries'];
-            $total   = count( $entries );
-            $state   = $this->load_state();
+            $total = (int) ( $manifest['total'] ?? 0 );
+            $state = $this->load_state();
 
             if ( $state['cursor'] >= $total ) {
                 // All entries done — write end-of-archive marker if not already
@@ -390,7 +338,12 @@ class TarCreateEngine {
             $start = microtime( true );
 
             while ( $state['cursor'] < $total ) {
-                $entry     = $entries[ $state['cursor'] ];
+                $entry = ArchiveManifestStore::current_entry( $manifest, $state );
+                if ( ! $entry ) {
+                    $state['cursor'] = $total;
+                    $this->save_state( $state );
+                    break;
+                }
                 $file_path = $entry['path'];
                 $tar_name  = $entry['name'];
                 $file_size = (int) $entry['size'];
@@ -398,7 +351,7 @@ class TarCreateEngine {
 
                 // Validate the file still exists and is within source
                 if ( ! file_exists( $file_path ) || ! $this->validate_path( $file_path ) ) {
-                    $state['cursor']++;
+                    ArchiveManifestStore::advance_entry( $manifest, $state );
                     $state['file_offset']    = 0;
                     $state['header_written'] = false;
                     $this->save_state( $state );
@@ -417,7 +370,7 @@ class TarCreateEngine {
 
                     // For directories, no data to write
                     if ( $is_dir ) {
-                        $state['cursor']++;
+                        ArchiveManifestStore::advance_entry( $manifest, $state );
                         $state['file_offset']    = 0;
                         $state['header_written'] = false;
                         $this->save_state( $state );
@@ -438,7 +391,7 @@ class TarCreateEngine {
                     $src = fopen( $file_path, 'rb' );
                     if ( ! $src ) {
                         // Skip unreadable files
-                        $state['cursor']++;
+                        ArchiveManifestStore::advance_entry( $manifest, $state );
                         $state['file_offset']    = 0;
                         $state['header_written'] = false;
                         $this->save_state( $state );
@@ -483,7 +436,7 @@ class TarCreateEngine {
                 }
 
                 // Entry complete — advance cursor
-                $state['cursor']++;
+                ArchiveManifestStore::advance_entry( $manifest, $state );
                 $state['file_offset']    = 0;
                 $state['header_written'] = false;
                 $this->save_state( $state );
@@ -537,7 +490,7 @@ class TarCreateEngine {
             return [ 'current' => 0, 'total' => 0, 'percent' => 0, 'bytes_processed' => 0, 'total_size' => 0 ];
         }
 
-        $manifest   = json_decode( file_get_contents( $this->manifest_file ), true );
+        $manifest   = ArchiveManifestStore::read_manifest( $this->manifest_file );
         $state      = $this->load_state();
         $total      = isset( $manifest['total'] ) ? (int) $manifest['total'] : 0;
         $total_size = isset( $manifest['total_size'] ) ? (int) $manifest['total_size'] : 0;
@@ -558,10 +511,8 @@ class TarCreateEngine {
 
     public function cleanup( bool $remove_output = false ) {
         $files = [
-            $this->manifest_file,
             $this->state_file,
             $this->lock_file,
-            $this->manifest_file . '.tmp',
             $this->state_file . '.tmp',
         ];
 
@@ -574,6 +525,7 @@ class TarCreateEngine {
                 wp_delete_file( $file );
             }
         }
+        ArchiveManifestStore::cleanup( $this->manifest_file );
     }
 
     public function is_complete(): bool {
@@ -581,7 +533,7 @@ class TarCreateEngine {
             return false;
         }
 
-        $manifest = json_decode( file_get_contents( $this->manifest_file ), true );
+        $manifest = ArchiveManifestStore::read_manifest( $this->manifest_file );
         $state    = $this->load_state();
         $total    = isset( $manifest['total'] ) ? (int) $manifest['total'] : 0;
 
