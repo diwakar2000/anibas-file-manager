@@ -447,11 +447,9 @@ class TransferAjaxHandler extends AjaxHandler
         // Archive jobs — return only display-safe fields (no absolute paths)
         $archive_jobs       = $this->get_archive_jobs();
         $sanitized_archives = array_map(function ($job) {
-            $source = anibas_fm_convert_to_relative_path($job['source_abs']);
             return [
                 'id'         => $job['id'],
-                'source'     => $source,
-                'source_name' => basename($job['source_abs']),
+                'source'     => basename($job['source_abs']),
                 'output'     => basename($job['output_abs']),
                 'format'     => $job['format'],
                 'started_at' => $job['started_at'],

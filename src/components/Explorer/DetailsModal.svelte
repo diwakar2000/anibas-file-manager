@@ -18,7 +18,7 @@
     loading = true
     asyncError = null
     asyncDetails = null
-    getFileDetails(file.path, fileStore.currentStorage, { storageId: file.storage_id })
+    getFileDetails(file.path, fileStore.currentStorage)
       .then((d) => { asyncDetails = d })
       .catch((e) => { asyncError = e.message || "Failed to load details" })
       .finally(() => { loading = false })

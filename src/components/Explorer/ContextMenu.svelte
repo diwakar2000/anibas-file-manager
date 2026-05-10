@@ -27,28 +27,19 @@
     onclose();
   }
 
-  function itemKey(item: MenuItem, index: number): string {
-    if (item.separator || item.thickSeparator) return `separator:${index}`;
-    return `${item.label || "item"}:${index}`;
-  }
-
   // Adjust position so menu doesn't overflow viewport
   let menuEl = $state<HTMLElement | null>(null);
-  let adjustedX = $state(0);
-  let adjustedY = $state(0);
+  let adjustedX = $state(x);
+  let adjustedY = $state(y);
 
   $effect(() => {
-    if (!menuEl) {
-      adjustedX = x;
-      adjustedY = y;
-      return;
+    if (menuEl) {
+      const rect = menuEl.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      adjustedX = (x + rect.width > vw) ? vw - rect.width - 4 : x;
+      adjustedY = (y + rect.height > vh) ? vh - rect.height - 4 : y;
     }
-
-    const rect = menuEl.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    adjustedX = (x + rect.width > vw) ? vw - rect.width - 4 : x;
-    adjustedY = (y + rect.height > vh) ? vh - rect.height - 4 : y;
   });
 </script>
 
@@ -62,10 +53,10 @@
     onclick={(e) => e.stopPropagation()}
     oncontextmenu={(e) => e.stopPropagation()}
   >
-    {#each items as item, index (itemKey(item, index))}
-      {#if item.separator || item.thickSeparator}
+    {#each items as item (item.label)}
+      {#if 'separator' in item && item.separator}
         <div class={`separator ${item.thickSeparator ? 'thick' : ''}`}></div>
-      {:else}
+      {:else if !('separator' in item)}
         <button
           class="menu-item"
           class:disabled={item.disabled}

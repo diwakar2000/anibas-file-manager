@@ -109,13 +109,13 @@
     if (fileStore.renamingPath === file.path) return
 
     if (e.ctrlKey || e.metaKey || e.shiftKey) {
-      fileStore.selectFileItem(file, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })
+      fileStore.selectFile(file.path, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })
       return
     }
 
     clickCount++
     if (clickCount === 1) {
-      fileStore.selectFileItem(file)
+      fileStore.selectFile(file.path)
       clickTimeout = setTimeout(() => { clickCount = 0 }, 300)
     } else if (clickCount === 2) {
       if (clickTimeout) { clearTimeout(clickTimeout); clickTimeout = null }
@@ -129,7 +129,7 @@
   }
 
   function triggerDownload() {
-    const url = getDownloadUrl(file.path, fileStore.currentStorage, { storageId: file.storage_id })
+    const url = getDownloadUrl(file.path, fileStore.currentStorage)
     const a = document.createElement('a')
     a.href = url; a.setAttribute('download', '')
     document.body.appendChild(a); a.click(); document.body.removeChild(a)
@@ -140,7 +140,7 @@
 
   function handleDragStart(e: DragEvent) {
     if (!e.dataTransfer || fileStore.renamingPath === file.path) return;
-    const paths = fileStore.isSelectedItem(file) ? [...fileStore.selectedPaths] : [file.path];
+    const paths = fileStore.isSelected(file.path) ? [...fileStore.selectedPaths] : [file.path];
     e.dataTransfer.setData('application/json', JSON.stringify({ paths, action: e.altKey ? 'copy' : 'move', storage: fileStore.currentStorage }));
     e.dataTransfer.effectAllowed = 'copyMove';
   }
@@ -179,8 +179,8 @@
     e.preventDefault()
     e.stopPropagation()
     // Select the item on right-click if not already selected
-    if (!fileStore.isSelectedItem(file)) {
-      fileStore.selectFileItem(file)
+    if (!fileStore.isSelected(file.path)) {
+      fileStore.selectFile(file.path, {})
     }
     menuX = e.clientX
     menuY = e.clientY
@@ -215,7 +215,7 @@
       if (isEditable(file)) {
         items.push({ label: __('Edit'), icon: icons.edit, action: () => fileStore.openEditor(file.path, true) })
       }
-      items.push({ label: __('Preview'), icon: icons.preview, action: () => fileStore.openPreview(file) })
+      items.push({ label: __('Preview'), icon: icons.preview, action: () => { fileStore.selectedPaths = [file.path]; fileStore.previewOpen = true } })
       items.push({ separator: true })
     }
 
@@ -488,7 +488,7 @@
 <div
   class="file-row"
   class:is-folder={file.is_folder}
-  class:is-selected={fileStore.isSelectedItem(file)}
+  class:is-selected={fileStore.isSelected(file.path)}
   class:is-deleting={fileStore.isDeleting(file.path)}
   class:is-renaming={fileStore.renamingPath === file.path}
   class:is-drag-over={isDragOver}
@@ -508,8 +508,8 @@
     <input
       type="checkbox"
       class="row-checkbox"
-      checked={fileStore.isSelectedItem(file)}
-      onclick={(e) => { e.stopPropagation(); fileStore.selectFileItem(file, { ctrl: true }) }}
+      checked={fileStore.isSelected(file.path)}
+      onclick={(e) => { e.stopPropagation(); fileStore.selectFile(file.path, { ctrl: true }) }}
     />
   </div>
   <div class="col col-name">

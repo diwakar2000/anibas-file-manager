@@ -49,11 +49,6 @@ class Anibas_File_Manager_Deactivator {
 			wp_unschedule_event( $backup_timestamp, ANIBAS_FM_BACKUP_CRON_HOOK );
 		}
 
-		$oauth_timestamp = wp_next_scheduled( ANIBAS_FM_OAUTH_REFRESH_CRON_HOOK );
-		if ( $oauth_timestamp ) {
-			wp_unschedule_event( $oauth_timestamp, ANIBAS_FM_OAUTH_REFRESH_CRON_HOOK );
-		}
-
 		// Clear any stale backup lock
 		anibas_fm_clear_backup_lock();
 	}

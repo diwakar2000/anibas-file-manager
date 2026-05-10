@@ -82,15 +82,11 @@ class BackgroundProcessor {
         
         // Check if same operation already exists
         foreach ( $queue as $existing_job ) {
-            if ( ( $existing_job['source_root'] ?? null ) === $source &&
-                ( $existing_job['dest_root'] ?? null ) === $destination &&
-                ( $existing_job['action'] ?? null ) === $action &&
-                empty( $existing_job['is_cross_storage'] ) &&
-                (string) ( $existing_job['storage'] ?? 'local' ) === (string) $storage &&
-                (string) ( $existing_job['conflict_mode'] ?? 'overwrite' ) === (string) $conflict_mode &&
+            if ( $existing_job['source_root'] === $source && 
+                $existing_job['dest_root'] === $destination && 
+                $existing_job['action'] === $action &&
                 (bool) ( $existing_job['remove_source'] ?? false ) === $remove_source &&
                 (bool) ( $existing_job['allow_trash_root'] ?? false ) === $allow_trash_root &&
-                (bool) ( $existing_job['dest_is_final'] ?? false ) === (bool) $dest_is_final &&
                 in_array( $existing_job['status'], [ 'pending', 'processing', 'retrying' ] ) ) {
                 return $existing_job['id']; // Return existing job ID
             }
@@ -164,13 +160,9 @@ class BackgroundProcessor {
 
         // Check for duplicate
         foreach ( $queue as $existing_job ) {
-            if ( ( $existing_job['source_root'] ?? null ) === $source
-                && ( $existing_job['dest_root'] ?? null ) === $destination
-                && ( $existing_job['action'] ?? null ) === $action
-                && ! empty( $existing_job['is_cross_storage'] )
-                && (string) ( $existing_job['source_storage'] ?? '' ) === (string) $source_storage
-                && (string) ( $existing_job['dest_storage'] ?? '' ) === (string) $dest_storage
-                && (string) ( $existing_job['conflict_mode'] ?? 'overwrite' ) === (string) $conflict_mode
+            if ( $existing_job['source_root'] === $source
+                && $existing_job['dest_root'] === $destination
+                && $existing_job['action'] === $action
                 && in_array( $existing_job['status'], [ 'pending', 'processing', 'retrying' ] ) ) {
                 return $existing_job['id'];
             }
@@ -237,8 +229,7 @@ class BackgroundProcessor {
         foreach ( $queue as $existing_job ) {
             if ( ( $existing_job['action'] ?? '' ) === 'delete'
                 && ! empty( $existing_job['trash_mode'] )
-                && ( $existing_job['source_root'] ?? null ) === $path
-                && (string) ( $existing_job['storage'] ?? 'local' ) === (string) $storage
+                && $existing_job['source_root'] === $path
                 && in_array( $existing_job['status'], [ 'pending', 'processing', 'retrying' ], true ) ) {
                 return $existing_job['id'];
             }
@@ -279,7 +270,6 @@ class BackgroundProcessor {
         $adapter = $sm->get_adapter( $storage );
         $allow_trash_root = ! empty( $options['allow_trash_root'] );
         $recreate_trash_root = ! empty( $options['recreate_trash_root'] );
-        $recreate_keep_root = ! empty( $options['recreate_keep_root'] );
 
         if ( ! $adapter ) {
             return new \WP_Error( 'invalid_storage', sprintf( 'Invalid storage adapter: %s', $storage ) );
@@ -291,12 +281,10 @@ class BackgroundProcessor {
         // Check for duplicate (same root + same keep_root intent)
         foreach ( $queue as $existing_job ) {
             if ( ( $existing_job['action'] ?? '' ) === 'delete'
-                && ( $existing_job['source_root'] ?? null ) === $path
-                && (string) ( $existing_job['storage'] ?? 'local' ) === (string) $storage
+                && $existing_job['source_root'] === $path
                 && ( $existing_job['keep_root'] ?? false ) === (bool) $keep_root
                 && ( $existing_job['allow_trash_root'] ?? false ) === $allow_trash_root
                 && ( $existing_job['recreate_trash_root'] ?? false ) === $recreate_trash_root
-                && ( $existing_job['recreate_keep_root'] ?? false ) === $recreate_keep_root
                 && in_array( $existing_job['status'], [ 'pending', 'processing', 'retrying' ] ) ) {
                 return $existing_job['id'];
             }
@@ -317,7 +305,6 @@ class BackgroundProcessor {
             'keep_root'       => (bool) $keep_root,
             'allow_trash_root' => $allow_trash_root,
             'recreate_trash_root' => $recreate_trash_root,
-            'recreate_keep_root' => $recreate_keep_root,
             'status'          => 'pending',
             'created_at'      => time(),
             'errors'          => [],
@@ -445,7 +432,7 @@ class BackgroundProcessor {
         try {
             $is_complete = self::process_job( $job, $work_queue );
             
-            if ( $is_complete && ! in_array( $job['status'], [ 'failed', 'awaiting_user' ], true ) ) {
+            if ( $is_complete && $job['status'] !== 'failed' ) {
                 if ( self::completed_job_has_terminal_failures( $job ) ) {
                     $message = ! empty( $job['errors'][0] )
                         ? $job['errors'][0]
@@ -837,9 +824,6 @@ class BackgroundProcessor {
             if ( $job['id'] === $job_id ) {
                 // Assembly jobs have different structure
                 if ( isset( $job['type'] ) && $job['type'] === 'assembly' ) {
-                    $current_phase = $job['current_phase'] ?? ( (int) ( $job['current_chunk'] ?? 0 ) < (int) ( $job['total_chunks'] ?? 0 ) ? 'assembly' : 'finalize' );
-                    $file_size = (int) ( $job['current_file_size'] ?? $job['file_size'] ?? 0 );
-                    $file_bytes = (int) ( $job['current_file_bytes'] ?? $job['remote_upload_offset'] ?? 0 );
                     return [
                         'id' => $job['id'],
                         'status' => $job['status'],
@@ -847,10 +831,7 @@ class BackgroundProcessor {
                         'file_name' => $job['file_name'],
                         'current_chunk' => $job['current_chunk'] ?? 0,
                         'total_chunks' => $job['total_chunks'],
-                        'current_phase' => $current_phase,
-                        'current_file_bytes' => $file_bytes,
-                        'current_file_size' => $file_size,
-                        'progress' => self::assembly_job_progress( $job, $current_phase, $file_bytes, $file_size ),
+                        'progress' => $job['total_chunks'] > 0 ? round( ( $job['current_chunk'] / $job['total_chunks'] ) * 100 ) : 0,
                         'errors' => $job['errors'] ?? [],
                         'error_code' => $job['error_code'] ?? null,
                         'error_details' => $job['error_details'] ?? null,
@@ -889,35 +870,11 @@ class BackgroundProcessor {
         return null;
     }
 
-    private static function assembly_job_progress( array $job, string $current_phase, int $file_bytes, int $file_size ): int {
-        if ( ( $job['status'] ?? '' ) === 'completed' ) {
-            return 100;
-        }
-
-        if ( $current_phase === 'remote_upload' && $file_size > 0 ) {
-            $remote_progress = max( 0, min( 1, $file_bytes / $file_size ) );
-            return min( 99, 50 + (int) round( $remote_progress * 49 ) );
-        }
-
-        if ( in_array( $current_phase, [ 'finalize', 'remote_commit' ], true ) ) {
-            return 90;
-        }
-
-        $total_chunks = max( 1, (int) ( $job['total_chunks'] ?? 0 ) );
-        $current_chunk = max( 0, min( $total_chunks, (int) ( $job['current_chunk'] ?? 0 ) ) );
-        return min( 50, (int) round( ( $current_chunk / $total_chunks ) * 50 ) );
-    }
-
     public static function cancel_job( $job_id ) {
         $queue = anibas_fm_get_option( self::$option_name, [] );
         foreach ( $queue as $key => $job ) {
             if ( $job['id'] === $job_id ) {
-                if ( ! empty( $job['work_queue_id'] ) ) {
-                    delete_option( $job['work_queue_id'] );
-                }
-                if ( isset( $job['type'] ) && $job['type'] === 'assembly' ) {
-                    self::cleanup_assembly_job( $job );
-                }
+                delete_option( $job['work_queue_id'] );
                 delete_transient( 'anibas_fm_worker_heartbeat_' . $job['id'] );
                 JobQueueSpool::cleanup( $job['id'] );
                 unset( $queue[ $key ] );
@@ -926,31 +883,6 @@ class BackgroundProcessor {
             }
         }
         return false;
-    }
-
-    private static function cleanup_assembly_job( array $job ): void {
-        if ( ! empty( $job['upload_id'] ) && isset( $job['user_id'] ) ) {
-            delete_transient( 'anibas_fm_upload_' . $job['upload_id'] . '_' . $job['user_id'] . '_assembly' );
-        }
-
-        if ( empty( $job['temp_dir'] ) || ! is_string( $job['temp_dir'] ) ) {
-            return;
-        }
-
-        $uploads = wp_upload_dir();
-        if ( empty( $uploads['basedir'] ) ) {
-            return;
-        }
-
-        $temp_root = untrailingslashit( wp_normalize_path( $uploads['basedir'] . '/anibas_fm_temp' ) );
-        $temp_dir  = untrailingslashit( wp_normalize_path( $job['temp_dir'] ) );
-        if ( $temp_dir === $temp_root || ! self::path_is_inside_or_same( $temp_dir, $temp_root ) ) {
-            return;
-        }
-
-        if ( is_dir( $temp_dir ) ) {
-            anibas_fm_recursive_rmdir( $temp_dir );
-        }
     }
 
     public static function clear_all_jobs() {

@@ -41,14 +41,14 @@ class FileCrudAjaxHandler extends AjaxHandler
             }
 
             try {
-                $result = $adapter->listDirectory($dir, $page, $page_size);
+                $result = $adapter->listDirectory($dir);
                 $this->send_success(array(
                     'path' => $dir,
-                    'page' => $result['page'] ?? $page,
-                    'page_size' => $result['page_size'] ?? $page_size,
-                    'total_items' => $result['total_items'] ?? count($result['items'] ?? []),
-                    'has_more' => ! empty($result['has_more']),
-                    'items' => $result['items'] ?? []
+                    'page' => $page,
+                    'page_size' => $page_size,
+                    'total_items' => $result['total_items'],
+                    'has_more' => false,
+                    'items' => $result['items']
                 ));
             } catch (\Exception $e) {
                 $this->send_error(array('error' => esc_html($e->getMessage())));
@@ -260,17 +260,13 @@ class FileCrudAjaxHandler extends AjaxHandler
         $path         = anibas_fm_fetch_request_variable('post', 'path', '');
         $token        = anibas_fm_fetch_request_variable('post', 'token', '');
         $delete_token = anibas_fm_fetch_request_variable('post', 'delete_token', '');
-        $storage      = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'storage', 'local'));
-        if ($storage === '') {
-            $storage = 'local';
-        }
+        $storage      = anibas_fm_fetch_request_variable('post', 'storage', 'local');
 
         if (empty($path)) {
             $this->send_error(array('error' => esc_html__('Path required', 'anibas-file-manager')), null, [$lock_key]);
         }
 
-        $delete_token_key = 'anibas_fm_delete_token_' . $user_id . '_' . md5($storage . '|' . $path);
-        $stored_delete_token = get_transient($delete_token_key);
+        $stored_delete_token = get_transient('anibas_fm_delete_token_' . $user_id . '_' . md5($path));
         if (! $delete_token || ! $stored_delete_token || ! hash_equals($stored_delete_token, $delete_token)) {
             $this->send_error(array('error' => 'DeleteTokenExpired', 'message' => esc_html__('Delete confirmation expired. Please try again.', 'anibas-file-manager')), null, [$lock_key]);
         }
@@ -283,7 +279,7 @@ class FileCrudAjaxHandler extends AjaxHandler
             }
         }
 
-        delete_transient($delete_token_key);
+        delete_transient('anibas_fm_delete_token_' . $user_id . '_' . md5($path));
 
         $adapter = $this->get_storage_adapter($storage, [$lock_key]);
         if (! $adapter) {
@@ -351,9 +347,7 @@ class FileCrudAjaxHandler extends AjaxHandler
                 $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Invalid remote folder path', 'anibas-file-manager')));
             }
 
-            $job_id = BackgroundProcessor::enqueue_delete_job($full_path, $storage, true, array(
-                'recreate_keep_root' => true,
-            ));
+            $job_id = BackgroundProcessor::enqueue_delete_job($full_path, $storage, true);
             if (is_wp_error($job_id)) {
                 $result = $job_id;
             } else {
@@ -472,52 +466,6 @@ class FileCrudAjaxHandler extends AjaxHandler
             'message' => sprintf(esc_html__('Renamed to \'%s\' successfully', 'anibas-file-manager'), esc_html($new_name)), 'new_name' => $new_name));
     }
 
-    private function remote_request_path($adapter, string $path, string $storage_id = ''): string|false
-    {
-        if ($storage_id !== '' && method_exists($adapter, 'path_from_storage_id')) {
-            $by_id = $adapter->path_from_storage_id($storage_id, $path);
-            if ($by_id !== false) {
-                return $by_id;
-            }
-        }
-
-        return $adapter->validate_path($path);
-    }
-
-    private function safe_download_name(string $path): string
-    {
-        $filename = preg_replace('/[\r\n"\\\\]/', '', basename($path));
-        return $filename !== '' ? $filename : 'download';
-    }
-
-    private function mime_from_path(string $path): string
-    {
-        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
-        return match ($ext) {
-            'pdf' => 'application/pdf',
-            'png' => 'image/png',
-            'jpg', 'jpeg' => 'image/jpeg',
-            'gif' => 'image/gif',
-            'webp' => 'image/webp',
-            'svg' => 'image/svg+xml',
-            'bmp' => 'image/bmp',
-            'ico' => 'image/x-icon',
-            'mp4' => 'video/mp4',
-            'webm' => 'video/webm',
-            'ogg' => 'video/ogg',
-            'mov' => 'video/quicktime',
-            'mp3' => 'audio/mpeg',
-            'wav' => 'audio/wav',
-            'txt', 'log' => 'text/plain; charset=UTF-8',
-            'json' => 'application/json; charset=UTF-8',
-            'html', 'htm' => 'text/html; charset=UTF-8',
-            'css' => 'text/css; charset=UTF-8',
-            'js', 'mjs' => 'text/javascript; charset=UTF-8',
-            'xml' => 'application/xml; charset=UTF-8',
-            default => 'application/octet-stream',
-        };
-    }
-
     /* =========================================================
        DOWNLOAD FILE — streams a file to the browser
     ========================================================= */
@@ -528,8 +476,6 @@ class FileCrudAjaxHandler extends AjaxHandler
 
         $path    = anibas_fm_fetch_request_variable('get', 'path', '');
         $storage = anibas_fm_fetch_request_variable('get', 'storage', 'local');
-        $storage_id = anibas_fm_fetch_request_variable('get', 'storage_id', '');
-        $disposition = anibas_fm_fetch_request_variable('get', 'disposition', '') === 'inline' ? 'inline' : 'attachment';
 
         if (empty($path)) {
             wp_die(esc_html__('File path is required', 'anibas-file-manager'), esc_html__('Error', 'anibas-file-manager'), array('response' => 400));
@@ -540,7 +486,8 @@ class FileCrudAjaxHandler extends AjaxHandler
             if (! $full_path || ! is_file($full_path)) {
                 wp_die(esc_html__('File not found', 'anibas-file-manager'), esc_html__('Error', 'anibas-file-manager'), array('response' => 404));
             }
-            $filename = $this->safe_download_name($full_path);
+            $filename = basename($full_path);
+            $filename = preg_replace('/[\r\n"\\\\]/', '', $filename);
             $filesize = filesize($full_path);
 
             // Robust MIME detection with fallback chain to avoid PHP warnings
@@ -564,37 +511,33 @@ class FileCrudAjaxHandler extends AjaxHandler
 
             if (ob_get_level()) ob_end_clean();
             header('Content-Type: ' . $mime);
-            header('Content-Disposition: ' . $disposition . '; filename="' . $filename . '"');
+            header('Content-Disposition: attachment; filename="' . $filename . '"');
             header('Content-Length: ' . $filesize);
             header('Cache-Control: no-cache, must-revalidate');
             readfile($full_path);
             exit;
         } else {
             $adapter   = StorageManager::get_instance()->get_adapter($storage);
-            if (! $adapter) {
-                wp_die(esc_html__('Invalid storage', 'anibas-file-manager'), esc_html__('Error', 'anibas-file-manager'), array('response' => 400));
-            }
-            $full_path = $this->remote_request_path($adapter, $path, $storage_id);
+            $full_path = $adapter->validate_path($path);
             if (! $full_path || ! $adapter->is_file($full_path)) {
-                if ($full_path && $adapter->is_dir($full_path)) {
+                if ($adapter->is_dir($full_path)) {
                     wp_die(esc_html__('Cannot download directories directly. Please use zip download.', 'anibas-file-manager'), esc_html__('Error', 'anibas-file-manager'), array('response' => 400));
                 }
                 wp_die(esc_html__('File not found', 'anibas-file-manager'), esc_html__('Error', 'anibas-file-manager'), array('response' => 404));
             }
 
-            // Provider links often force attachment headers; inline previews
-            // need to stream through WordPress so PDFs/images stay embedded.
-            $temp_link = $disposition === 'attachment' ? $adapter->get_temporary_link($full_path, 3600) : false;
+            // Attempt to get a temporary download link (e.g. S3 presigned URL)
+            $temp_link = $adapter->get_temporary_link($full_path, 3600);
             if ($temp_link) {
                 wp_redirect($temp_link);
                 exit;
             }
 
             // Fallback to streaming for FTP/SFTP or if no link could be generated
-            $download_name = $this->safe_download_name($path);
+            $download_name = preg_replace('/[\r\n"\\\\]/', '', basename($full_path));
             header('Content-Description: File Transfer');
-            header('Content-Type: ' . ($disposition === 'inline' ? $this->mime_from_path($path) : 'application/octet-stream'));
-            header('Content-Disposition: ' . $disposition . '; filename="' . $download_name . '"');
+            header('Content-Type: application/octet-stream');
+            header('Content-Disposition: attachment; filename="' . $download_name . '"');
 
             if (method_exists($adapter, 'get_size')) {
                 $remote_size = $adapter->get_size($full_path);
@@ -630,7 +573,6 @@ class FileCrudAjaxHandler extends AjaxHandler
 
         $path    = anibas_fm_fetch_request_variable('get', 'path', '');
         $storage = anibas_fm_fetch_request_variable('get', 'storage', 'local');
-        $storage_id = anibas_fm_fetch_request_variable('get', 'storage_id', '');
         $limit   = 102400; // 100KB
 
         if (empty($path)) {
@@ -646,10 +588,7 @@ class FileCrudAjaxHandler extends AjaxHandler
             $this->send_success(array('content' => $content));
         } else {
             $adapter   = StorageManager::get_instance()->get_adapter($storage);
-            if (! $adapter) {
-                $this->send_error(array('error' => 'InvalidStorage', 'message' => esc_html__('Invalid storage', 'anibas-file-manager')));
-            }
-            $full_path = $this->remote_request_path($adapter, $path, $storage_id);
+            $full_path = $adapter->validate_path($path);
             if (! $full_path || ! $adapter->is_file($full_path)) {
                 $this->send_error(array('error' => 'NotFound', 'message' => esc_html__('File not found', 'anibas-file-manager')));
             }
@@ -679,7 +618,6 @@ class FileCrudAjaxHandler extends AjaxHandler
 
         $path    = anibas_fm_fetch_request_variable('get', 'path', '');
         $storage = anibas_fm_fetch_request_variable('get', 'storage', 'local');
-        $storage_id = anibas_fm_fetch_request_variable('get', 'storage_id', '');
 
         if (empty($path)) {
             $this->send_error(array('error' => 'MissingParams', 'message' => esc_html__('Path is required', 'anibas-file-manager')));
@@ -687,10 +625,7 @@ class FileCrudAjaxHandler extends AjaxHandler
 
         try {
             $adapter   = StorageManager::get_instance()->get_adapter($storage);
-            if (! $adapter) {
-                $this->send_error(array('error' => 'InvalidStorage', 'message' => esc_html__('Invalid storage', 'anibas-file-manager')));
-            }
-            $full_path = $this->remote_request_path($adapter, $path, $storage_id);
+            $full_path = $adapter->validate_path($path);
 
             if (! $full_path) {
                 $this->send_error(array('error' => 'NotFound', 'message' => esc_html__('File or folder not found', 'anibas-file-manager')));

@@ -48,10 +48,6 @@ class Anibas_File_Manager_Activator {
 		if ( ! wp_next_scheduled( ANIBAS_FM_BACKUP_CRON_HOOK ) ) {
 			wp_schedule_event( time(), 'daily', ANIBAS_FM_BACKUP_CRON_HOOK );
 		}
-
-		if ( ! wp_next_scheduled( ANIBAS_FM_OAUTH_REFRESH_CRON_HOOK ) ) {
-			wp_schedule_event( time(), 'hourly', ANIBAS_FM_OAUTH_REFRESH_CRON_HOOK );
-		}
 	}
 
 }

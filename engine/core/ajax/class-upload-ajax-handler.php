@@ -194,7 +194,6 @@ class UploadAjaxHandler extends AjaxHandler
         ];
 
         anibas_fm_update_option('anibas_fm_job_queue_v2', $queue);
-        AsyncWorkerDispatcher::dispatch();
 
         return $job_id;
     }

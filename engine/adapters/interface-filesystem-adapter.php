@@ -26,7 +26,7 @@ abstract class FileSystemAdapter
     abstract public function is_dir(string $path): bool;
     abstract public function mkdir(string $path): bool;
     abstract public function scandir(string $path): array;
-    abstract public function listDirectory(string $path, int $page = 1, int $pageSize = 100): array;
+    abstract public function listDirectory(string $path): array;
 
     /**
      * Streaming directory iterator for queue-building (background jobs).
@@ -258,11 +258,6 @@ abstract class FileSystemAdapter
      * Adapters that return false will be blocked from cross-storage transfers.
      */
     public function supports_chunked_transfer(): bool
-    {
-        return false;
-    }
-
-    public function requires_local_upload_assembly(): bool
     {
         return false;
     }

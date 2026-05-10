@@ -1,5 +1,3 @@
-import type { FileItem } from "../types/files";
-
 // ─── FM session token ─────────────────────────────────────────────────────────
 // Stored in memory only (or sessionStorage when fmRefreshRequired is false).
 // Set once after password verification; appended to every FM request automatically.
@@ -166,13 +164,12 @@ export async function deleteFile(path: string, token?: string, deleteToken?: str
 	return json.data
 }
 
-export async function requestDeleteToken(path: string, storage: string = "local") {
+export async function requestDeleteToken(path: string) {
 	const cfg = (window as any).AnibasFM
 	const formData = new FormData()
 	formData.append("action", cfg.actions.requestDeleteToken)
 	formData.append("nonce", cfg.deleteNonce)
 	formData.append("path", path)
-	formData.append("storage", storage)
 	appendFmToken(formData)
 
 	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
@@ -317,7 +314,7 @@ export async function cancelJob(jobId: string) {
 	return json.data
 }
 
-export async function archivePrescan(source: string, storage?: string, jobId?: string) {
+export async function archivePrescan(source: string, storage?: string) {
 	const cfg = (window as any).AnibasFM
 	const formData = new FormData()
 	formData.append("action", cfg.actions.archiveCreate)
@@ -326,7 +323,6 @@ export async function archivePrescan(source: string, storage?: string, jobId?: s
 	formData.append("format", "zip") // ignored for prescan
 	formData.append("phase", "prescan")
 	if (storage) formData.append("storage", storage)
-	if (jobId) formData.append("job_id", jobId)
 	appendFmToken(formData)
 
 	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
@@ -336,7 +332,7 @@ export async function archivePrescan(source: string, storage?: string, jobId?: s
 		checkFmTokenError(json)
 		throw new Error(json.data?.message ?? json.data?.error ?? "Prescan failed")
 	}
-	return json.data as { phase: string; job_id?: string; total: number; total_size: number; max_file_size: number; max_file_name: string }
+	return json.data as { phase: string; total: number; total_size: number; max_file_size: number; max_file_name: string }
 }
 
 export async function archiveCreate(
@@ -468,36 +464,24 @@ export async function renameFile(path: string, newName: string, storage?: string
 	return json.data
 }
 
-type FileUrlOptions = {
-	storageId?: string;
-	inline?: boolean;
-};
-
-export function getDownloadUrl(path: string, storageName: string = 'local', options: FileUrlOptions = {}): string {
+export function getDownloadUrl(path: string, storageName: string = 'local'): string {
 	const cfg = (window as any).AnibasFM
 	const url = new URL(cfg.ajaxURL)
 	url.searchParams.set('action', cfg.actions.downloadFile)
 	url.searchParams.set('path', path)
 	url.searchParams.set('storage', storageName)
 	url.searchParams.set('nonce', cfg.listNonce)
-	if (options.storageId) url.searchParams.set('storage_id', options.storageId)
-	if (options.inline) url.searchParams.set('disposition', 'inline')
 	appendFmTokenToUrl(url)
 	return url.toString()
 }
 
-export function getPreviewUrl(file: FileItem, storageName: string = 'local'): string {
-	return getDownloadUrl(file.path, storageName, { storageId: file.storage_id, inline: true })
-}
-
-export async function getPreviewContent(path: string, storageName: string = 'local', options: FileUrlOptions = {}): Promise<string> {
+export async function getPreviewContent(path: string, storageName: string = 'local'): Promise<string> {
 	const cfg = (window as any).AnibasFM
 	const url = new URL(cfg.ajaxURL)
 	url.searchParams.set('action', cfg.actions.previewFile)
 	url.searchParams.set('path', path)
 	url.searchParams.set('storage', storageName)
 	url.searchParams.set('nonce', cfg.listNonce)
-	if (options.storageId) url.searchParams.set('storage_id', options.storageId)
 	appendFmTokenToUrl(url)
 
 	const res = await fetch(url.toString())
@@ -511,14 +495,13 @@ export async function getPreviewContent(path: string, storageName: string = 'loc
 	return json.data.content
 }
 
-export async function getFileDetails(path: string, storageName: string = 'local', options: FileUrlOptions = {}): Promise<Record<string, any>> {
+export async function getFileDetails(path: string, storageName: string = 'local'): Promise<Record<string, any>> {
 	const cfg = (window as any).AnibasFM
 	const url = new URL(cfg.ajaxURL)
 	url.searchParams.set('action', cfg.actions.getFileDetails)
 	url.searchParams.set('path', path)
 	url.searchParams.set('storage', storageName)
 	url.searchParams.set('nonce', cfg.listNonce)
-	if (options.storageId) url.searchParams.set('storage_id', options.storageId)
 	appendFmTokenToUrl(url)
 
 	const res = await fetch(url.toString())
@@ -628,28 +611,21 @@ export async function deleteTrashItem(trashName: string, token?: string) {
 
 export async function backupSingleFile(path: string, storage: string) {
 	const cfg = (window as any).AnibasFM
-	let jobId: string | undefined
-	while (true) {
-		const formData = new FormData()
-		formData.append("action", cfg.actions.backupSingleFile)
-		formData.append("nonce", cfg.createNonce)
-		formData.append("path", path)
-		formData.append("storage", storage)
-		if (jobId) formData.append("job_id", jobId)
-		appendFmToken(formData)
+	const formData = new FormData()
+	formData.append("action", cfg.actions.backupSingleFile)
+	formData.append("nonce", cfg.createNonce)
+	formData.append("path", path)
+	formData.append("storage", storage)
+	appendFmToken(formData)
 
-		const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
-		const json = await res.json()
+	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
+	const json = await res.json()
 
-		if (!json.success) {
-			checkFmTokenError(json)
-			throw new Error(json.data?.message ?? json.data?.error ?? "Failed to back up file")
-		}
-		if (json.data?.status !== "running" || !json.data?.job_id) {
-			return json.data
-		}
-		jobId = json.data.job_id
+	if (!json.success) {
+		checkFmTokenError(json)
+		throw new Error(json.data?.message ?? json.data?.error ?? "Failed to back up file")
 	}
+	return json.data
 }
 
 export async function listFileBackups(settingsAuthToken?: string | null) {
@@ -670,27 +646,20 @@ export async function listFileBackups(settingsAuthToken?: string | null) {
 
 export async function restoreFileBackup(key: string, version: string, settingsAuthToken?: string | null) {
 	const cfg = (window as any).AnibasFM ?? (window as any).AnibasFMSettings
-	let jobId: string | undefined
-	while (true) {
-		const formData = new FormData()
-		formData.append("action", cfg.actions.restoreFileBackup)
-		appendBackupAuth(formData, cfg, settingsAuthToken)
-		formData.append("key", key)
-		formData.append("version", version)
-		if (jobId) formData.append("job_id", jobId)
+	const formData = new FormData()
+	formData.append("action", cfg.actions.restoreFileBackup)
+	appendBackupAuth(formData, cfg, settingsAuthToken)
+	formData.append("key", key)
+	formData.append("version", version)
 
-		const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
-		const json = await res.json()
+	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
+	const json = await res.json()
 
-		if (!json.success) {
-			checkFmTokenError(json)
-			throw new Error(json.data?.message ?? json.data?.error ?? "Failed to restore backup")
-		}
-		if (json.data?.status !== "running" || !json.data?.job_id) {
-			return json.data
-		}
-		jobId = json.data.job_id
+	if (!json.success) {
+		checkFmTokenError(json)
+		throw new Error(json.data?.message ?? json.data?.error ?? "Failed to restore backup")
 	}
+	return json.data
 }
 
 export async function deleteFileBackup(key: string, version: string, settingsAuthToken?: string | null) {
@@ -713,26 +682,19 @@ export async function deleteFileBackup(key: string, version: string, settingsAut
 
 export async function deleteFileBackupTree(key: string, settingsAuthToken?: string | null) {
 	const cfg = (window as any).AnibasFM ?? (window as any).AnibasFMSettings
-	let jobId: string | undefined
-	while (true) {
-		const formData = new FormData()
-		formData.append("action", cfg.actions.deleteFileBackupTree)
-		appendBackupAuth(formData, cfg, settingsAuthToken)
-		formData.append("key", key)
-		if (jobId) formData.append("job_id", jobId)
+	const formData = new FormData()
+	formData.append("action", cfg.actions.deleteFileBackupTree)
+	appendBackupAuth(formData, cfg, settingsAuthToken)
+	formData.append("key", key)
 
-		const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
-		const json = await res.json()
+	const res = await fetch(cfg.ajaxURL, { method: "POST", body: formData })
+	const json = await res.json()
 
-		if (!json.success) {
-			checkFmTokenError(json)
-			throw new Error(json.data?.message ?? json.data?.error ?? "Failed to delete backup history")
-		}
-		if (json.data?.status !== "running" || !json.data?.job_id) {
-			return json.data
-		}
-		jobId = json.data.job_id
+	if (!json.success) {
+		checkFmTokenError(json)
+		throw new Error(json.data?.message ?? json.data?.error ?? "Failed to delete backup history")
 	}
+	return json.data
 }
 
 export async function listSiteBackups(settingsAuthToken?: string | null) {

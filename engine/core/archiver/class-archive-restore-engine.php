@@ -36,7 +36,6 @@ class ArchiveRestoreEngine {
     private string $archive;
     private string $dest;
 
-    private string $state_dir;
     private string $manifest_cache_file;
     private string $state_file;
     private string $lock_file;
@@ -66,14 +65,9 @@ class ArchiveRestoreEngine {
         $this->archive = $archive;
         $this->dest    = rtrim( $dest, '/' );
 
-        $state_dir = anibas_fm_get_archive_restore_state_dir( $archive, $this->dest, 'anfm' );
-        if ( ! $state_dir ) {
-            throw new Exception( 'Failed to create archive restore state directory' );
-        }
-        $this->state_dir           = $state_dir;
-        $this->manifest_cache_file = $this->state_dir . '/manifest.json';
-        $this->state_file          = $this->state_dir . '/state.json';
-        $this->lock_file           = $this->state_dir . '/lock';
+        $this->manifest_cache_file = $this->dest . '/.anfm_manifest.json';
+        $this->state_file          = $this->dest . '/.anfm_state.json';
+        $this->lock_file           = $this->dest . '/.anfm_lock';
 
         $max_time = (int) ini_get( 'max_execution_time' );
         $this->time_budget = $max_time > 0 ? max( 1, (int) floor( $max_time * 0.6 ) ) : 20;
@@ -465,9 +459,6 @@ class ArchiveRestoreEngine {
             if ( file_exists( $f ) ) {
                 wp_delete_file( $f );
             }
-        }
-        if ( is_dir( $this->state_dir ) ) {
-            @rmdir( $this->state_dir );
         }
     }
 

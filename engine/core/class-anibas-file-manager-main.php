@@ -157,8 +157,6 @@ class Anibas_File_Manager_Main
 						'requestDeleteToken' => ANIBAS_FM_REQUEST_DELETE_TOKEN,
 						'getRemoteSettings' => ANIBAS_FM_GET_REMOTE_SETTINGS,
 						'testRemoteConnection' => ANIBAS_FM_TEST_REMOTE_CONNECTION,
-						'startRemoteOAuth'  => ANIBAS_FM_REMOTE_OAUTH_START,
-						'revokeRemoteOAuth' => ANIBAS_FM_REMOTE_OAUTH_REVOKE,
 						'archiveCreate'       => ANIBAS_FM_ARCHIVE_CREATE,
 						'archiveCheck'        => ANIBAS_FM_ARCHIVE_CHECK,
 						'archiveRestore'      => ANIBAS_FM_ARCHIVE_RESTORE,
@@ -199,7 +197,6 @@ class Anibas_File_Manager_Main
 					'fmPasswordRequired'     => ! empty(anibas_fm_get_option('fm_password_hash', '')),
 					'fmRefreshRequired'      => (bool) anibas_fm_get_option('fm_password_refresh_required', true),
 					'deleteToTrash'          => (bool) anibas_fm_get_option('delete_to_trash', false),
-					'storageManifest'        => anibas_fm_remote_storage_manifest(),
 					'pluginUrl'              => ANIBAS_FILE_MANAGER_PLUGIN_URL,
 				)
 			);
@@ -228,8 +225,6 @@ class Anibas_File_Manager_Main
 						'getRemoteSettings' => ANIBAS_FM_GET_REMOTE_SETTINGS,
 						'saveRemoteSettings' => ANIBAS_FM_SAVE_REMOTE_SETTINGS,
 						'testRemoteConnection' => ANIBAS_FM_TEST_REMOTE_CONNECTION,
-						'startRemoteOAuth'  => ANIBAS_FM_REMOTE_OAUTH_START,
-						'revokeRemoteOAuth' => ANIBAS_FM_REMOTE_OAUTH_REVOKE,
 						'backupStart'         => ANIBAS_FM_BACKUP_START,
 						'backupPoll'          => ANIBAS_FM_BACKUP_POLL,
 						'backupCancel'        => ANIBAS_FM_BACKUP_CANCEL,
@@ -260,7 +255,6 @@ class Anibas_File_Manager_Main
 					'fmPasswordRefreshRequired' => (bool) anibas_fm_get_option('fm_password_refresh_required', true),
 					'deleteToTrash'          => (bool) anibas_fm_get_option('delete_to_trash', false),
 					'remoteFileBackupsEnabled' => (bool) anibas_fm_get_option('remote_file_backups_enabled', false),
-					'storageManifest'        => anibas_fm_remote_storage_manifest(),
 					'isLocalhost'            => anibas_fm_is_development_site(),
 					'debugMode'              => (bool) anibas_fm_get_option('debug_mode', false),
 				)

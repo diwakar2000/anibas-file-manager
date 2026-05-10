@@ -27,7 +27,6 @@ import {
 } from "../services/fileApi";
 import type { FileItem, DirectoryResponse, Job, ArchiveJob } from "../types/files";
 import { toast } from "../utils/toast";
-import { withUniqueFileKeys } from "../utils/fileIdentity";
 
 type RunningTask = {
     id: string;
@@ -100,10 +99,7 @@ export class AnibasFileStore {
 
     // Multi-selection
     selectedPaths = $state<string[]>([]);
-    selectedKeys = $state<string[]>([]);
     lastSelectedPath = $state<string | null>(null);
-    lastSelectedKey = $state<string | null>(null);
-    selectedFile = $state<FileItem | null>(null);
 
     // Inline rename
     renamingPath = $state<string | null>(null);
@@ -119,7 +115,6 @@ export class AnibasFileStore {
 
     // Preview panel — only shown when explicitly toggled
     previewOpen = $state(false);
-    previewFile = $state<FileItem | null>(null);
 
     constructor() {
         const cfg = (window as any).AnibasFM;
@@ -307,21 +302,22 @@ export class AnibasFileStore {
 
     /** User chose to back up this file first — snapshot it, then open the editor. */
     async backupBeforeEdit(): Promise<void> {
-        if (!this.pendingEditorOpen || this.backupRunning) return;
+        this.showBackupPrompt = false;
+        if (!this.pendingEditorOpen) return;
         const { path, canEdit } = this.pendingEditorOpen;
         this.backupRunning = true;
         try {
             await apiBackupSingleFile(path, this.currentStorage);
             toast.success("Backup saved — you can restore it from Settings ▸ Backups ▸ Single File Backups.");
-            this.showBackupPrompt = false;
-            this.pendingEditorOpen = null;
-            await this.proceedToEditor(path, canEdit);
         } catch (err: any) {
             toast.error(err?.message || "Backup failed — not opening editor");
-            return;
-        } finally {
+            this.pendingEditorOpen = null;
             this.backupRunning = false;
+            return;
         }
+        this.backupRunning = false;
+        this.pendingEditorOpen = null;
+        await this.proceedToEditor(path, canEdit);
     }
 
     /** Backup completed or cancelled — proceed to editor. (Kept for full-site backup resume.) */
@@ -358,32 +354,6 @@ export class AnibasFileStore {
             });
     }
 
-    private directoryItemEntries(items: DirectoryResponse["items"]): [string, FileItem][] {
-        return Array.isArray(items)
-            ? items.map((item, index) => [String(index), item])
-            : Object.entries(items);
-    }
-
-    private mergeDirectoryItems(existing: DirectoryResponse["items"], next: DirectoryResponse["items"]): DirectoryResponse["items"] {
-        if (Array.isArray(existing) || Array.isArray(next)) {
-            return [...Object.values(existing), ...Object.values(next)];
-        }
-        return { ...existing, ...next };
-    }
-
-    private withDirectoryItemKeys(items: DirectoryResponse["items"], path: string): DirectoryResponse["items"] {
-        const entries = this.directoryItemEntries(items);
-        const keyed = withUniqueFileKeys(entries.map(([, item]) => item), `${this.currentStorage}:${path}`);
-        if (Array.isArray(items)) {
-            return keyed;
-        }
-
-        return entries.reduce<Record<string, FileItem>>((result, [key], index) => {
-            result[key] = keyed[index];
-            return result;
-        }, {});
-    }
-
     get hasDeletePassword(): boolean {
         return (window as any).AnibasFM?.hasDeletePassword ?? false;
     }
@@ -397,7 +367,8 @@ export class AnibasFileStore {
         try {
             const data: DirectoryResponse = await fetchNode({ path, page, storage: this.currentStorage });
             if (data.items) {
-                this.directoryItemEntries(data.items).forEach(([key, item]) => {
+                Object.keys(data.items).forEach(key => {
+                    const item = data.items[key];
                     if (!item.name) {
                         item.name = item.filename || key;
                     }
@@ -407,10 +378,8 @@ export class AnibasFileStore {
             // If page > 1, append items to existing data
             if (page > 1 && this.directoryCache[path]) {
                 const existing = this.directoryCache[path];
-                data.items = this.mergeDirectoryItems(existing.items, data.items);
+                data.items = { ...existing.items, ...data.items };
             }
-
-            data.items = this.withDirectoryItemKeys(data.items, path);
 
             this.directoryCache = { ...this.directoryCache, [path]: data };
         } catch (err: any) {
@@ -617,12 +586,6 @@ export class AnibasFileStore {
 
                 await this.deleteFile(path, deleteToken);
                 this.selectedPaths = this.selectedPaths.filter(p => p !== path);
-                const removedKeys = new Set(
-                    this.currentFiles
-                        .filter(file => file.path === path)
-                        .map(file => this.fileSelectionKey(file))
-                );
-                this.selectedKeys = this.selectedKeys.filter(key => !removedKeys.has(key));
                 successCount++;
             } catch (err: any) {
                 this.deletingPaths = this.deletingPaths.filter(p => p !== path);
@@ -650,7 +613,7 @@ export class AnibasFileStore {
     }
 
     async requestDeleteToken(path: string): Promise<string> {
-        return await apiRequestDeleteToken(path, this.currentStorage);
+        return await apiRequestDeleteToken(path);
     }
 
     async emptyFolder(path: string) {
@@ -1255,11 +1218,7 @@ export class AnibasFileStore {
 
     async prescanFolder(source: string) {
         try {
-            let scan = await apiArchivePrescan(source, this.currentStorage);
-            while (scan.phase === 'prescan_running' && scan.job_id) {
-                scan = await apiArchivePrescan(source, this.currentStorage, scan.job_id);
-            }
-            return scan;
+            return await apiArchivePrescan(source, this.currentStorage);
         } catch (err: any) {
             toast.error(err.message || 'Folder scan failed');
             throw err;
@@ -1277,7 +1236,7 @@ export class AnibasFileStore {
         this.currentOperation = `Scanning "${name}" for archiving...`;
         let jobId: string | undefined;
         try {
-            let scan = await apiArchiveCreate(source, format, 'scan', password, conflictMode, undefined, this.currentStorage);
+            const scan = await apiArchiveCreate(source, format, 'scan', password, conflictMode, undefined, this.currentStorage);
 
             // Backend detected an existing output file and no conflict resolution was given
             if (scan.phase === 'conflict') {
@@ -1291,14 +1250,8 @@ export class AnibasFileStore {
             // Track it so Statusbar shows it and resume is possible after refresh
             this.archiveJobs = [
                 ...this.archiveJobs.filter(j => j.id !== jobId),
-                { id: jobId!, source, source_name: name, output: scan.output as string, format, started_at: Math.floor(Date.now() / 1000), storage: this.currentStorage },
+                { id: jobId!, source: name, output: scan.output as string, format, started_at: Math.floor(Date.now() / 1000), storage: this.currentStorage },
             ];
-
-            while (scan.phase === 'scan_running') {
-                this.archiveProgress = { phase: 'scan_running', info: scan.info, format };
-                scan = await apiArchiveCreate(source, format, 'scan', password, undefined, jobId, this.currentStorage);
-            }
-
             this.archiveProgress = { phase: 'scan_complete', info: scan.info, format };
 
             this.currentOperation = `Archiving "${name}"...`;
@@ -1470,31 +1423,8 @@ export class AnibasFileStore {
         this.viewMode = mode;
     }
 
-    fileSelectionKey(file: FileItem): string {
-        return file.ui_key || file.storage_id || file.path;
-    }
-
-    private filesFromKeys(keys: string[]): FileItem[] {
-        const selected = new Set(keys);
-        return this.currentFiles.filter(file => selected.has(this.fileSelectionKey(file)));
-    }
-
-    private syncSelectedPathsFromKeys() {
-        this.selectedPaths = this.filesFromKeys(this.selectedKeys).map(file => file.path);
-    }
-
     selectFile(path: string | null, opts: { ctrl?: boolean; shift?: boolean } = {}) {
         if (path === null) { this.clearSelection(); return; }
-
-        const match = this.currentFiles.find(file => file.path === path);
-        if (match) {
-            this.selectFileItem(match, opts);
-            return;
-        }
-
-        this.previewFile = null;
-        this.selectedFile = null;
-        this.selectedKeys = [];
 
         if (opts.shift && this.lastSelectedPath) {
             const files = this.currentFiles.map(f => f.path);
@@ -1504,9 +1434,6 @@ export class AnibasFileStore {
                 const [start, end] = lastIdx < currIdx ? [lastIdx, currIdx] : [currIdx, lastIdx];
                 const rangeSet = new Set([...this.selectedPaths, ...files.slice(start, end + 1)]);
                 this.selectedPaths = Array.from(rangeSet);
-                this.selectedKeys = this.currentFiles
-                    .filter(file => this.selectedPaths.includes(file.path))
-                    .map(file => this.fileSelectionKey(file));
                 return;
             }
         }
@@ -1521,36 +1448,16 @@ export class AnibasFileStore {
             this.selectedPaths = [path];
         }
         this.lastSelectedPath = path;
-        this.lastSelectedKey = this.selectedKeys[this.selectedKeys.length - 1] ?? null;
     }
 
     selectAll(paths: string[]) {
-        this.previewFile = null;
-        this.selectedFile = null;
         this.selectedPaths = [...paths];
-        this.selectedKeys = this.currentFiles
-            .filter(file => paths.includes(file.path))
-            .map(file => this.fileSelectionKey(file));
         this.lastSelectedPath = paths[paths.length - 1] ?? null;
-        this.lastSelectedKey = this.selectedKeys[this.selectedKeys.length - 1] ?? null;
-    }
-
-    selectItems(files: FileItem[]) {
-        this.previewFile = null;
-        this.selectedFile = null;
-        this.selectedKeys = files.map(file => this.fileSelectionKey(file));
-        this.selectedPaths = files.map(file => file.path);
-        this.lastSelectedKey = this.selectedKeys[this.selectedKeys.length - 1] ?? null;
-        this.lastSelectedPath = this.selectedPaths[this.selectedPaths.length - 1] ?? null;
     }
 
     clearSelection() {
         this.selectedPaths = [];
-        this.selectedKeys = [];
         this.lastSelectedPath = null;
-        this.lastSelectedKey = null;
-        this.selectedFile = null;
-        this.previewFile = null;
         this.previewOpen = false;
     }
 
@@ -1558,71 +1465,8 @@ export class AnibasFileStore {
         return this.selectedPaths.includes(path);
     }
 
-    isSelectedItem(file: FileItem): boolean {
-        return this.selectedKeys.includes(this.fileSelectionKey(file));
-    }
-
-    get selectedItems(): FileItem[] { return this.filesFromKeys(this.selectedKeys); }
-
-    get primarySelectedFile(): FileItem | null {
-        if (this.selectedFile && this.isSelectedItem(this.selectedFile)) {
-            return this.selectedFile;
-        }
-        return this.selectedItems[0] ?? null;
-    }
-
-    get selectionCount(): number { return this.selectedKeys.length || this.selectedPaths.length; }
-    get hasSelection(): boolean { return this.selectionCount > 0; }
-
-    selectFileItem(file: FileItem, opts: { ctrl?: boolean; shift?: boolean } = {}) {
-        this.previewFile = null;
-        this.selectedFile = null;
-
-        const key = this.fileSelectionKey(file);
-        const allFiles = this.currentFiles;
-        const allKeys = allFiles.map(item => this.fileSelectionKey(item));
-
-        if (opts.shift && this.lastSelectedKey) {
-            const lastIdx = allKeys.indexOf(this.lastSelectedKey);
-            const currIdx = allKeys.indexOf(key);
-            if (lastIdx !== -1 && currIdx !== -1) {
-                const [start, end] = lastIdx < currIdx ? [lastIdx, currIdx] : [currIdx, lastIdx];
-                this.selectedKeys = Array.from(new Set([...this.selectedKeys, ...allKeys.slice(start, end + 1)]));
-                this.syncSelectedPathsFromKeys();
-                this.lastSelectedKey = key;
-                this.lastSelectedPath = file.path;
-                return;
-            }
-        }
-
-        if (opts.ctrl) {
-            if (this.selectedKeys.includes(key)) {
-                this.selectedKeys = this.selectedKeys.filter(itemKey => itemKey !== key);
-            } else {
-                this.selectedKeys = [...this.selectedKeys, key];
-            }
-        } else {
-            this.selectedKeys = [key];
-        }
-
-        this.syncSelectedPathsFromKeys();
-        this.lastSelectedKey = key;
-        this.lastSelectedPath = file.path;
-        if (this.selectedKeys.length === 1 && this.selectedKeys[0] === key) {
-            this.selectedFile = file;
-        }
-    }
-
-    openPreview(file: FileItem) {
-        if (file.is_folder) return;
-        this.selectedFile = file;
-        this.previewFile = file;
-        this.selectedKeys = [this.fileSelectionKey(file)];
-        this.selectedPaths = [file.path];
-        this.lastSelectedPath = file.path;
-        this.lastSelectedKey = this.selectedKeys[0];
-        this.previewOpen = true;
-    }
+    get selectionCount(): number { return this.selectedPaths.length; }
+    get hasSelection(): boolean { return this.selectedPaths.length > 0; }
 
     startRename(path: string) { this.renamingPath = path; }
     stopRename() { this.renamingPath = null; }
@@ -1701,11 +1545,6 @@ export class AnibasFileStore {
         // Do not clear the clipboard so cross-storage transfers are possible
         this.expandedFolders = [];
         this.selectedPaths = [];
-        this.selectedKeys = [];
-        this.selectedFile = null;
-        this.previewFile = null;
-        this.lastSelectedPath = null;
-        this.lastSelectedKey = null;
         this.deletingPaths = [];
         this.renamingPath = null;
         this.previewOpen = false;

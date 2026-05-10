@@ -22,9 +22,6 @@ define( 'ANIBAS_FM_REQUEST_DELETE_TOKEN', 'anibas_fm_request_delete_token' );
 define( 'ANIBAS_FM_GET_REMOTE_SETTINGS', 'anibas_get_remote_settings' );
 define( 'ANIBAS_FM_SAVE_REMOTE_SETTINGS', 'anibas_save_remote_settings' );
 define( 'ANIBAS_FM_TEST_REMOTE_CONNECTION', 'anibas_test_remote_connection' );
-define( 'ANIBAS_FM_REMOTE_OAUTH_START', 'anibas_fm_remote_oauth_start' );
-define( 'ANIBAS_FM_REMOTE_OAUTH_REVOKE', 'anibas_fm_remote_oauth_revoke' );
-define( 'ANIBAS_FM_REMOTE_OAUTH_CALLBACK', 'anibas_fm_remote_oauth_callback' );
 define( 'ANIBAS_FM_UPLOAD_CHUNK', 'anibas_fm_upload_chunk' );
 define( 'ANIBAS_FM_INIT_UPLOAD', 'anibas_fm_init_upload' );
 define( 'ANIBAS_FM_CREATE_FILE', 'anibas_fm_create_file' );
@@ -72,13 +69,6 @@ if ( ! defined( 'ANIBAS_FM_DEFAULT_CHUNK_SIZE' ) ) {
 }
 if ( ! defined( 'ANIBAS_FM_UPLOAD_TOKEN_EXPIRY' ) ) {
     define( 'ANIBAS_FM_UPLOAD_TOKEN_EXPIRY', 15 * MINUTE_IN_SECONDS );
-}
-if ( ! defined( 'ANIBAS_FM_OAUTH_STATE_TTL' ) ) {
-    define( 'ANIBAS_FM_OAUTH_STATE_TTL', 10 * MINUTE_IN_SECONDS );
-}
-define( 'ANIBAS_FM_OAUTH_REFRESH_CRON_HOOK', 'anibas_fm_oauth_refresh' );
-if ( ! defined( 'ANIBAS_FM_OAUTH_REFRESH_WINDOW' ) ) {
-    define( 'ANIBAS_FM_OAUTH_REFRESH_WINDOW', 10 * MINUTE_IN_SECONDS );
 }
 
 // Trash

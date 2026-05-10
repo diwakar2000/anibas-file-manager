@@ -29,25 +29,12 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
     {
         $this->base_path = is_string($base_path) && $base_path !== '' ? $base_path : DIRECTORY_SEPARATOR;
 
-        // Prefer cURL when SFTP is available because it can stream LIST output
-        // and stop at the current page budget. phpseclib rawlist() materializes
-        // the whole directory, so keep it as the compatibility fallback.
-        if (self::curl_supports_sftp()) {
-            $this->backend = new SFTPCurlBackend($host, $username, $password, $private_key, $port);
-        } elseif (class_exists('\phpseclib3\Net\SFTP')) {
+        // Try phpseclib first
+        if (class_exists('\phpseclib3\Net\SFTP')) {
             $this->backend = new SFTPPhpseclibBackend($host, $username, $password, $private_key, $port);
         } else {
             $this->backend = new SFTPCurlBackend($host, $username, $password, $private_key, $port);
         }
-    }
-
-    private static function curl_supports_sftp(): bool
-    {
-        if (! function_exists('curl_version')) {
-            return false;
-        }
-        $version = curl_version();
-        return in_array('sftp', $version['protocols'] ?? [], true);
     }
 
     public function validate_path($path): string|false
@@ -87,21 +74,20 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
         }
         $data      = $this->backend->listDirectory($norm_path);
         $items     = [];
-        foreach ($data['items'] ?? [] as $item) {
+        foreach ($data['items'] as $item) {
             $item['path'] = $this->to_virtual_path($item['path']);
             $items[$item['path']] = $item;
         }
         return ['items' => $items, 'total' => count($items)];
     }
 
-    public function listDirectory(string $path, int $page = 1, int $pageSize = 100): array
+    public function listDirectory(string $path): array
     {
         $normalized = $this->normalize_path($path);
         if ($normalized === false) {
-            return ['items' => [], 'total_items' => 0, 'page' => max(1, $page), 'page_size' => min(1000, max(1, $pageSize)), 'has_more' => false];
+            return ['items' => [], 'total_items' => 0];
         }
-        $data = $this->backend->listDirectory($normalized, $page, $pageSize);
-        $data['items'] = $data['items'] ?? [];
+        $data = $this->backend->listDirectory($normalized);
         foreach ($data['items'] as &$item) {
             if (isset($item['path'])) {
                 $item['path'] = $this->to_virtual_path($item['path']);
@@ -111,41 +97,10 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
         return $data;
     }
 
-    public function iterateDirectory(string $path, ?array $cursor = null, int $maxItems = 1000, array $options = []): array
-    {
-        $normalized = $this->normalize_path($path);
-        if ($normalized === false) {
-            return ['entries' => [], 'next_cursor' => ['done' => true], 'has_more' => false];
-        }
-        if (! method_exists($this->backend, 'iterateDirectory')) {
-            return parent::iterateDirectory($path, $cursor, $maxItems, $options);
-        }
-        $page = $this->backend->iterateDirectory($normalized, $cursor, $maxItems, $options);
-        $page['entries'] = $page['entries'] ?? [];
-        foreach ($page['entries'] as &$entry) {
-            if (isset($entry['path'])) {
-                $entry['path'] = $this->to_virtual_path($entry['path']);
-            }
-        }
-        unset($entry);
-        return $page;
-    }
-
     public function rmdir(string $path): bool
     {
         $normalized = $this->normalize_path($path);
         return $normalized !== false && $this->backend->rmdir($normalized);
-    }
-
-    public function queuedRmdir(string $path, string $root = '', bool $allow_trash_root = false): bool
-    {
-        $normalized = $this->normalize_path($path);
-        if ($normalized === false) {
-            return false;
-        }
-        return method_exists($this->backend, 'queuedRmdir')
-            ? $this->backend->queuedRmdir($normalized, $root, $allow_trash_root)
-            : $this->backend->rmdir($normalized);
     }
 
     public function copy(string $source, string $target): bool
@@ -204,18 +159,6 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
             return false;
         }
         return $this->backend->get_contents($normalized);
-    }
-
-    public function stream_contents(string $path): bool
-    {
-        $normalized = $this->normalize_path($path);
-        if ($normalized === false) {
-            return false;
-        }
-        if (method_exists($this->backend, 'stream_contents')) {
-            return $this->backend->stream_contents($normalized);
-        }
-        return parent::stream_contents($path);
     }
 
     public function get_size(string $path): int|false
@@ -357,30 +300,19 @@ class SFTPPhpseclibBackend
         return array_values(array_filter(array_keys($list), fn($k) => $k !== '.' && $k !== '..'));
     }
 
-    public function listDirectory($path, int $page = 1, int $pageSize = 100)
+    public function listDirectory($path)
     {
         // rawlist fetches name + stat (size, mtime, type) in one SFTP round-trip
         $raw = $this->sftp->rawlist($path);
 
         if ($raw === false) {
-            return ['items' => [], 'total_items' => 0, 'page' => max(1, $page), 'page_size' => min(1000, max(1, $pageSize)), 'has_more' => false];
+            return ['items' => [], 'total_items' => 0];
         }
 
         $items = [];
 
-        $page = max(1, $page);
-        $pageSize = min(1000, max(1, $pageSize));
-        $offset = ($page - 1) * $pageSize;
-        $position = 0;
-        $has_more = false;
-
         foreach ($raw as $name => $stat) {
             if ($name === '.' || $name === '..') continue;
-            if ($position++ < $offset) continue;
-            if (count($items) >= $pageSize) {
-                $has_more = true;
-                break;
-            }
 
             $full_path = rtrim($path, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $name;
 
@@ -410,31 +342,7 @@ class SFTPPhpseclibBackend
 
         return [
             'items'       => array_values($items),
-            'total_items' => $offset + count($items) + ($has_more ? 1 : 0),
-            'page'        => $page,
-            'page_size'   => $pageSize,
-            'has_more'    => $has_more,
-        ];
-    }
-
-    public function iterateDirectory($path, ?array $cursor = null, int $maxItems = 1000, array $options = []): array
-    {
-        $offset = is_array($cursor) && isset($cursor['offset']) ? max(0, (int) $cursor['offset']) : 0;
-        $data = $this->listDirectory($path, intdiv($offset, max(1, $maxItems)) + 1, min(1000, max(1, $maxItems)));
-        $entries = [];
-        foreach ($data['items'] as $item) {
-            $entries[] = [
-                'name'      => $item['name'] ?? '',
-                'is_folder' => ! empty($item['is_folder']),
-                'path'      => $item['path'] ?? '',
-                'filesize'  => $item['filesize'] ?? 0,
-            ];
-        }
-        $next_offset = $offset + count($entries);
-        return [
-            'entries'     => $entries,
-            'next_cursor' => ! empty($data['has_more']) ? ['offset' => $next_offset] : ['done' => true],
-            'has_more'    => ! empty($data['has_more']),
+            'total_items' => count($items),
         ];
     }
 
@@ -470,15 +378,21 @@ class SFTPPhpseclibBackend
 
     public function rmdir($path)
     {
+        $names = $this->scandir($path);
+        foreach ($names as $name) {
+            $item_path = rtrim($path, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $name;
+            if ($this->sftp->is_dir($item_path)) {
+                $this->rmdir($item_path);
+            } else {
+                if (! $this->sftp->delete($item_path)) {
+                    throw new \Exception(esc_html__('Cannot delete "', 'anibas-file-manager') . esc_html($name) . '": ' . esc_html($this->sftp->getLastSFTPError()));
+                }
+            }
+        }
         if (! $this->sftp->rmdir($path)) {
             throw new \Exception(esc_html__('Cannot remove directory "', 'anibas-file-manager') . esc_html(basename($path)) . '": ' . esc_html($this->sftp->getLastSFTPError()));
         }
         return true;
-    }
-
-    public function queuedRmdir($path, string $root = '', bool $allow_trash_root = false): bool
-    {
-        return $this->rmdir($path);
     }
 
     public function copy($source, $target)
@@ -530,9 +444,8 @@ class SFTPPhpseclibBackend
             }
 
             if ($file_size === 0) {
-                return $this->put_contents($target, '')
-                    ? self::COPY_OPERATION_COMPLETE
-                    : self::COPY_ERROR_CREATING_FILE;
+                ActivityLogger::get_instance()->log_message('SFTP Copy error: Source file is empty');
+                return self::COPY_ERROR_SOURCE_EMPTY;
             }
 
             // Check if copy is already complete
@@ -654,18 +567,6 @@ class SFTPPhpseclibBackend
         return ($content !== false) ? $content : false;
     }
 
-    public function stream_contents($path): bool
-    {
-        try {
-            return $this->sftp->get($path, static function ($chunk) {
-                echo $chunk; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- binary stream
-                flush();
-            }) !== false;
-        } catch (\Throwable $e) {
-            return false;
-        }
-    }
-
     public function get_size($path)
     {
         $size = $this->sftp->filesize($path);
@@ -712,17 +613,8 @@ class SFTPPhpseclibBackend
 
         try {
             $file_size = $this->sftp->filesize($remote_path);
-            if ($file_size === false || $file_size < 0) {
+            if ($file_size === false || $file_size <= 0) {
                 return ['status' => 5, 'bytes_copied' => 0];
-            }
-            if ((int) $file_size === 0) {
-                $dir = dirname($local_path);
-                if (! is_dir($dir)) {
-                    wp_mkdir_p($dir);
-                }
-                return @touch($local_path)
-                    ? ['status' => 9, 'bytes_copied' => 0]
-                    : ['status' => 1, 'bytes_copied' => 0];
             }
 
             if ($offset >= $file_size) {
@@ -769,12 +661,6 @@ class SFTPPhpseclibBackend
         $file_size = filesize($local_path);
         if ($file_size === false) {
             return ['status' => 5, 'bytes_copied' => 0];
-        }
-
-        if ((int) $file_size === 0) {
-            return $this->put_contents($remote_path, '')
-                ? ['status' => 9, 'bytes_copied' => 0]
-                : ['status' => 1, 'bytes_copied' => 0];
         }
 
         if ($offset >= $file_size) {
@@ -944,120 +830,47 @@ class SFTPCurlBackend
         }
     }
 
-    public function listDirectory($path, int $page = 1, int $pageSize = 100)
+    public function listDirectory($path)
     {
         try {
-            $page = max(1, $page);
-            $pageSize = min(1000, max(1, $pageSize));
-            $offset = ($page - 1) * $pageSize;
-            $data = $this->read_directory_page($path, $offset, $pageSize);
+            // Long listing (without DIRLISTONLY) gives us permissions, size, and date
+            $listing = $this->curl_request($path);
+            $lines   = array_filter(explode("\n", trim($listing)));
+            $items   = [];
+
+            foreach ($lines as $line) {
+                $parsed = $this->parse_ls_line(trim($line));
+                if (! $parsed || $parsed['name'] === '.' || $parsed['name'] === '..') continue;
+
+                $full_path = rtrim($path, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $parsed['name'];
+
+                $item = [
+                    'name'          => $parsed['name'],
+                    'path'          => $full_path,
+                    'is_folder'     => $parsed['is_dir'],
+                    'permission'    => 0,
+                    'last_modified' => $parsed['mtime'],
+                    'has_children'  => false,
+                    'files'         => [],
+                ];
+
+                if (! $parsed['is_dir']) {
+                    $item['filename']  = $parsed['name'];
+                    $item['filesize']  = $parsed['size'];
+                    $item['file_type'] = 'File';
+                }
+
+                $items[$parsed['name']] = $item;
+            }
+
             return [
-                'items'       => array_values($data['items']),
-                'total_items' => $offset + count($data['items']) + (! empty($data['has_more']) ? 1 : 0),
-                'page'        => $page,
-                'page_size'   => $pageSize,
-                'has_more'    => ! empty($data['has_more']),
+                'items'       => array_values($items),
+                'total_items' => count($items),
             ];
         } catch (\Exception $e) {
             ActivityLogger::get_instance()->log_message('SFTP listDirectory failed for "' . $path . '": ' . $e->getMessage());
-            return ['items' => [], 'total_items' => 0, 'page' => max(1, $page), 'page_size' => min(1000, max(1, $pageSize)), 'has_more' => false];
+            return ['items' => [], 'total_items' => 0];
         }
-    }
-
-    public function iterateDirectory($path, ?array $cursor = null, int $maxItems = 1000, array $options = []): array
-    {
-        $offset = is_array($cursor) && isset($cursor['offset']) ? max(0, (int) $cursor['offset']) : 0;
-        $data = $this->read_directory_page($path, $offset, min(1000, max(1, $maxItems)));
-        $entries = [];
-        foreach ($data['items'] as $item) {
-            $entries[] = [
-                'name'      => $item['name'] ?? '',
-                'is_folder' => ! empty($item['is_folder']),
-                'path'      => $item['path'] ?? '',
-                'filesize'  => $item['filesize'] ?? 0,
-            ];
-        }
-        $next_offset = $offset + count($entries);
-        return [
-            'entries'     => $entries,
-            'next_cursor' => ! empty($data['has_more']) ? ['offset' => $next_offset] : ['done' => true],
-            'has_more'    => ! empty($data['has_more']),
-        ];
-    }
-
-    private function read_directory_page($path, int $offset, int $limit): array
-    {
-        $url = "sftp://{$this->host}:{$this->port}{$path}";
-        $items = [];
-        $seen = 0;
-        $buffer = '';
-        $has_more = false;
-        $stopped = false;
-
-        $consume_line = function (string $line) use (&$items, &$seen, &$has_more, &$stopped, $path, $offset, $limit): void {
-            $parsed = $this->parse_ls_line(trim($line));
-            if (! $parsed || $parsed['name'] === '.' || $parsed['name'] === '..') {
-                return;
-            }
-            if ($seen++ < $offset) {
-                return;
-            }
-            if (count($items) >= $limit) {
-                $has_more = true;
-                $stopped = true;
-                return;
-            }
-            $full_path = rtrim($path, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $parsed['name'];
-            $item = [
-                'name'          => $parsed['name'],
-                'path'          => $full_path,
-                'is_folder'     => $parsed['is_dir'],
-                'permission'    => 0,
-                'last_modified' => $parsed['mtime'],
-                'has_children'  => false,
-                'files'         => [],
-            ];
-            if (! $parsed['is_dir']) {
-                $item['filename']  = $parsed['name'];
-                $item['filesize']  = $parsed['size'];
-                $item['file_type'] = 'File';
-            }
-            $items[$parsed['name']] = $item;
-        };
-
-        $ch = curl_init($url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 25);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-        if ($this->private_key) {
-            curl_setopt($ch, CURLOPT_SSH_PRIVATE_KEYFILE, $this->private_key);
-            curl_setopt($ch, CURLOPT_SSH_PUBLIC_KEYFILE, $this->private_key . '.pub');
-        } else {
-            curl_setopt($ch, CURLOPT_USERPWD, "{$this->username}:{$this->password}");
-        }
-        curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $chunk) use (&$buffer, $consume_line, &$stopped) {
-            $buffer .= $chunk;
-            while (($pos = strpos($buffer, "\n")) !== false) {
-                $line = substr($buffer, 0, $pos);
-                $buffer = substr($buffer, $pos + 1);
-                $consume_line(trim($line));
-                if ($stopped) {
-                    return 0;
-                }
-            }
-            return strlen($chunk);
-        });
-
-        $ok = curl_exec($ch);
-        $error = curl_error($ch);
-        curl_close($ch);
-        if (! $stopped && $buffer !== '') {
-            $consume_line(trim($buffer));
-        }
-        if (! $stopped && ($error || $ok === false)) {
-            throw new \Exception(esc_html($this->translate_sftp_error($error)));
-        }
-        return ['items' => $items, 'has_more' => $has_more];
     }
 
     /**
@@ -1090,13 +903,18 @@ class SFTPCurlBackend
 
     public function rmdir($path)
     {
+        // Recursively delete all contents first — exceptions propagate to caller
+        $names = $this->scandir($path);
+        foreach ($names as $name) {
+            $item_path = rtrim($path, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $name;
+            if ($this->is_dir($item_path)) {
+                $this->rmdir($item_path);
+            } else {
+                $this->unlink($item_path);
+            }
+        }
         $this->curl_request($path, [CURLOPT_QUOTE => ['rmdir ' . $path]]);
         return true;
-    }
-
-    public function queuedRmdir($path, string $root = '', bool $allow_trash_root = false): bool
-    {
-        return $this->rmdir($path);
     }
 
     public function copy($source, $target)
@@ -1164,9 +982,8 @@ class SFTPCurlBackend
             $file_size = curl_getinfo($ch, CURLINFO_CONTENT_LENGTH_DOWNLOAD);
 
             if ($file_size === 0) {
-                return $this->put_contents($target, '')
-                    ? self::COPY_OPERATION_COMPLETE
-                    : self::COPY_ERROR_CREATING_FILE;
+                ActivityLogger::get_instance()->log_message('SFTP cURL Copy error: Source file is empty or not found');
+                return self::COPY_ERROR_SOURCE_NOT_FOUND;
             }
 
             // Check if copy is already complete
@@ -1433,34 +1250,6 @@ class SFTPCurlBackend
         }
     }
 
-    public function stream_contents($path): bool
-    {
-        try {
-            $url = "sftp://{$this->host}:{$this->port}{$path}";
-            $ch  = curl_init($url);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 25);
-            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-            if ($this->private_key) {
-                curl_setopt($ch, CURLOPT_SSH_PRIVATE_KEYFILE, $this->private_key);
-                curl_setopt($ch, CURLOPT_SSH_PUBLIC_KEYFILE, $this->private_key . '.pub');
-            } else {
-                curl_setopt($ch, CURLOPT_USERPWD, "{$this->username}:{$this->password}");
-            }
-            curl_setopt($ch, CURLOPT_WRITEFUNCTION, static function ($ch, $chunk) {
-                echo $chunk; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- binary stream
-                flush();
-                return strlen($chunk);
-            });
-            $result = curl_exec($ch);
-            $error = curl_error($ch);
-            curl_close($ch);
-            return $result !== false && $error === '';
-        } catch (\Throwable $e) {
-            return false;
-        }
-    }
-
     public function get_size($path)
     {
         try {
@@ -1538,7 +1327,7 @@ class SFTPCurlBackend
             curl_setopt($ch, CURLOPT_URL, $url);
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);
             curl_setopt($ch, CURLOPT_FILE, $fp);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 25);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 300);
             curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
 
             if ($this->private_key) {
@@ -1578,7 +1367,7 @@ class SFTPCurlBackend
             curl_setopt($ch, CURLOPT_UPLOAD, true);
             curl_setopt($ch, CURLOPT_INFILE, $fp);
             curl_setopt($ch, CURLOPT_INFILESIZE, $size);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 25);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 300);
             curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
 
             if ($this->private_key) {
@@ -1628,17 +1417,8 @@ class SFTPCurlBackend
             curl_exec($ch);
             $file_size = curl_getinfo($ch, CURLINFO_CONTENT_LENGTH_DOWNLOAD);
 
-            if ($file_size < 0) {
+            if ($file_size <= 0) {
                 return ['status' => 5, 'bytes_copied' => 0];
-            }
-            if ((int) $file_size === 0) {
-                $dir = dirname($local_path);
-                if (! is_dir($dir)) {
-                    wp_mkdir_p($dir);
-                }
-                return @touch($local_path)
-                    ? ['status' => 9, 'bytes_copied' => 0]
-                    : ['status' => 1, 'bytes_copied' => 0];
             }
 
             if ($offset >= $file_size) {
@@ -1704,12 +1484,6 @@ class SFTPCurlBackend
         $file_size = filesize($local_path);
         if ($file_size === false) {
             return ['status' => 5, 'bytes_copied' => 0];
-        }
-
-        if ((int) $file_size === 0) {
-            return $this->put_contents($remote_path, '')
-                ? ['status' => 9, 'bytes_copied' => 0]
-                : ['status' => 1, 'bytes_copied' => 0];
         }
 
         if ($offset >= $file_size) {

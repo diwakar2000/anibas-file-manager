@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onDestroy } from "svelte"
   import { fileStore } from "../../stores/fileStore.svelte"
   import { getFileIcon, getIconUrl } from "../../utils/fileIcons"
   import type { FileItem } from "../../types/files"
@@ -86,11 +85,6 @@
     showInfo = false
   }
 
-  onDestroy(() => {
-    if (infoTimeout) clearTimeout(infoTimeout)
-    if (clickTimeout) clearTimeout(clickTimeout)
-  })
-
   // Inline rename
   let renameValue = $state("")
   let renameInput = $state<HTMLInputElement | null>(null)
@@ -121,12 +115,12 @@
   function handleClick(e: MouseEvent) {
     if (fileStore.renamingPath === file.path) return
     if (e.ctrlKey || e.metaKey || e.shiftKey) {
-      fileStore.selectFileItem(file, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })
+      fileStore.selectFile(file.path, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey })
       return
     }
     clickCount++
     if (clickCount === 1) {
-      fileStore.selectFileItem(file)
+      fileStore.selectFile(file.path)
       clickTimeout = setTimeout(() => { clickCount = 0 }, 300)
     } else if (clickCount === 2) {
       if (clickTimeout) { clearTimeout(clickTimeout); clickTimeout = null }
@@ -144,7 +138,7 @@
 
   function handleDragStart(e: DragEvent) {
     if (!e.dataTransfer || fileStore.renamingPath === file.path) return;
-    const paths = fileStore.isSelectedItem(file) ? [...fileStore.selectedPaths] : [file.path];
+    const paths = fileStore.isSelected(file.path) ? [...fileStore.selectedPaths] : [file.path];
     e.dataTransfer.setData('application/json', JSON.stringify({ paths, action: e.altKey ? 'copy' : 'move', storage: fileStore.currentStorage }));
     e.dataTransfer.effectAllowed = 'copyMove';
   }
@@ -182,8 +176,8 @@
   function handleContextMenu(e: MouseEvent) {
     e.preventDefault()
     e.stopPropagation()
-    if (!fileStore.isSelectedItem(file)) {
-      fileStore.selectFileItem(file)
+    if (!fileStore.isSelected(file.path)) {
+      fileStore.selectFile(file.path, {})
     }
     onfilecontextmenu?.({ file, x: e.clientX, y: e.clientY })
   }
@@ -192,7 +186,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="grid-item"
-  class:is-selected={fileStore.isSelectedItem(file)}
+  class:is-selected={fileStore.isSelected(file.path)}
   class:is-folder={file.is_folder}
   class:is-deleting={fileStore.isDeleting(file.path)}
   class:is-drag-over={isDragOver}
@@ -213,8 +207,8 @@
   <input
     type="checkbox"
     class="grid-checkbox"
-    checked={fileStore.isSelectedItem(file)}
-    onclick={(e) => { e.stopPropagation(); fileStore.selectFileItem(file, { ctrl: true }) }}
+    checked={fileStore.isSelected(file.path)}
+    onclick={(e) => { e.stopPropagation(); fileStore.selectFile(file.path, { ctrl: true }) }}
   />
   <div class="icon-wrapper">
     <img class="icon" src={iconUrl} alt={file.is_folder ? "Folder" : "File"} />
@@ -233,7 +227,7 @@
     />
   {:else}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-    <div class="file-name" class:is-selected={fileStore.isSelectedItem(file)} title={file.name} ondblclick={(e) => { e.stopPropagation(); fileStore.startRename(file.path) }}>{file.name}</div>
+    <div class="file-name" class:is-selected={fileStore.isSelected(file.path)} title={file.name} ondblclick={(e) => { e.stopPropagation(); fileStore.startRename(file.path) }}>{file.name}</div>
   {/if}
   
   {#if showInfo}

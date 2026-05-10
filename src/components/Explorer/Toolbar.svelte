@@ -11,7 +11,8 @@
 	// Derive the single selected file (if exactly 1 non-folder selected)
 	const selectedFile = $derived.by(() => {
 		if (fileStore.selectionCount !== 1) return null;
-		return fileStore.primarySelectedFile;
+		const path = fileStore.selectedPaths[0];
+		return fileStore.currentFiles.find(f => f.path === path) ?? null;
 	});
 
 	const canEdit = $derived(!!selectedFile && !selectedFile.is_folder && isEditable(selectedFile));
@@ -22,7 +23,6 @@
 	let showCreateFileDialog = $state(false);
 	let showUploadDialog = $state(false);
 	let showConflictDialog = $state(false);
-	let showUploadOverwritePasswordDialog = $state(false);
 	let folderName = $state("");
 	let fileName = $state("");
 	let fileContent = $state("");
@@ -34,7 +34,7 @@
 	let selectedFiles = $state<FileList | null>(null);
 	let uploadProgress = $state(0);
 	let currentUploadFile = $state("");
-	let uploadPhase = $state<"uploading" | "assembling" | "finalizing">("uploading");
+	let uploadPhase = $state<"uploading" | "assembling">("uploading");
 
 	let showSizeMismatchDialog = $state(false);
 	let sizeMismatchJob = $state<any>(null);
@@ -42,9 +42,6 @@
 	let showBulkDeleteDialog = $state(false);
 	let isBulkDeleting = $state(false);
 	let bulkDeletePassword = $state("");
-	let uploadOverwritePassword = $state("");
-	let pendingUploadConflictMode = $state<string | null>(null);
-	let isVerifyingUploadOverwrite = $state(false);
 
 
 	async function confirmBulkDelete() {
@@ -180,48 +177,7 @@
 
 	async function handleConflictResolution(mode: string) {
 		showConflictDialog = false;
-		const config = (window as any).AnibasFM;
-		if (mode === "overwrite" && config?.hasDeletePassword && !uploadOverwritePassword) {
-			pendingUploadConflictMode = mode;
-			showUploadOverwritePasswordDialog = true;
-			return;
-		}
 		await performUpload(mode);
-	}
-
-	async function confirmUploadOverwritePassword() {
-		if (!uploadOverwritePassword.trim()) return;
-
-		isVerifyingUploadOverwrite = true;
-		try {
-			await fileStore.verifyDeletePassword(uploadOverwritePassword);
-		} catch {
-			toast.error(__("Invalid password"));
-			return;
-		} finally {
-			isVerifyingUploadOverwrite = false;
-		}
-
-		showUploadOverwritePasswordDialog = false;
-		await performUpload(pendingUploadConflictMode || "overwrite");
-	}
-
-	function uploadTargetPath(fileName: string): string {
-		const base = fileStore.currentPath === "/" ? "" : fileStore.currentPath.replace(/\/+$/, "");
-		return `${base}/${fileName}`;
-	}
-
-	async function deleteExistingUploadTarget(fileName: string, config: any) {
-		if (config?.hasDeletePassword && !fileStore.deleteToken) {
-			if (!uploadOverwritePassword) {
-				throw new Error("DeletePasswordRequired");
-			}
-			await fileStore.verifyDeletePassword(uploadOverwritePassword);
-		}
-
-		const deletePath = uploadTargetPath(fileName);
-		const deleteToken = await fileStore.requestDeleteToken(deletePath);
-		await fileStore.deleteFile(deletePath, deleteToken);
 	}
 
 	async function performUpload(mode: string) {
@@ -240,7 +196,11 @@
 				if (exists) {
 					if (mode === "skip") continue;
 					if (mode === "overwrite") {
-						await deleteExistingUploadTarget(file.name, config);
+						// Delete existing file first
+						await fileStore.deleteFile(
+							fileStore.currentPath + "/" + file.name,
+							fileStore.deleteToken || "",
+						);
 					}
 					// For rename mode, create new File with different name
 					if (mode === "rename") {
@@ -304,10 +264,6 @@
 			);
 		} finally {
 			isUploading = false;
-			if (mode === "overwrite") {
-				pendingUploadConflictMode = null;
-				uploadOverwritePassword = "";
-			}
 		}
 	}
 
@@ -331,29 +287,23 @@
 
 			// getJobStatus includes fm_token and calls checkFmTokenError on failure
 			const job = await getJobStatus(jobId);
+			const assemblyPercent =
+				job.total_chunks > 0
+					? Math.round((job.current_chunk / job.total_chunks) * 50)
+					: 0;
+
+			uploadProgress = 50 + assemblyPercent;
 
 			if (job.status === "completed") {
 				uploadProgress = 100;
 				break;
 			}
 
-			uploadPhase = job.current_phase === "remote_commit" || job.current_phase === "finalize"
-				? "finalizing"
-				: job.current_phase === "remote_upload"
-					? "uploading"
-					: "assembling";
-			const backendProgress = typeof job.progress === "number"
-				? job.progress
-				: job.total_chunks > 0
-					? Math.round((job.current_chunk / job.total_chunks) * 50)
-					: 0;
-			uploadProgress = Math.min(99, Math.max(50, backendProgress));
-
-			if (job.status === "failed" || job.status === "awaiting_user") {
+			if (job.status === "failed") {
 				if (job.error_code === "FileSizeMismatch") {
 					sizeMismatchJob = job;
 					showSizeMismatchDialog = true;
-					throw new Error(__("Upload paused because the uploaded file size did not match."));
+					break;
 				}
 				if (job.error_code === "ChunkUploadFailed") {
 					throw new Error(
@@ -796,8 +746,6 @@
 					<p>
 						{#if uploadPhase === "uploading"}
 							{__("Uploading:")} {currentUploadFile}
-						{:else if uploadPhase === "finalizing"}
-							{__("Finalizing:")} {currentUploadFile}
 						{:else}
 							{__("Assembling:")} {currentUploadFile}
 						{/if}
@@ -811,8 +759,6 @@
 					<p>
 						{uploadProgress}% - {uploadPhase === "uploading"
 							? __("Uploading chunks")
-							: uploadPhase === "finalizing"
-								? __("Finalizing upload")
 							: __("Assembling file")}
 					</p>
 				</div>
@@ -869,75 +815,18 @@
 					onclick={() => handleConflictResolution("rename")}
 					>Rename</button
 				>
-				</div>
 			</div>
 		</div>
-	{/if}
+	</div>
+{/if}
 
-	{#if showUploadOverwritePasswordDialog}
-		<div
-			class="modal-overlay"
-			onclick={() => {
-				showUploadOverwritePasswordDialog = false;
-				pendingUploadConflictMode = null;
-				uploadOverwritePassword = "";
-			}}
-			onkeydown={(e) => {
-				if (e?.key === "Escape") {
-					showUploadOverwritePasswordDialog = false;
-					pendingUploadConflictMode = null;
-					uploadOverwritePassword = "";
-				}
-			}}
-			role="button"
-			tabindex="-1"
-			aria-label="Close dialog"
-		>
-			<div
-				class="modal-content"
-				onclick={(e) => e?.stopPropagation()}
-				onkeydown={(e) => e?.stopPropagation()}
-				role="button"
-				tabindex="0"
-			>
-				<h3>{__("Confirm Overwrite")}</h3>
-				<input
-					type="password"
-					bind:value={uploadOverwritePassword}
-					placeholder={__("Delete password")}
-					onkeydown={(e) => e?.key === "Enter" && confirmUploadOverwritePassword()}
-				/>
-				<div class="modal-actions">
-					<button
-						class="btn btn-secondary"
-						onclick={() => {
-							showUploadOverwritePasswordDialog = false;
-							pendingUploadConflictMode = null;
-							uploadOverwritePassword = "";
-						}}
-						disabled={isVerifyingUploadOverwrite}
-					>
-						{__("Cancel")}
-					</button>
-					<button
-						class="btn btn-warning"
-						onclick={confirmUploadOverwritePassword}
-						disabled={isVerifyingUploadOverwrite || !uploadOverwritePassword.trim()}
-					>
-						{isVerifyingUploadOverwrite ? __("Checking...") : __("Overwrite")}
-					</button>
-				</div>
-			</div>
-		</div>
-	{/if}
-
-	{#if showSizeMismatchDialog && sizeMismatchJob}
-		<div
-			class="modal-overlay"
-			role="button"
-			tabindex="-1"
-			aria-label="Size mismatch dialog"
-		>
+{#if showSizeMismatchDialog && sizeMismatchJob}
+	<div
+		class="modal-overlay"
+		role="button"
+		tabindex="-1"
+		aria-label="Size mismatch dialog"
+	>
 		<div
 			class="modal-content"
 			onclick={(e) => e?.stopPropagation()}

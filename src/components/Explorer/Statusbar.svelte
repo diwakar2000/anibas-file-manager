@@ -116,7 +116,7 @@
 			<div class="job-status">
 				<div class="job-info">
 					<span class="job-action">🗜 Archiving</span>
-					<span class="job-paths">{job.source_name || job.source} → {job.output}</span>
+					<span class="job-paths">{job.source} → {job.output}</span>
 				</div>
 				<div class="job-status-content">
 					<div class="job-status-text">

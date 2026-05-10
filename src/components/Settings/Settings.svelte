@@ -1,20 +1,15 @@
 <script lang="ts">
 	import { onMount } from "svelte"
 	import PasswordPrompt from "./PasswordPrompt.svelte"
-	import BackupsList from "./BackupsList.svelte"
 	import GeneralSettings from "./tabs/GeneralSettings.svelte"
-	import GeneratedSettingsForm from "./GeneratedSettingsForm.svelte"
-	import {
-		getProviderDefaultValues,
-		getRemoteProviders,
-		type StorageProvider,
-	} from "../../utils/storageProviders"
+	import FTPSettings from "./tabs/FTPSettings.svelte"
+	import SFTPSettings from "./tabs/SFTPSettings.svelte"
+	import S3Settings from "./tabs/S3Settings.svelte"
+	import S3CompatibleSettings from "./tabs/S3CompatibleSettings.svelte"
 	import "../../app.css"
 
 	const config = (window as any).AnibasFMSettings
 	const TOKEN_KEY = 'anibas_fm_token'
-	const remoteProviders = getRemoteProviders(config)
-	const providerById: Record<string, StorageProvider> = Object.fromEntries(remoteProviders.map((provider) => [provider.id, provider]))
 	
 	let authenticated = $state(false)
 	let loading = $state(true)
@@ -23,11 +18,13 @@
 	let activeTab = $state('general');
 	let saving = $state(false);
 	let message = $state('');
-	let remoteSettings = $state<Record<string, Record<string, any>>>(buildRemoteSettings({}));
+
+	let ftp = $state({ enabled: false, host: '', username: '', password: '', base_path: '/', use_ssl: false, port: 21, is_passive: true });
+	let sftp = $state({ enabled: false, host: '', username: '', password: '', private_key: '', base_path: '/', port: 22 });
+	let s3 = $state({ enabled: false, region: 'us-east-1', access_key: '', secret_key: '', bucket: '', prefix: '' });
+	let s3c = $state({ enabled: false, endpoint: '', region: 'us-east-1', access_key: '', secret_key: '', bucket: '', prefix: '' });
 
 	onMount(async () => {
-		readOAuthReturn()
-
 		if (!config.hasPassword) {
 			authenticated = true
 			loading = false
@@ -54,7 +51,7 @@
 				method: 'POST',
 				body: formData
 			})
-
+			
 			const json = await res.json()
 			
 			if (json.success) {
@@ -121,89 +118,32 @@
 		const response = await fetch(url.toString());
 		const data = await response.json();
 		if (data.success) {
-			initializeRemoteSettings(data.data || {});
+			// Merge over defaults so newly-introduced fields (like is_passive) get
+			// their default value when the saved config predates them.
+			ftp = { ...ftp, ...(data.data.ftp || {}) };
+			sftp = { ...sftp, ...(data.data.sftp || {}) };
+			s3 = { ...s3, ...(data.data.s3 || {}) };
+			s3c = { ...s3c, ...(data.data.s3_compatible || {}) };
 		}
 	}
 
-	function initializeRemoteSettings(saved: Record<string, any>) {
-		remoteSettings = buildRemoteSettings(saved);
-	}
-
-	function buildRemoteSettings(saved: Record<string, any>) {
-		const next: Record<string, Record<string, any>> = {};
-		for (const provider of remoteProviders) {
-			next[provider.id] = {
-				...getProviderDefaultValues(provider),
-				...(saved[provider.id] || {}),
-			};
-		}
-		return next;
-	}
-
-	function updateRemoteSettings(providerId: string, nextValues: Record<string, any>) {
-		remoteSettings = {
-			...remoteSettings,
-			[providerId]: nextValues,
-		};
-	}
-
-	function setActiveTab(tab: string) {
-		if (activeTab === tab) return
-		activeTab = tab
-		message = ''
-	}
-
-	function readOAuthReturn() {
-		const params = new URLSearchParams(window.location.search)
-		const status = params.get('anibas_oauth_status')
-		const provider = params.get('anibas_oauth_provider')
-		const oauthMessage = params.get('anibas_oauth_message')
-		if (!status) return
-
-		if (provider && providerById[provider]) {
-			activeTab = provider
-		}
-		message = oauthMessage || (status === 'success' ? 'OAuth connected.' : 'OAuth failed.')
-		params.delete('anibas_oauth_status')
-		params.delete('anibas_oauth_provider')
-		params.delete('anibas_oauth_message')
-		const next = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ''}${window.location.hash}`
-		window.history.replaceState(null, '', next)
-	}
-
-	async function saveRemoteSettings(showMessage = true, providerId?: string, providerValues?: Record<string, any>): Promise<boolean> {
+	async function saveRemoteSettings() {
 		saving = true;
-		if (showMessage) message = '';
-		try {
-			const settingsToSave = providerId && providerValues
-				? { ...remoteSettings, [providerId]: providerValues }
-				: remoteSettings;
-			const formData = new FormData();
-			formData.append('action', config.actions.saveRemoteSettings);
-			formData.append('nonce', config.nonce);
-			if (authToken) {
-				formData.append('token', authToken);
-			}
-			formData.append('settings', JSON.stringify(settingsToSave));
-
-			const response = await fetch(config.ajaxURL, { method: 'POST', body: formData });
-			const data = await response.json();
-
-			if (showMessage) {
-				message = data.success ? 'Settings saved successfully!' : (data.data?.message || data.data || 'Failed to save settings.');
-			}
-			if (data.success && providerId && providerValues) {
-				remoteSettings = settingsToSave;
-			}
-			return Boolean(data.success);
-		} catch (error) {
-			if (showMessage) {
-				message = error instanceof Error ? error.message : 'Failed to save settings.';
-			}
-			return false;
-		} finally {
-			saving = false;
+		message = '';
+		
+		const formData = new FormData();
+		formData.append('action', config.actions.saveRemoteSettings);
+		formData.append('nonce', config.nonce);
+		if (authToken) {
+			formData.append('token', authToken);
 		}
+		formData.append('settings', JSON.stringify({ ftp, sftp, s3, s3_compatible: s3c }));
+
+		const response = await fetch(config.ajaxURL, { method: 'POST', body: formData });
+		const data = await response.json();
+		
+		message = data.success ? 'Settings saved successfully!' : 'Failed to save settings.';
+		saving = false;
 	}
 </script>
 
@@ -225,17 +165,15 @@
 			<h1>File Manager Settings</h1>
 
 			<nav class="nav-tab-wrapper">
-				<button class="nav-tab" class:nav-tab-active={activeTab === 'general'} onclick={() => setActiveTab('general')}>General</button>
-				<button class="nav-tab" class:nav-tab-active={activeTab === 'backups'} onclick={() => setActiveTab('backups')}>Backups</button>
-				{#each remoteProviders as provider}
-					<button class="nav-tab" class:nav-tab-active={activeTab === provider.id} onclick={() => setActiveTab(provider.id)}>{provider.label}</button>
-				{/each}
+				<button class="nav-tab" class:nav-tab-active={activeTab === 'general'} onclick={() => activeTab = 'general'}>General</button>
+				<button class="nav-tab" class:nav-tab-active={activeTab === 'ftp'} onclick={() => activeTab = 'ftp'}>FTP/FTPS</button>
+				<button class="nav-tab" class:nav-tab-active={activeTab === 'sftp'} onclick={() => activeTab = 'sftp'}>SFTP</button>
+				<button class="nav-tab" class:nav-tab-active={activeTab === 's3'} onclick={() => activeTab = 's3'}>Amazon S3</button>
+				<button class="nav-tab" class:nav-tab-active={activeTab === 's3c'} onclick={() => activeTab = 's3c'}>S3 Compatible</button>
 			</nav>
 
 			{#if activeTab === 'general'}
 				<GeneralSettings {authToken} onPasswordChanged={handlePasswordChanged} />
-			{:else if activeTab === 'backups'}
-				<BackupsList {authToken} />
 			{:else}
 				{#if message}
 					<div class="notice notice-{message.includes('success') ? 'success' : 'error'}">
@@ -244,16 +182,14 @@
 				{/if}
 
 				<form onsubmit={(e) => { e.preventDefault(); saveRemoteSettings(); }}>
-					{#if providerById[activeTab]}
-						{#key activeTab}
-							<GeneratedSettingsForm
-								provider={providerById[activeTab]}
-								values={remoteSettings[activeTab] || getProviderDefaultValues(providerById[activeTab])}
-								{authToken}
-								onChange={(nextValues) => updateRemoteSettings(activeTab, nextValues)}
-								onBeforeOAuth={() => saveRemoteSettings(false)}
-							/>
-						{/key}
+					{#if activeTab === 'ftp'}
+						<FTPSettings bind:settings={ftp} {authToken} />
+					{:else if activeTab === 'sftp'}
+						<SFTPSettings bind:settings={sftp} {authToken} />
+					{:else if activeTab === 's3'}
+						<S3Settings bind:settings={s3} {authToken} />
+					{:else if activeTab === 's3c'}
+						<S3CompatibleSettings bind:settings={s3c} {authToken} />
 					{/if}
 
 					<p class="submit">

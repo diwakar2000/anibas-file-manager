@@ -2,8 +2,6 @@ export type FileItem = {
     name: string;
     path: string;
     is_folder: boolean;
-    storage_id?: string;
-    ui_key?: string;
     filename?: string;
     filesize?: number;
     file_type?: string;
@@ -16,15 +14,14 @@ export type DirectoryResponse = {
     path: string;
     page: number;
     has_more: boolean;
-    items: Record<string, FileItem> | FileItem[];
+    items: Record<string, FileItem>;
     total_items: number;
     page_size: number;
 };
 
 export type ArchiveJob = {
     id: string;
-    source: string;   // relative source path used to resume
-    source_name?: string; // display name (basename)
+    source: string;   // display name (basename)
     output: string;   // output filename (e.g. "test.zip")
     format: 'zip' | 'tar' | 'anfm';
     started_at: number; // unix timestamp

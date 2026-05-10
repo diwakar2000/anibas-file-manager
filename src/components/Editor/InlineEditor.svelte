@@ -8,7 +8,7 @@
     let { path, storage, canEdit } = $props<{ path: string; storage: string; canEdit: boolean }>();
 
     const cfg = (window as any).AnibasFM;
-    const fileName = $derived(path.split('/').pop() ?? path);
+    const fileName = path.split('/').pop() ?? path;
 
     let editorEl    = $state<HTMLDivElement | null>(null);
     let status      = $state<'loading' | 'ready' | 'error' | 'saving' | 'saved'>('loading');

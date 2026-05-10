@@ -24,4 +24,3 @@ dist-ssr
 *.zip
 
 /vendor/
-i18n-replace.js

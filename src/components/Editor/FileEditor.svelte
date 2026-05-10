@@ -220,8 +220,6 @@
 
     <!-- Body -->
     <div class="afe-body">
-        <div class="afe-cm-wrap" bind:this={editorEl} class:afe-hidden={status === 'loading' || status === 'error'}></div>
-
         {#if status === 'loading'}
             <div class="afe-loading">
                 <div class="afe-spinner"></div>
@@ -232,6 +230,8 @@
                 <strong>Could not open file</strong>
                 <p>{errorMsg}</p>
             </div>
+        {:else}
+            <div class="afe-cm-wrap" bind:this={editorEl}></div>
         {/if}
     </div>
 </div>
@@ -344,7 +344,6 @@
         flex: 1;
         min-height: 0;
         overflow: hidden;
-        position: relative;
         display: flex;
         flex-direction: column;
     }
@@ -355,16 +354,10 @@
         overflow: hidden;
     }
 
-    .afe-hidden {
-        visibility: hidden;
-        pointer-events: none;
-    }
-
     /* ── Loading / Error ── */
     .afe-loading,
     .afe-error {
-        position: absolute;
-        inset: 0;
+        flex: 1;
         display: flex;
         flex-direction: column;
         align-items: center;

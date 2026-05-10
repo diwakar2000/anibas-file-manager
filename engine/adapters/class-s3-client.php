@@ -32,7 +32,7 @@ class AnibasS3Client
 	private string $region;
 	private ?string $endpoint; // custom endpoint (path-style for S3-compatible services)
 	private bool $path_style;
-	private int $timeout = 25;
+	private int $timeout = 300;
 
 	/**
 	 * @param string      $access_key  AWS access key ID
@@ -208,8 +208,7 @@ class AnibasS3Client
 		?string $body = null,
 		$body_stream = null,
 		?int $body_size = null,
-		?string $sink_file = null,
-		$body_writer = null
+		?string $sink_file = null
 	): array {
 		$req      = $this->build_url($bucket, $key, $query_params);
 		$datetime = gmdate('Ymd\THis\Z');
@@ -287,11 +286,6 @@ class AnibasS3Client
 		if ($sink_file !== null) {
 			$sink_fp = fopen($sink_file, 'wb');
 			curl_setopt($ch, CURLOPT_FILE, $sink_fp);
-		} elseif (is_callable($body_writer)) {
-			curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $chunk) use ($body_writer) {
-				$written = $body_writer($chunk);
-				return is_int($written) ? $written : strlen($chunk);
-			});
 		} else {
 			curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 		}
@@ -308,7 +302,7 @@ class AnibasS3Client
 			throw new S3Exception('cURL error: ' . esc_html( $curl_error ));
 		}
 
-		$body_str = ($sink_file !== null || is_callable($body_writer)) ? '' : (string) $response;
+		$body_str = ($sink_file !== null) ? '' : (string) $response;
 
 		// Parse error responses — return raw result for caller to handle 4xx if needed
 		if ($http_code >= 400) {
@@ -388,7 +382,7 @@ class AnibasS3Client
 
 	/**
 	 * List objects in a bucket (ListObjectsV2).
-	 * Returns array with 'Contents', 'CommonPrefixes', and pagination keys.
+	 * Returns array with 'Contents' and 'CommonPrefixes' keys.
 	 */
 	public function listObjectsV2(array $params): array
 	{
@@ -417,13 +411,7 @@ class AnibasS3Client
 
 	private function parse_list_response(string $xml_body): array
 	{
-		$result = [
-			'Contents' => [],
-			'CommonPrefixes' => [],
-			'IsTruncated' => false,
-			'NextContinuationToken' => null,
-			'KeyCount' => 0,
-		];
+		$result = ['Contents' => [], 'CommonPrefixes' => []];
 
 		try {
 			$xml = new \SimpleXMLElement($this->strip_xml_namespaces($xml_body));
@@ -445,11 +433,6 @@ class AnibasS3Client
 				'Prefix' => (string) $prefix->Prefix,
 			];
 		}
-
-		$result['IsTruncated'] = strtolower((string) ($xml->IsTruncated ?? 'false')) === 'true';
-		$next = (string) ($xml->NextContinuationToken ?? '');
-		$result['NextContinuationToken'] = $next !== '' ? $next : null;
-		$result['KeyCount'] = (int) (string) ($xml->KeyCount ?? (count($result['Contents']) + count($result['CommonPrefixes'])));
 
 		return $result;
 	}
@@ -538,8 +521,7 @@ class AnibasS3Client
 			$extra_headers['Range'] = $params['Range'];
 		}
 
-		$body_writer = $params['@http']['stream_callback'] ?? null;
-		$resp = $this->request('GET', $params['Bucket'], $params['Key'], [], $extra_headers, null, null, null, $sink_file, $body_writer);
+		$resp = $this->request('GET', $params['Bucket'], $params['Key'], [], $extra_headers, null, null, null, $sink_file);
 
 		return [
 			'Body'          => $sink_file !== null ? null : $resp['body'],

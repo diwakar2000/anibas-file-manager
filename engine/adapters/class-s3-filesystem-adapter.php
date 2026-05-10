@@ -66,25 +66,13 @@ class S3FileSystemAdapter extends FileSystemAdapter
 
     public function validate_path(string $path): string|false
     {
-        $path = str_replace(["\0", '\\'], ['', '/'], $path);
-        $segments = [];
-        foreach (explode('/', $path) as $segment) {
-            if ($segment === '' || $segment === '.') continue;
-            if ($segment === '..') {
-                return false;
-            }
-            $segments[] = $segment;
-        }
-        return '/' . implode('/', $segments);
+        // S3 handles path constraints, return as-is
+        return $path;
     }
 
     public function exists(string $path): bool
     {
-        try {
-            $key = $this->get_key($path);
-        } catch (\InvalidArgumentException $e) {
-            return false;
-        }
+        $key = $this->get_key($path);
         if ($key === '') {
             return true; // bucket root always exists
         }
@@ -107,14 +95,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
 
     public function is_dir(string $path): bool
     {
-        try {
-            $key = $this->get_key($path);
-        } catch (\InvalidArgumentException $e) {
-            return false;
-        }
-        if ($key === '') {
-            return true; // bucket root always exists
-        }
+        $key = $this->get_key($path);
         if (! str_ends_with($key, '/')) {
             $key .= '/';
         }
@@ -128,11 +109,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
 
     public function mkdir(string $path): bool
     {
-        try {
-            $key = $this->get_key($path);
-        } catch (\InvalidArgumentException $e) {
-            return false;
-        }
+        $key = $this->get_key($path);
         if (! str_ends_with($key, '/')) {
             $key .= '/';
         }
@@ -146,120 +123,87 @@ class S3FileSystemAdapter extends FileSystemAdapter
 
     public function scandir(string $path): array
     {
-        $data = $this->listDirectory($path, 1, 1000);
-        return array_map(static fn($item) => $item['name'], $data['items'] ?? []);
-    }
-
-    public function listDirectory(string $path, int $page = 1, int $pageSize = 100): array
-    {
-        $page = max(1, $page);
-        $pageSize = min(1000, max(1, $pageSize));
-        $token = null;
-        $effective_page = 1;
-        $result = ['Contents' => [], 'CommonPrefixes' => [], 'IsTruncated' => false, 'NextContinuationToken' => null];
-
-        for ($current = 1; $current <= $page; $current++) {
-            $effective_page = $current;
-            $result = $this->list_directory_page($path, $pageSize, $token);
-            if ($current === $page || empty($result['NextContinuationToken'])) {
-                break;
-            }
-            $token = (string) $result['NextContinuationToken'];
+        $key = $this->get_key($path);
+        if (! str_ends_with($key, '/')) {
+            $key .= '/';
         }
 
-        $items = $this->format_list_items($path, $result);
-        $has_more = ! empty($result['IsTruncated']) && ! empty($result['NextContinuationToken']);
-
-        return [
-            'path' => $this->validate_path($path) ?: '/',
-            'items' => $items,
-            'total_items' => (($effective_page - 1) * $pageSize) + count($items) + ($has_more ? 1 : 0),
-            'page' => $effective_page,
-            'page_size' => $pageSize,
-            'has_more' => $has_more,
-        ];
-    }
-
-    public function iterateDirectory(string $path, ?array $cursor = null, int $maxItems = 1000, array $options = []): array
-    {
-        $page = $this->list_directory_page($path, min(1000, max(1, $maxItems)), $cursor['token'] ?? null);
-        $entries = [];
-        foreach ($this->format_list_items($path, $page) as $item) {
-            $entries[] = [
-                'name'      => $item['name'] ?? '',
-                'is_folder' => ! empty($item['is_folder']),
-                'path'      => $item['path'] ?? '',
-                'filesize'  => $item['filesize'] ?? 0,
-            ];
-        }
-
-        $next = $page['NextContinuationToken'] ?? null;
-        return [
-            'entries'     => $entries,
-            'next_cursor' => $next ? ['token' => (string) $next] : ['done' => true],
-            'has_more'    => (bool) $next,
-        ];
-    }
-
-    private function list_directory_page(string $path, int $maxKeys, ?string $token = null): array
-    {
-        $key = $this->directory_key($path);
-        $params = [
+        $result = $this->s3_client->listObjectsV2([
             'Bucket' => $this->bucket,
             'Prefix' => $key,
             'Delimiter' => '/',
-            'MaxKeys' => $maxKeys,
-        ];
-        if ($token) {
-            $params['ContinuationToken'] = $token;
+        ]);
+
+        $items = [];
+        foreach ($result['Contents'] ?? [] as $object) {
+            $items[] = basename($object['Key']);
         }
-        return $this->s3_client->listObjectsV2($params);
+        foreach ($result['CommonPrefixes'] ?? [] as $prefix) {
+            $items[] = basename(rtrim($prefix['Prefix'], '/'));
+        }
+        return $items;
     }
 
-    private function format_list_items(string $path, array $result): array
+    public function listDirectory(string $path): array
     {
-        $items = [];
+        $key = $this->get_key($path);
+        // Root path produces an empty key — use '' as prefix, not '/' which matches nothing
+        if ($key !== '' && ! str_ends_with($key, '/')) {
+            $key .= '/';
+        }
 
+        $result = $this->s3_client->listObjectsV2([
+            'Bucket' => $this->bucket,
+            'Prefix' => $key,
+            'Delimiter' => '/',
+        ]);
+
+        $items = array();
+
+        // Process folders first so their names are known before processing files.
         foreach ($result['CommonPrefixes'] ?? [] as $prefix) {
-            $storage_id = (string) ($prefix['Prefix'] ?? '');
-            $name = basename(rtrim($storage_id, '/'));
-            if ($name === '') continue;
-            $items[$name] = [
+            $name = basename(rtrim($prefix['Prefix'], '/'));
+            if (empty($name)) continue;
+            $full_path = rtrim($path, '/') . '/' . $name;
+            $items[$name] = array(
                 'name' => $name,
-                'path' => $this->virtual_path_from_key($storage_id),
-                'storage_id' => $storage_id,
-                'ui_key' => 's3:' . $storage_id,
+                'path' => $full_path,
                 'is_folder' => true,
                 'permission' => 0,
                 'last_modified' => 0,
-                'has_children' => null,
-                'files' => [],
-            ];
+                'has_children' => false,
+                'files' => array()
+            );
         }
 
         foreach ($result['Contents'] ?? [] as $object) {
-            $object_key = (string) ($object['Key'] ?? '');
-            if ($object_key === '' || str_ends_with($object_key, '/')) continue;
+            // Skip the directory-marker objects: zero-byte keys ending in '/' or
+            // zero-byte keys whose name matches an already-known folder (Wasabi-style markers).
+            if (str_ends_with($object['Key'], '/')) continue;
 
-            $name = basename($object_key);
-            if ($name === '') continue;
-            if (isset($items[$name]) && (int) ($object['Size'] ?? 0) === 0) continue;
+            $name = basename($object['Key']);
+            if (empty($name)) continue;
 
-            $items[$name] = [
+            // Zero-byte object with the same name as a folder → it's a folder marker, skip it.
+            if (isset($items[$name]) && $items[$name]['is_folder'] && (int) $object['Size'] === 0) continue;
+
+            $full_path = rtrim($path, '/') . '/' . $name;
+            $items[$name] = array(
                 'name' => $name,
-                'path' => $this->virtual_path_from_key($object_key),
-                'storage_id' => $object_key,
-                'ui_key' => 's3:' . $object_key,
+                'path' => $full_path,
                 'is_folder' => false,
                 'permission' => 0,
-                'last_modified' => ! empty($object['LastModified']) ? strtotime($object['LastModified']) : 0,
+                'last_modified' => strtotime($object['LastModified']),
                 'filename' => $name,
-                'filesize' => (int) ($object['Size'] ?? 0),
-                'file_type' => 'File',
-            ];
+                'filesize' => $object['Size'],
+                'file_type' => 'File'
+            );
         }
 
-        return array_values($items);
+        return [
+            'items' => array_values($items),
+            'total_items' => count($items)
+        ];
     }
 
     public function getDetails(string $path): array|false
@@ -310,78 +254,46 @@ class S3FileSystemAdapter extends FileSystemAdapter
         }
     }
 
-    public function is_empty(string $path): bool
-    {
-        $key = $this->directory_key($path);
-        $result = $this->s3_client->listObjectsV2([
-            'Bucket'  => $this->bucket,
-            'Prefix'  => $key,
-            'MaxKeys' => 2,
-        ]);
-
-        if (! empty($result['CommonPrefixes'])) {
-            return false;
-        }
-        foreach ($result['Contents'] ?? [] as $object) {
-            $object_key = (string) ($object['Key'] ?? '');
-            if ($object_key !== '' && $object_key !== $key) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     public function rmdir(string $path): bool
     {
-        try {
-            $key = $this->directory_key($path);
-        } catch (\InvalidArgumentException $e) {
-            return false;
-        }
-        $result = $this->s3_client->listObjectsV2([
-            'Bucket'  => $this->bucket,
-            'Prefix'  => $key,
-            'MaxKeys' => 2,
-        ]);
-
-        foreach ($result['CommonPrefixes'] ?? [] as $prefix) {
-            if (! empty($prefix['Prefix'])) {
-                return false;
-            }
-        }
-        foreach ($result['Contents'] ?? [] as $object) {
-            $object_key = (string) ($object['Key'] ?? '');
-            if ($object_key !== '' && $object_key !== $key) {
-                return false;
-            }
+        $key = $this->get_key($path);
+        if (! str_ends_with($key, '/')) {
+            $key .= '/';
         }
 
-        return $this->delete_folder_marker($key);
-    }
+        $max_iterations = 10000; // up to ~10M objects at 1000/page
+        $iterations     = 0;
+        $last_first_key = null;
 
-    public function queuedRmdir(string $path, string $root = '', bool $allow_trash_root = false): bool
-    {
-        try {
-            return $this->delete_folder_marker($this->directory_key($path));
-        } catch (\InvalidArgumentException $e) {
-            return false;
-        }
-    }
-
-    private function delete_folder_marker(string $key): bool
-    {
-        if ($key === '') {
-            return true;
-        }
-        try {
-            $this->s3_client->deleteObject([
-                'Bucket' => $this->bucket,
-                'Key'    => $key,
+        do {
+            $result = $this->s3_client->listObjectsV2([
+                'Bucket'  => $this->bucket,
+                'Prefix'  => $key,
+                'MaxKeys' => 1000,
             ]);
-            return true;
-        } catch (\Throwable $e) {
-            return false;
-        }
+
+            $contents = $result['Contents'] ?? [];
+            if (empty($contents)) break;
+
+            // If the first key of this page matches the first key of the previous
+            // page, no deletes succeeded last round — abort instead of spinning.
+            $first_key = $contents[0]['Key'] ?? null;
+            if ($last_first_key !== null && $first_key === $last_first_key) {
+                return false;
+            }
+            $last_first_key = $first_key;
+
+            foreach ($contents as $object) {
+                $this->s3_client->deleteObject([
+                    'Bucket' => $this->bucket,
+                    'Key'    => $object['Key'],
+                ]);
+            }
+
+            $iterations++;
+        } while ($iterations < $max_iterations);
+
+        return $iterations < $max_iterations;
     }
 
     public function copy(string $source, string $target): bool
@@ -421,12 +333,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
 
             $size = $head['ContentLength'];
             if ($size === 0) {
-                $this->s3_client->putObject([
-                    'Bucket' => $this->bucket,
-                    'Key' => $target_key,
-                    'Body' => '',
-                ]);
-                return self::COPY_OPERATION_COMPLETE;
+                return self::COPY_ERROR_SOURCE_EMPTY;
             }
 
             // Use simple copy for files < 100MB to be fast, or if specifically requested not to be chunked
@@ -633,13 +540,8 @@ class S3FileSystemAdapter extends FileSystemAdapter
         $size = filesize($local_path);
         $log  = ActivityLogger::get_instance();
 
-        if ($size === false) {
-            throw new \Exception(esc_html__('Unable to read local file size.', 'anibas-file-manager'));
-        }
-
-        // Single-part PUT is safe only for one configured chunk. Larger files
-        // use resumable multipart upload so one worker slice does one part.
-        if ($size <= $this->single_part_upload_limit()) {
+        // Use simple single-part upload for files < 200MB
+        if ($size < 209715200) {
             $log->log_message(sprintf('[S3 Upload] Single-part PUT: "%s" (%s) → %s', basename($local_path), size_format($size), $remote_path));
             try {
                 $this->s3_client->putObject([
@@ -778,11 +680,6 @@ class S3FileSystemAdapter extends FileSystemAdapter
         return true;
     }
 
-    public function requires_local_upload_assembly(): bool
-    {
-        return true;
-    }
-
     /**
      * Chunked download from S3 to local file using Range header.
      */
@@ -800,17 +697,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
             ]);
             $file_size = (int) $head['ContentLength'];
 
-            if ($file_size === 0) {
-                $dir = dirname($local_path);
-                if (! is_dir($dir)) {
-                    wp_mkdir_p($dir);
-                }
-                return @touch($local_path)
-                    ? ['status' => 9, 'bytes_copied' => 0]
-                    : ['status' => 1, 'bytes_copied' => 0];
-            }
-
-            if ($file_size < 0) {
+            if ($file_size <= 0) {
                 return ['status' => 5, 'bytes_copied' => 0];
             }
 
@@ -860,8 +747,8 @@ class S3FileSystemAdapter extends FileSystemAdapter
 
     /**
      * Chunked upload from local file to S3.
-     * Files within one configured chunk use single PUT; larger files use
-     * multipart upload, one part per call (resumable via wp_options state).
+     * Files < 200MB: single-shot per chunk call (one call completes).
+     * Files >= 200MB: multipart upload, one part per call (resumable via wp_options state).
      */
     public function upload_from_local_chunked(string $local_path, string $remote_path, int $offset = 0, int $chunk_size = 2097152): array
     {
@@ -871,7 +758,8 @@ class S3FileSystemAdapter extends FileSystemAdapter
         }
 
         try {
-            if ($file_size <= $this->single_part_upload_limit()) {
+            if ($file_size < 209715200) {
+                // Small file: single PUT (completes in one call)
                 if ($offset === 0) {
                     $ok = $this->upload_from_local($local_path, $remote_path);
                     return $ok
@@ -904,11 +792,7 @@ class S3FileSystemAdapter extends FileSystemAdapter
 
     private function get_key($path)
     {
-        $normalized = $this->validate_path((string) $path);
-        if ($normalized === false) {
-            throw new \InvalidArgumentException(esc_html__('Invalid remote path', 'anibas-file-manager'));
-        }
-        $path = ltrim($normalized, '/');
+        $path = ltrim($path, '/');
         if (! $this->prefix) {
             return $path;
         }
@@ -916,29 +800,6 @@ class S3FileSystemAdapter extends FileSystemAdapter
             return $path;
         }
         return $this->prefix . '/' . $path;
-    }
-
-    private function directory_key(string $path): string
-    {
-        $key = $this->get_key($path);
-        if ($key !== '' && ! str_ends_with($key, '/')) {
-            $key .= '/';
-        }
-        return $key;
-    }
-
-    private function virtual_path_from_key(string $key): string
-    {
-        $key = trim($key, '/');
-        if ($this->prefix !== '' && ($key === $this->prefix || str_starts_with($key, $this->prefix . '/'))) {
-            $key = ltrim(substr($key, strlen($this->prefix)), '/');
-        }
-        return '/' . $key;
-    }
-
-    private function single_part_upload_limit(): int
-    {
-        return max(1, (int) $this->chunk_size);
     }
 
     public function get_file_size($path)
@@ -963,26 +824,6 @@ class S3FileSystemAdapter extends FileSystemAdapter
             ]);
             return (string) ($obj['Body'] ?? '');
         } catch (\Exception $e) {
-            return false;
-        }
-    }
-
-    public function stream_contents(string $path): bool
-    {
-        try {
-            $this->s3_client->getObject([
-                'Bucket' => $this->bucket,
-                'Key'    => $this->get_key($path),
-                '@http'  => [
-                    'stream_callback' => static function ($chunk) {
-                        echo $chunk; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- binary stream
-                        flush();
-                        return strlen($chunk);
-                    },
-                ],
-            ]);
-            return true;
-        } catch (\Throwable $e) {
             return false;
         }
     }

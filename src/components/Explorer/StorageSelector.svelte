@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { checkFmTokenError, getFmToken } from '../../services/fileApi'
-	import { getEnabledRemoteStorages, getStorageLabel } from '../../utils/storageProviders'
 	import { toast } from '../../utils/toast'
 
 	let { currentStorage, onSelect } = $props<{
@@ -9,7 +8,7 @@
 	}>()
 
 	let showModal = $state(false)
-	let selectedStorage = $state('')
+	let selectedStorage = $state(currentStorage)
 	let loading = $state(false)
 	let checking = $state(false)
 	let hasLoaded = $state(false)
@@ -52,7 +51,12 @@
 				return
 			}
 
-			const remoteStorages = getEnabledRemoteStorages(data.data, config)
+			const remoteStorages = [
+				{ id: 'ftp', name: 'FTP', enabled: data.data.ftp?.enabled },
+				{ id: 'sftp', name: 'SFTP', enabled: data.data.sftp?.enabled },
+				{ id: 's3', name: 'Amazon S3', enabled: data.data.s3?.enabled },
+				{ id: 's3_compatible', name: 'S3 Compatible', enabled: data.data.s3_compatible?.enabled }
+			].filter(s => s.enabled)
 
 			storages = [
 				{ id: 'local', name: 'Local Files', status: 'online' },
@@ -86,7 +90,15 @@
 	function getStorageName(id: string) {
 		const found = storages.find(s => s.id === id)
 		if (found) return found.name
-		return getStorageLabel(id, config)
+		
+		const names: Record<string, string> = {
+			'local': 'Local Files',
+			'ftp': 'FTP',
+			'sftp': 'SFTP',
+			's3': 'Amazon S3',
+			's3_compatible': 'S3 Compatible'
+		}
+		return names[id] || 'Local Files'
 	}
 </script>
 

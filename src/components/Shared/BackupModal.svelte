@@ -220,10 +220,10 @@
         {/if}
 
         <div class="anibas-fm-modal-actions">
-          <button type="button" class="anibas-fm-btn anibas-fm-btn-secondary" onclick={onclose} disabled={starting}>
+          <button class="anibas-fm-btn anibas-fm-btn-secondary" onclick={onclose} disabled={starting}>
             Cancel
           </button>
-          <button type="button" class="anibas-fm-btn anibas-fm-btn-primary" onclick={handleStart} disabled={starting}>
+          <button class="anibas-fm-btn anibas-fm-btn-primary" onclick={handleStart} disabled={starting}>
             {starting ? "Starting..." : "Start Backup"}
           </button>
         </div>
@@ -248,7 +248,7 @@
         </div>
 
         <div class="anibas-fm-modal-actions">
-          <button type="button" class="anibas-fm-btn anibas-fm-btn-danger" onclick={handleCancel} disabled={cancelling}>
+          <button class="anibas-fm-btn anibas-fm-btn-danger" onclick={handleCancel} disabled={cancelling}>
             {cancelling ? "Cancelling..." : "Cancel Backup"}
           </button>
         </div>
@@ -265,7 +265,7 @@
         </div>
 
         <div class="anibas-fm-modal-actions">
-          <button type="button" class="anibas-fm-btn anibas-fm-btn-primary" onclick={handleDone}>
+          <button class="anibas-fm-btn anibas-fm-btn-primary" onclick={handleDone}>
             Done
           </button>
         </div>
@@ -278,10 +278,10 @@
         {/if}
 
         <div class="anibas-fm-modal-actions">
-          <button type="button" class="anibas-fm-btn anibas-fm-btn-secondary" onclick={() => { phase = "choose"; errorMsg = "" }}>
+          <button class="anibas-fm-btn anibas-fm-btn-secondary" onclick={() => { phase = "choose"; errorMsg = "" }}>
             Try Again
           </button>
-          <button type="button" class="anibas-fm-btn anibas-fm-btn-primary" onclick={handleDone}>
+          <button class="anibas-fm-btn anibas-fm-btn-primary" onclick={handleDone}>
             Close
           </button>
         </div>

@@ -144,7 +144,8 @@ class EditorAjax extends AjaxHandler
             ]);
         }
 
-        if (method_exists($adapter, 'read_chunk')) {
+        // SFTP — range read via sftp->get() with offset
+        if (in_array($storage, ['sftp'], true) && method_exists($adapter, 'read_chunk')) {
             $chunk = $adapter->read_chunk($full_path, $offset, $chunk_size);
             if ($chunk === false) {
                 $this->send_error(['error' => 'ReadFailed']);

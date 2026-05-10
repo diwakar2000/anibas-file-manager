@@ -139,13 +139,6 @@ class Anibas_File_Manager {
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/class-editor-ajax.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/class-storage-manager.php';
 
-		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/oauth/class-oauth-provider.php';
-		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/oauth/class-google-drive-oauth-provider.php';
-		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/oauth/class-onedrive-oauth-provider.php';
-		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/oauth/class-dropbox-oauth-provider.php';
-		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/oauth/class-remote-oauth-manager.php';
-
-		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/archiver/class-archive-manifest-store.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/archiver/class-archive-create-engine.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/archiver/class-archive-restore-engine.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/archiver/class-zip-create-engine.php';
@@ -176,12 +169,6 @@ class Anibas_File_Manager {
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/adapters/class-sftp-filesystem-adapter.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/adapters/class-s3-client.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/adapters/class-s3-filesystem-adapter.php';
-		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/adapters/class-google-drive-client.php';
-		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/adapters/class-google-drive-filesystem-adapter.php';
-		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/adapters/class-onedrive-client.php';
-		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/adapters/class-onedrive-filesystem-adapter.php';
-		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/adapters/class-dropbox-client.php';
-		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/adapters/class-dropbox-filesystem-adapter.php';
 
 		/**
 		 * Operations.

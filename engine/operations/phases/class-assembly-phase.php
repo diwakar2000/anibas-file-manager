@@ -25,12 +25,6 @@ class AssemblyPhase extends OperationPhase
         $temp_dir = $job['temp_dir'];
         $total_chunks = $job['total_chunks'];
         $current_chunk = $job['current_chunk'];
-        $job['current_phase'] = 'assembly';
-        $job['current_file'] = $job['file_name'];
-        $job['current_file_size'] = (int) ($job['file_size'] ?? 0);
-        $job['current_file_bytes'] = $total_chunks > 0
-            ? (int) floor(($current_chunk / $total_chunks) * $job['current_file_size'])
-            : 0;
 
         // Process chunks in batches to avoid timeout
         $chunks_per_batch = 10;
@@ -46,9 +40,6 @@ class AssemblyPhase extends OperationPhase
 
         // Only update current_chunk after successful processing
         $job['current_chunk'] = $end_chunk;
-        $job['current_file_bytes'] = $total_chunks > 0
-            ? (int) floor(($end_chunk / $total_chunks) * $job['current_file_size'])
-            : $job['current_file_size'];
 
         if ($end_chunk >= $total_chunks) {
             $log->log_message(sprintf('[Assembly] All chunks assembled locally for "%s". Proceeding to finalize.', $job['file_name']));
@@ -141,8 +132,8 @@ class AssemblyPhase extends OperationPhase
 
     private function assemble_remote_chunks(&$job, $start, $end, $temp_dir, $storage)
     {
-        // Some adapters do not support remote append. Assemble locally first.
-        if ($this->is_s3_storage($storage) || $this->requires_local_upload_assembly($storage)) {
+        // S3 does not support native append. Assemble locally first; finalize uploads via multipart.
+        if ($this->is_s3_storage($storage)) {
             $this->assemble_local_chunks($job, $start, $end, $temp_dir);
             return;
         }
@@ -204,12 +195,6 @@ class AssemblyPhase extends OperationPhase
                 throw new \Exception(esc_html__('Chunk ', 'anibas-file-manager') . esc_html($i) . esc_html__(' failed (attempt ', 'anibas-file-manager') . esc_html($job['chunk_retries'][$i]) . esc_html__('/3): ', 'anibas-file-manager') . esc_html($e->getMessage()));
             }
         }
-    }
-
-    private function requires_local_upload_assembly($storage): bool
-    {
-        $adapter = StorageManager::get_instance()->get_adapter($storage);
-        return $adapter && method_exists($adapter, 'requires_local_upload_assembly') && $adapter->requires_local_upload_assembly();
     }
 
     public function is_complete($work_queue)

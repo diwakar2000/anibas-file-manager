@@ -16,13 +16,9 @@
     const config = (window as any).AnibasFMSettings;
 
     let tree = $state<Record<string, any>>({});
-    let selected = $state<Set<string>>(new Set());
+    let selected = $state<Set<string>>(new Set(selectedPaths));
     let loading = $state(false);
     let expandedPaths = $state<Set<string>>(new Set(["/"]));
-
-    $effect(() => {
-        selected = new Set(selectedPaths);
-    });
 
     onMount(() => {
         loadDirectory("/");

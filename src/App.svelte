@@ -85,9 +85,9 @@
         <h3>Back up this file before editing?</h3>
         <p>A snapshot of the current file will be saved. You can restore it later from Settings ▸ Backups ▸ Single File Backups — up to 5 versions are kept per file.</p>
         <div class="backup-prompt-actions">
-          <button type="button" class="bp-btn bp-cancel" onclick={() => fileStore.cancelEdit()} disabled={fileStore.backupRunning}>Cancel</button>
-          <button type="button" class="bp-btn bp-skip" onclick={() => fileStore.skipBackupAndEdit()} disabled={fileStore.backupRunning}>Skip Backup</button>
-          <button type="button" class="bp-btn bp-backup" onclick={() => fileStore.backupBeforeEdit()} disabled={fileStore.backupRunning}>
+          <button class="bp-btn bp-cancel" onclick={() => fileStore.cancelEdit()} disabled={fileStore.backupRunning}>Cancel</button>
+          <button class="bp-btn bp-skip" onclick={() => fileStore.skipBackupAndEdit()} disabled={fileStore.backupRunning}>Skip Backup</button>
+          <button class="bp-btn bp-backup" onclick={() => fileStore.backupBeforeEdit()} disabled={fileStore.backupRunning}>
             {fileStore.backupRunning ? 'Backing up…' : 'Backup First'}
           </button>
         </div>

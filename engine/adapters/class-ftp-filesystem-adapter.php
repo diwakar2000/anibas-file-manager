@@ -341,124 +341,12 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         return ['items' => $items, 'total' => count($items)];
     }
 
-    public function listDirectory(string $path, int $page = 1, int $pageSize = 100): array
+    public function listDirectory(string $path): array
     {
-        $page = max(1, $page);
-        $pageSize = min(1000, max(1, $pageSize));
-        $offset = ($page - 1) * $pageSize;
-        $result = $this->read_directory_page($path, $offset, $pageSize);
+        $result = $this->scandir($path);
         return [
             'items' => array_values($result['items']),
-            'total_items' => $offset + count($result['items']) + (! empty($result['has_more']) ? 1 : 0),
-            'page' => $page,
-            'page_size' => $pageSize,
-            'has_more' => ! empty($result['has_more']),
-        ];
-    }
-
-    public function iterateDirectory(string $path, ?array $cursor = null, int $maxItems = 1000, array $options = []): array
-    {
-        $offset = is_array($cursor) && isset($cursor['offset']) ? max(0, (int) $cursor['offset']) : 0;
-        $result = $this->read_directory_page($path, $offset, min(1000, max(1, $maxItems)));
-        $entries = [];
-        foreach ($result['items'] as $item) {
-            $entries[] = [
-                'name'      => $item['name'] ?? '',
-                'is_folder' => ! empty($item['is_folder']),
-                'path'      => $item['path'] ?? '',
-                'filesize'  => $item['filesize'] ?? 0,
-            ];
-        }
-
-        $next_offset = $offset + count($entries);
-        return [
-            'entries'     => $entries,
-            'next_cursor' => ! empty($result['has_more']) ? ['offset' => $next_offset] : ['done' => true],
-            'has_more'    => ! empty($result['has_more']),
-        ];
-    }
-
-    private function read_directory_page(string $path, int $offset, int $limit): array
-    {
-        $resolved = $this->resolve_path($path);
-        $list_path = rtrim($resolved, '/') . '/';
-        $display_base = rtrim($path, '/');
-        $items = [];
-        $seen = 0;
-        $buffer = '';
-        $has_more = false;
-        $stopped = false;
-
-        $consume_line = function (string $line) use (&$items, &$seen, &$has_more, &$stopped, $offset, $limit, $display_base): void {
-            $item = $this->parse_list_item($line, $display_base);
-            if ($item === null) {
-                return;
-            }
-            if ($seen++ < $offset) {
-                return;
-            }
-            if (count($items) >= $limit) {
-                $has_more = true;
-                $stopped = true;
-                return;
-            }
-            $items[$item['path']] = $item;
-        };
-
-        $ch = $this->build_curl($list_path, [
-            CURLOPT_CUSTOMREQUEST => 'LIST',
-            CURLOPT_RETURNTRANSFER => false,
-        ]);
-        curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $chunk) use (&$buffer, $consume_line, &$stopped) {
-            $buffer .= $chunk;
-            while (($pos = strpos($buffer, "\n")) !== false) {
-                $line = substr($buffer, 0, $pos);
-                $buffer = substr($buffer, $pos + 1);
-                $consume_line(trim($line));
-                if ($stopped) {
-                    return 0;
-                }
-            }
-            return strlen($chunk);
-        });
-
-        $ok = curl_exec($ch);
-        $error = curl_error($ch);
-        curl_close($ch);
-
-        if (! $stopped && $buffer !== '') {
-            $consume_line(trim($buffer));
-        }
-        if (! $stopped && ($error || $ok === false)) {
-            throw new \Exception(esc_html($this->translate_ftp_error($error, 0)));
-        }
-
-        return ['items' => $items, 'total' => $offset + count($items), 'has_more' => $has_more];
-    }
-
-    private function parse_list_item(string $line, string $display_base): ?array
-    {
-        $line = trim($line);
-        if ($line === '') {
-            return null;
-        }
-        $parts = preg_split('/\s+/', $line, 9);
-        if (count($parts) < 9) {
-            return null;
-        }
-        $name = $parts[8];
-        if ($name === '.' || $name === '..') {
-            return null;
-        }
-        $full_path = ($display_base === '' ? '' : $display_base) . '/' . $name;
-        $is_dir = $parts[0][0] === 'd';
-        return [
-            'name' => $name,
-            'path' => $full_path,
-            'is_folder' => $is_dir,
-            'filesize' => $is_dir ? 0 : (int) $parts[4],
-            'file_type' => $is_dir ? 'folder' : 'file',
-            'last_modified' => 0,
+            'total_items' => $result['total']
         ];
     }
 
@@ -510,16 +398,24 @@ class FTPFileSystemAdapter extends FileSystemAdapter
 
     public function rmdir(string $path): bool
     {
-        return $this->remove_empty_dir($path);
-    }
 
-    public function queuedRmdir(string $path, string $root = '', bool $allow_trash_root = false): bool
-    {
-        return $this->remove_empty_dir($path);
-    }
+        // First, recursively delete all contents
+        try {
+            $contents = $this->scandir($path);
 
-    private function remove_empty_dir(string $path): bool
-    {
+            if (isset($contents['items'])) {
+                foreach ($contents['items'] as $item) {
+                    if ($item['is_folder']) {
+                        $this->rmdir($item['path']);
+                    } else {
+                        $this->unlink($item['path']);
+                    }
+                }
+            }
+        } catch (\Exception $e) {
+        }
+
+        // Now delete the empty directory
         $resolved = $this->resolve_path($path, 'command');
 
         try {
@@ -585,9 +481,8 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         $file_size = curl_getinfo($size_ch, CURLINFO_CONTENT_LENGTH_DOWNLOAD);
 
         if ($file_size === 0) {
-            return $this->put_contents($target, '')
-                ? self::COPY_OPERATION_COMPLETE
-                : self::COPY_ERROR_CREATING_FILE;
+            ActivityLogger::get_instance()->log_message('FTP Copy error: Source file is empty or not found');
+            return self::COPY_ERROR_SOURCE_NOT_FOUND;
         }
 
         // Check if copy is already complete
@@ -881,7 +776,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
             $ch = $this->build_curl($remote_path);
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);
             curl_setopt($ch, CURLOPT_FILE, $fp);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 25);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 300);
             $result = curl_exec($ch);
             $error  = curl_error($ch);
             fclose($fp);
@@ -910,7 +805,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
                 CURLOPT_INFILE     => $fp,
                 CURLOPT_INFILESIZE => $size,
             ]);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 25);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 300);
             $result = $this->send_request($ch);
             fclose($fp);
             return $result !== false;
@@ -942,17 +837,7 @@ class FTPFileSystemAdapter extends FileSystemAdapter
             $this->send_request($size_ch);
             $file_size = curl_getinfo($size_ch, CURLINFO_CONTENT_LENGTH_DOWNLOAD);
 
-            if ($file_size === 0) {
-                $dir = dirname($local_path);
-                if (! is_dir($dir)) {
-                    wp_mkdir_p($dir);
-                }
-                return @touch($local_path)
-                    ? ['status' => 9, 'bytes_copied' => 0]
-                    : ['status' => 1, 'bytes_copied' => 0];
-            }
-
-            if ($file_size < 0) {
+            if ($file_size <= 0) {
                 return ['status' => 5, 'bytes_copied' => 0]; // SOURCE_NOT_FOUND
             }
 
@@ -1006,12 +891,6 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         $file_size = filesize($local_path);
         if ($file_size === false) {
             return ['status' => 5, 'bytes_copied' => 0];
-        }
-
-        if ((int) $file_size === 0) {
-            return $this->put_contents($remote_path, '')
-                ? ['status' => 9, 'bytes_copied' => 0]
-                : ['status' => 1, 'bytes_copied' => 0];
         }
 
         if ($offset >= $file_size) {

@@ -52,41 +52,6 @@ class ArchiveAjaxHandler extends AjaxHandler
         anibas_fm_update_option('anibas_fm_archive_jobs', $jobs);
     }
 
-    private function get_or_create_prescan_job(string $source_path, string $job_id = ''): array
-    {
-        if (! empty($job_id)) {
-            $transient_key = 'anibas_fm_archive_prescan_' . $job_id;
-            $job = get_transient($transient_key);
-            if (! is_array($job) || empty($job['source_abs']) || $job['source_abs'] !== $source_path || empty($job['manifest_file'])) {
-                $this->send_error(array('error' => 'PrescanJobNotFound', 'message' => esc_html__('Folder scan job not found', 'anibas-file-manager')));
-            }
-            $job['job_id'] = $job_id;
-            $job['transient_key'] = $transient_key;
-            return $job;
-        }
-
-        $job_id = 'prescan_' . wp_generate_password(12, false);
-        $state_dir = anibas_fm_get_backup_dir() . '/archive-scan-state';
-        if (! is_dir($state_dir)) {
-            wp_mkdir_p($state_dir);
-            anibas_fm_protect_dir($state_dir);
-        }
-        if (! is_dir($state_dir)) {
-            $this->send_error(array('error' => 'PrescanStateFailed', 'message' => esc_html__('Failed to create folder scan state', 'anibas-file-manager')));
-        }
-
-        $manifest_file = $state_dir . '/' . md5(wp_normalize_path($source_path) . '|' . $job_id) . '.json';
-        $transient_key = 'anibas_fm_archive_prescan_' . $job_id;
-        $job = array(
-            'job_id'        => $job_id,
-            'source_abs'    => $source_path,
-            'manifest_file' => $manifest_file,
-            'transient_key' => $transient_key,
-        );
-        set_transient($transient_key, $job, HOUR_IN_SECONDS);
-        return $job;
-    }
-
     public function cancel_archive_job()
     {
         $this->check_create_privilege();
@@ -183,8 +148,6 @@ class ArchiveAjaxHandler extends AjaxHandler
             if (! $has_active_job) {
                 foreach (['.zip', '.tar', '.anfm'] as $orphan_ext) {
                     $o = $source_path . $orphan_ext;
-                    ArchiveManifestStore::cleanup($o . '.manifest.json');
-                    ArchiveManifestStore::cleanup($o . '.scan.json');
                     foreach (
                         [
                             $o . '.manifest.json',
@@ -208,33 +171,39 @@ class ArchiveAjaxHandler extends AjaxHandler
                 wp_delete_file($part_file);
             }
 
-            $prescan_job = $this->get_or_create_prescan_job($source_path, $job_id);
-            $scan = ArchiveManifestStore::build_step(
-                array($source_path),
-                is_file($source_path) ? dirname($source_path) : $source_path,
-                $prescan_job['manifest_file'],
-                false
-            );
-
-            if (empty($scan['complete'])) {
-                $this->send_success(array(
-                    'phase'         => 'prescan_running',
-                    'job_id'        => $prescan_job['job_id'],
-                    'total'         => $scan['total'],
-                    'total_size'    => $scan['total_size'],
-                    'max_file_size' => $scan['max_file_size'],
-                    'max_file_name' => $scan['max_file_name'],
-                ));
+            $total      = 0;
+            $total_size = 0;
+            $max_size   = 0;
+            $max_name   = '';
+            if (is_file($source_path)) {
+                $s          = filesize($source_path);
+                $total      = 1;
+                $total_size = $s;
+                $max_size   = $s;
+                $max_name   = basename($source_path);
+            } else {
+                $iter = new \RecursiveIteratorIterator(
+                    new \RecursiveDirectoryIterator($source_path, \RecursiveDirectoryIterator::SKIP_DOTS),
+                    \RecursiveIteratorIterator::SELF_FIRST
+                );
+                foreach ($iter as $item) {
+                    if ($item->isFile()) {
+                        $s = $item->getSize();
+                        $total++;
+                        $total_size += $s;
+                        if ($s > $max_size) {
+                            $max_size = $s;
+                            $max_name = substr($item->getPathname(), strlen($source_path) + 1);
+                        }
+                    }
+                }
             }
-
-            delete_transient($prescan_job['transient_key']);
-            ArchiveManifestStore::cleanup($prescan_job['manifest_file']);
             $this->send_success(array(
                 'phase'         => 'prescan_complete',
-                'total'         => $scan['total'],
-                'total_size'    => $scan['total_size'],
-                'max_file_size' => $scan['max_file_size'],
-                'max_file_name' => $scan['max_file_name'],
+                'total'         => $total,
+                'total_size'    => $total_size,
+                'max_file_size' => $max_size,
+                'max_file_name' => $max_name,
             ));
         }
 
@@ -247,43 +216,29 @@ class ArchiveAjaxHandler extends AjaxHandler
             // ---- SCAN — conflict check, optional rename/overwrite, manifest build ----
             if ($phase === 'scan') {
 
-                $new_job_id = $job_id;
-                if (! empty($job_id)) {
-                    $jobs = $this->get_archive_jobs();
-                    if (! isset($jobs[$job_id])) {
-                        $this->send_error(array('error' => 'JobNotFound', 'message' => esc_html__('Archive job not found', 'anibas-file-manager')));
-                    }
-                    $job = $jobs[$job_id];
-                    if ($job['source_abs'] !== $source_path) {
-                        $this->send_error(array('error' => 'JobSourceMismatch', 'message' => esc_html__('Archive job does not match this source', 'anibas-file-manager')));
-                    }
-                    $output = $job['output_abs'];
-                    $format = $job['format'];
-                } else {
-                    // If output already exists and no conflict resolution was chosen, report conflict.
-                    if (file_exists($output) && empty($conflict_mode)) {
-                        $this->send_success(array(
-                            'phase'       => 'conflict',
-                            'output'      => basename($output),
-                            'output_size' => filesize($output),
-                        ));
-                    }
-
-                    // Handle chosen conflict resolution mode.
-                    if ($conflict_mode === 'overwrite') {
-                        wp_delete_file($output);
-                    } elseif ($conflict_mode === 'rename') {
-                        $base = substr($output, 0, -strlen($ext));
-                        $i    = 1;
-                        while (file_exists("{$base} ({$i}){$ext}")) {
-                            $i++;
-                        }
-                        $output = "{$base} ({$i}){$ext}";
-                    }
-
-                    // Register this as an active archive job so resume is possible.
-                    $new_job_id = $this->register_archive_job($source_path, $output, $format);
+                // If output already exists and no conflict resolution was chosen, report conflict.
+                if (file_exists($output) && empty($conflict_mode)) {
+                    $this->send_success(array(
+                        'phase'       => 'conflict',
+                        'output'      => basename($output),
+                        'output_size' => filesize($output),
+                    ));
                 }
+
+                // Handle chosen conflict resolution mode.
+                if ($conflict_mode === 'overwrite') {
+                    wp_delete_file($output);
+                } elseif ($conflict_mode === 'rename') {
+                    $base = substr($output, 0, - (strlen($ext) + 1));
+                    $i    = 1;
+                    while (file_exists("{$base} ({$i}).{$ext}")) {
+                        $i++;
+                    }
+                    $output = "{$base} ({$i}).{$ext}";
+                }
+
+                // Register this as an active archive job so resume is possible.
+                $new_job_id = $this->register_archive_job($source_path, $output, $format);
 
                 if ($format === 'anfm') {
                     $engine = ArchiveCreateEngine::get_instance($source_path, $output);
@@ -292,23 +247,7 @@ class ArchiveAjaxHandler extends AjaxHandler
                 } else {
                     $engine = ZipCreateEngine::get_instance($source_path, $output);
                 }
-
-                $scan = $engine->build_manifest_step();
-                if (empty($scan['complete'])) {
-                    $this->send_success(array(
-                        'phase'  => 'scan_running',
-                        'info'   => array(
-                            'total'         => $scan['total'],
-                            'total_size'    => $scan['total_size'],
-                            'max_file_size' => $scan['max_file_size'],
-                            'max_file_name' => $scan['max_file_name'],
-                        ),
-                        'format' => $format,
-                        'job_id' => $new_job_id,
-                        'output' => basename($output),
-                    ));
-                }
-
+                $engine->build_manifest();
                 $this->send_success(array(
                     'phase'  => 'scan_complete',
                     'info'   => $engine->get_manifest_info(),

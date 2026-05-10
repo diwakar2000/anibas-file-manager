@@ -15,7 +15,6 @@
   import PreviewPanel from "./PreviewPanel.svelte";
   import DetailsModal from "./DetailsModal.svelte";
   import SendToModal from "./SendToModal.svelte";
-  import { withUniqueFileKeys } from "../../utils/fileIdentity";
   import type { FileItem } from "../../types/files";
 
   // ── Mobile: default to grid view on narrow screens ──────────
@@ -72,7 +71,7 @@
       const q = searchQuery.toLowerCase();
       files = files.filter((f) => f.name.toLowerCase().includes(q));
     }
-    const sorted = [...files].sort((a, b) => {
+    return [...files].sort((a, b) => {
       if (a.is_folder && !b.is_folder) return -1;
       if (!a.is_folder && b.is_folder) return 1;
       let cmp = 0;
@@ -92,7 +91,6 @@
       }
       return sortAsc ? cmp : -cmp;
     });
-    return withUniqueFileKeys(sorted);
   });
 
   function toggleSort(key: typeof sortKey) {
@@ -136,8 +134,8 @@
   }
 
   // ── Download helper ──────────────────────────────────────────
-  function triggerDownload(file: FileItem) {
-    const url = getDownloadUrl(file.path, fileStore.currentStorage, { storageId: file.storage_id });
+  function triggerDownload(path: string) {
+    const url = getDownloadUrl(path, fileStore.currentStorage);
     const a = document.createElement("a");
     a.href = url;
     a.setAttribute("download", "");
@@ -160,7 +158,7 @@
         initBulkDelete();
       } else if ((e.ctrlKey || e.metaKey) && e.key === "a") {
         e.preventDefault();
-        fileStore.selectItems(displayFiles);
+        fileStore.selectAll(displayFiles.map((f) => f.path));
       } else if (
         (e.ctrlKey || e.metaKey) &&
         e.key === "c" &&
@@ -316,7 +314,7 @@
       items.push({
         label: "Preview",
         icon: icons.preview,
-        action: () => fileStore.openPreview(file),
+        action: () => { fileStore.selectedPaths = [file.path]; fileStore.previewOpen = true; },
       });
       items.push({ separator: true });
     }
@@ -397,7 +395,7 @@
       items.push({
         label: "Download",
         icon: icons.download,
-        action: () => triggerDownload(file),
+        action: () => triggerDownload(file.path),
       });
     }
     items.push({ separator: true });
@@ -834,7 +832,7 @@
             {/if}
           </div>
         {:else}
-          {#each displayFiles as file (file.ui_key)}
+          {#each displayFiles as file (file.path)}
             {#if fileStore.viewMode === "list"}
               <FileRow {file} />
             {:else}
@@ -1367,8 +1365,6 @@
     display: flex;
     flex: 1;
     min-height: 0; /* Important for scrollable flex children */
-    position: relative;
-    overflow: hidden;
   }
 
   .explorer-main {
