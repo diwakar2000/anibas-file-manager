@@ -15,7 +15,7 @@ class BackgroundProcessor {
 
     public static function init() {}
 
-    public static function enqueue_job( $source, $destination, $action, $conflict_mode = 'skip', $storage = 'local', $options = [] ) {
+    public static function enqueue_job( string $source, string $destination, string $action, string $conflict_mode = 'skip', string $storage = 'local', array $options = [] ) {
         ActivityLogger::log_message('[BackgroundProcessor] enqueue_job called: action=' . $action . ', source=' . $source);
         if ( ! in_array( $action, [ 'copy', 'move' ], true ) ) {
             ActivityLogger::log_message('[BackgroundProcessor] enqueue_job failed: Invalid action ' . $action);
@@ -132,7 +132,7 @@ class BackgroundProcessor {
     /**
      * Enqueue a cross-storage directory transfer job.
      */
-    public static function enqueue_cross_storage_job( $source, $destination, $action, $conflict_mode, $source_storage, $dest_storage ) {
+    public static function enqueue_cross_storage_job( string $source, string $destination, string $action, string $conflict_mode, string $source_storage, string $dest_storage, array $options = [] ) {
         if ( ! in_array( $action, [ 'copy', 'move' ], true ) ) {
             return new \WP_Error( 'invalid_action', sprintf( 'Invalid action "%s" for cross-storage job', $action ) );
         }
@@ -145,8 +145,18 @@ class BackgroundProcessor {
             return new \WP_Error( 'invalid_storage', __( 'Invalid source or destination storage adapter.', 'anibas-file-manager' ) );
         }
 
+        $allow_private_backup_source = ! empty( $options['allow_private_backup_source'] );
+        $allow_private_backup_destination = ! empty( $options['allow_private_backup_destination'] );
+        $dest_is_final = ! empty( $options['dest_is_final'] );
+        if ( $allow_private_backup_source && $source_storage === 'local' && method_exists( $source_adapter, 'setAllowPrivateBackupPaths' ) ) {
+            $source_adapter->setAllowPrivateBackupPaths( true );
+        }
+        if ( $allow_private_backup_destination && $dest_storage === 'local' && method_exists( $dest_adapter, 'setAllowPrivateBackupPaths' ) ) {
+            $dest_adapter->setAllowPrivateBackupPaths( true );
+        }
+
         $original_destination = $destination;
-        if ( $source_adapter->is_dir( $source ) ) {
+        if ( ! $dest_is_final && $source_adapter->is_dir( $source ) ) {
             $destination = rtrim( $destination, '/' ) . '/' . basename( $source );
         }
 
@@ -171,6 +181,9 @@ class BackgroundProcessor {
                 && (string) ( $existing_job['source_storage'] ?? '' ) === (string) $source_storage
                 && (string) ( $existing_job['dest_storage'] ?? '' ) === (string) $dest_storage
                 && (string) ( $existing_job['conflict_mode'] ?? 'overwrite' ) === (string) $conflict_mode
+                && (bool) ( $existing_job['allow_private_backup_source'] ?? false ) === $allow_private_backup_source
+                && (bool) ( $existing_job['allow_private_backup_destination'] ?? false ) === $allow_private_backup_destination
+                && (bool) ( $existing_job['dest_is_final'] ?? false ) === $dest_is_final
                 && in_array( $existing_job['status'], [ 'pending', 'processing', 'retrying' ] ) ) {
                 return $existing_job['id'];
             }
@@ -190,10 +203,19 @@ class BackgroundProcessor {
             'source_storage'   => $source_storage,
             'dest_storage'     => $dest_storage,
             'is_cross_storage' => true,
+            'allow_private_backup_source' => $allow_private_backup_source,
+            'allow_private_backup_destination' => $allow_private_backup_destination,
+            'dest_is_final'    => $dest_is_final,
             'status'           => 'pending',
             'created_at'       => time(),
             'errors'           => [],
         ];
+
+        foreach ( [ 'ui_group_id', 'ui_group_action', 'ui_group_mode', 'ui_group_label', 'ui_group_source' ] as $ui_key ) {
+            if ( isset( $options[ $ui_key ] ) && is_scalar( $options[ $ui_key ] ) ) {
+                $job[ $ui_key ] = (string) $options[ $ui_key ];
+            }
+        }
 
         $work_queue = [];
         update_option( $job['work_queue_id'], $work_queue, false );
@@ -224,7 +246,7 @@ class BackgroundProcessor {
      * Implementation: a delete job with list_depth=1 (don't descend) +
      * trash_mode=true (DeletePhase calls moveToTrash on each spool entry).
      */
-    public static function enqueue_empty_folder_trash_job( $path, $storage = 'local' ) {
+    public static function enqueue_empty_folder_trash_job( string $path, string $storage = 'local' ) {
         $sm      = StorageManager::get_instance();
         $adapter = $sm->get_adapter( $storage );
         if ( ! $adapter ) {
@@ -274,7 +296,7 @@ class BackgroundProcessor {
         return $job['id'];
     }
 
-    public static function enqueue_delete_job( $path, $storage, $keep_root = false, array $options = [] ) {
+    public static function enqueue_delete_job( string $path, string $storage, bool $keep_root = false, array $options = [] ) {
         $sm      = StorageManager::get_instance();
         $adapter = $sm->get_adapter( $storage );
         $allow_trash_root = ! empty( $options['allow_trash_root'] );
@@ -558,7 +580,7 @@ class BackgroundProcessor {
         return $filtered;
     }
 
-    private static function save_queue( $queue ) {
+    private static function save_queue( array $queue ) {
         $current = anibas_fm_get_option( self::$option_name, [] );
         if ( empty( $current ) || ! is_array( $current ) ) {
             anibas_fm_update_option( self::$option_name, $queue );
@@ -586,7 +608,7 @@ class BackgroundProcessor {
         anibas_fm_update_option( self::$option_name, $merged );
     }
 
-    private static function is_job_processable( $job ) {
+    private static function is_job_processable( array $job ): bool {
         if ( in_array( $job['status'], [ 'completed', 'failed', 'awaiting_user' ] ) ) {
             return false;
         }
@@ -707,6 +729,16 @@ class BackgroundProcessor {
                 if ( ! $source_adapter || ! $dest_adapter ) {
                     self::fail_job( $job, 'Invalid cross-storage adapter(s).' );
                     return true;
+                }
+                if ( ! empty( $job['allow_private_backup_source'] )
+                    && (string) ( $job['source_storage'] ?? '' ) === 'local'
+                    && method_exists( $source_adapter, 'setAllowPrivateBackupPaths' ) ) {
+                    $source_adapter->setAllowPrivateBackupPaths( true );
+                }
+                if ( ! empty( $job['allow_private_backup_destination'] )
+                    && (string) ( $job['dest_storage'] ?? '' ) === 'local'
+                    && method_exists( $dest_adapter, 'setAllowPrivateBackupPaths' ) ) {
+                    $dest_adapter->setAllowPrivateBackupPaths( true );
                 }
             } catch ( \Exception $e ) {
                 self::fail_job( $job, 'Failed to connect storage: ' . $e->getMessage() );
@@ -1087,8 +1119,12 @@ class BackgroundProcessor {
             // Keep last 100 entries
             $logs = [];
             if ( file_exists( $log_file ) ) {
-                $content = file_get_contents( $log_file );
-                $logs = json_decode( $content, true ) ?: [];
+                try {
+                    $content = anibas_fm_read_small_file( $log_file );
+                    $logs = json_decode( $content, true ) ?: [];
+                } catch ( \Throwable $e ) {
+                    $logs = [];
+                }
             }
             
             $logs[] = $log_entry;

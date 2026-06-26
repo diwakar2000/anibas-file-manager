@@ -40,6 +40,15 @@ define( 'ANIBAS_FM_DUPLICATE_FILE', 'anibas_fm_duplicate_file' );
 define( 'ANIBAS_FM_DOWNLOAD_FILE', 'anibas_fm_download_file' );
 define( 'ANIBAS_FM_PREVIEW_FILE', 'anibas_fm_preview_file' );
 define( 'ANIBAS_FM_GET_FILE_DETAILS', 'anibas_fm_get_file_details' );
+define( 'ANIBAS_FM_DB_LIST_SCOPES', 'anibas_fm_db_list_scopes' );
+define( 'ANIBAS_FM_DB_LIST_TABLES', 'anibas_fm_db_list_tables' );
+define( 'ANIBAS_FM_DB_GET_SCHEMA', 'anibas_fm_db_get_schema' );
+define( 'ANIBAS_FM_DB_GET_ROWS', 'anibas_fm_db_get_rows' );
+define( 'ANIBAS_FM_DB_UPDATE_CELL', 'anibas_fm_db_update_cell' );
+define( 'ANIBAS_FM_DB_DELETE_ROW', 'anibas_fm_db_delete_row' );
+define( 'ANIBAS_FM_DB_INSERT_ROW', 'anibas_fm_db_insert_row' );
+define( 'ANIBAS_FM_DB_VERIFY_PASSWORD', 'anibas_fm_db_verify_password' );
+define( 'ANIBAS_FM_DB_CHECK_AUTH', 'anibas_fm_db_check_auth' );
 
 // Nonces
 define( 'ANIBAS_FM_NONCE_LIST', 'anibas-fm-list' );
@@ -47,6 +56,20 @@ define( 'ANIBAS_FM_NONCE_CREATE', 'anibas-fm-create' );
 define( 'ANIBAS_FM_NONCE_DELETE', 'anibas-fm-delete' );
 define( 'ANIBAS_FM_NONCE_SETTINGS', 'anibas-fm-settings' );
 define( 'ANIBAS_FM_NONCE_FM', 'anibas-fm-file-manager' );
+define( 'ANIBAS_FM_NONCE_DATABASE', 'anibas-fm-database' );
+if ( ! defined( 'ANIBAS_FM_DATABASE_TOKEN_TTL' ) ) {
+    define( 'ANIBAS_FM_DATABASE_TOKEN_TTL', HOUR_IN_SECONDS );
+}
+
+if ( ! defined( 'ANIBAS_FM_ENABLE_DATABASE_VIEW' ) ) {
+    define( 'ANIBAS_FM_ENABLE_DATABASE_VIEW', false );
+}
+if ( ! defined( 'ANIBAS_FM_ENABLE_DATABASE_EDIT' ) ) {
+    define( 'ANIBAS_FM_ENABLE_DATABASE_EDIT', false );
+}
+if ( ! defined( 'ANIBAS_FM_ENABLE_SITE_RESTORE' ) ) {
+    define( 'ANIBAS_FM_ENABLE_SITE_RESTORE', false );
+}
 
 // Paths
 define( 'ANIBAS_FM_ROOT_PATH', realpath( ABSPATH ) );
@@ -97,7 +120,17 @@ define( 'ANIBAS_FM_RESTORE_FILE_BACKUP', 'anibas_fm_restore_file_backup' );
 define( 'ANIBAS_FM_DELETE_FILE_BACKUP', 'anibas_fm_delete_file_backup' );
 define( 'ANIBAS_FM_DELETE_FILE_BACKUP_TREE', 'anibas_fm_delete_file_backup_tree' );
 define( 'ANIBAS_FM_LIST_SITE_BACKUPS', 'anibas_fm_list_site_backups' );
+define( 'ANIBAS_FM_SITE_BACKUP_PREVIEW', 'anibas_fm_site_backup_preview' );
+define( 'ANIBAS_FM_SITE_BACKUP_INSPECT', 'anibas_fm_site_backup_inspect' );
+define( 'ANIBAS_FM_SITE_BACKUP_DOWNLOAD_FILE', 'anibas_fm_site_backup_download_file' );
 define( 'ANIBAS_FM_DELETE_SITE_BACKUP', 'anibas_fm_delete_site_backup' );
+define( 'ANIBAS_FM_SEND_SITE_BACKUP_TO_CLOUD', 'anibas_fm_send_site_backup_to_cloud' );
+define( 'ANIBAS_FM_IMPORT_SITE_BACKUP_FROM_CLOUD', 'anibas_fm_import_site_backup_from_cloud' );
+define( 'ANIBAS_FM_SITE_RESTORE_START', 'anibas_fm_site_restore_start' );
+define( 'ANIBAS_FM_SITE_RESTORE_POLL', 'anibas_fm_site_restore_poll' );
+define( 'ANIBAS_FM_SITE_RESTORE_CANCEL', 'anibas_fm_site_restore_cancel' );
+define( 'ANIBAS_FM_SITE_RESTORE_FALLBACK_OVERWRITE', 'anibas_fm_site_restore_fallback_overwrite' );
+define( 'ANIBAS_FM_SITE_RESTORE_STATUS', 'anibas_fm_site_restore_status' );
 
 // Temp Operations
 define( 'ANIBAS_FM_TEMP_MAX_AGE', 86400 ); // 24 hours
@@ -114,6 +147,7 @@ if ( ! defined( 'ANIBAS_FM_BACKUP_MAX_AGE' ) ) {
 }
 define( 'ANIBAS_FM_BACKUP_CRON_HOOK',   'anibas_fm_backup_cleanup' );
 define( 'ANIBAS_FM_BACKUP_LOCK_KEY',    'anibas_fm_backup_running' );
+define( 'ANIBAS_FM_SITE_RESTORE_LOCK_KEY', 'anibas_fm_site_restore_running' );
 if ( ! defined( 'ANIBAS_FM_FILE_BACKUP_KEEP' ) ) {
     define( 'ANIBAS_FM_FILE_BACKUP_KEEP', 5 );
 }

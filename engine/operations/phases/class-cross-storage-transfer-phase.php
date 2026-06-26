@@ -238,7 +238,7 @@ class CrossStorageTransferPhase extends OperationPhase
         $file_size = $file['size'] ?? 0;
 
         if ($dest_is_local) {
-            if (method_exists($dest_adapter, 'frontendPathToReal')) {
+            if (method_exists($dest_adapter, 'frontendPathToReal') && ! $this->is_absolute_local_path($target)) {
                 $local_target = $dest_adapter->frontendPathToReal($target);
             } else {
                 $local_target = $target;
@@ -328,6 +328,19 @@ class CrossStorageTransferPhase extends OperationPhase
             $job['errors'][] = basename($file['source']) . esc_html__(': Upload failed', 'anibas-file-manager');
             return 'advance';
         }
+    }
+
+    private function is_absolute_local_path(string $path): bool
+    {
+        $path_norm = untrailingslashit(wp_normalize_path($path));
+        foreach (array(ABSPATH, WP_CONTENT_DIR) as $root) {
+            $root_norm = untrailingslashit(wp_normalize_path((string) $root));
+            if ($root_norm !== '' && ($path_norm === $root_norm || str_starts_with(trailingslashit($path_norm), trailingslashit($root_norm)))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function try_delete_source($adapter, string $path, array &$job): void

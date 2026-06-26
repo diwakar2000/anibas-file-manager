@@ -15,6 +15,7 @@ if (! defined('ABSPATH')) exit;
 use Anibas\ArchiveAjaxHandler;
 use Anibas\AuthAjaxHandler;
 use Anibas\BackupAjaxHandler;
+use Anibas\DatabaseAjaxHandler;
 use Anibas\FileCrudAjaxHandler;
 use Anibas\SettingsAjaxHandler;
 use Anibas\TransferAjaxHandler;
@@ -51,6 +52,7 @@ class Anibas_File_Manager_Main
 		new ArchiveAjaxHandler();
 		new AuthAjaxHandler();
 		new BackupAjaxHandler();
+		new DatabaseAjaxHandler();
 		new FileCrudAjaxHandler();
 		new SettingsAjaxHandler();
 		new TransferAjaxHandler();
@@ -170,6 +172,15 @@ class Anibas_File_Manager_Main
 						'downloadFile'        => ANIBAS_FM_DOWNLOAD_FILE,
 						'previewFile'         => ANIBAS_FM_PREVIEW_FILE,
 						'getFileDetails'      => ANIBAS_FM_GET_FILE_DETAILS,
+						'dbListScopes'        => ANIBAS_FM_DB_LIST_SCOPES,
+						'dbListTables'        => ANIBAS_FM_DB_LIST_TABLES,
+						'dbGetSchema'         => ANIBAS_FM_DB_GET_SCHEMA,
+						'dbGetRows'           => ANIBAS_FM_DB_GET_ROWS,
+						'dbUpdateCell'        => ANIBAS_FM_DB_UPDATE_CELL,
+						'dbDeleteRow'         => ANIBAS_FM_DB_DELETE_ROW,
+						'dbInsertRow'         => ANIBAS_FM_DB_INSERT_ROW,
+						'dbVerifyPassword'    => ANIBAS_FM_DB_VERIFY_PASSWORD,
+						'dbCheckAuth'         => ANIBAS_FM_DB_CHECK_AUTH,
 						'initEditorSession'   => ANIBAS_FM_INIT_EDITOR_SESSION,
 						'getFileChunk'        => ANIBAS_FM_GET_FILE_CHUNK,
 						'saveFile'            => ANIBAS_FM_SAVE_FILE,
@@ -184,13 +195,24 @@ class Anibas_File_Manager_Main
 						'backupStatus'        => ANIBAS_FM_BACKUP_STATUS,
 						'deleteFileBackup'    => ANIBAS_FM_DELETE_FILE_BACKUP,
 						'deleteFileBackupTree' => ANIBAS_FM_DELETE_FILE_BACKUP_TREE,
+						'siteBackupPreview'   => ANIBAS_FM_SITE_BACKUP_PREVIEW,
+						'siteBackupInspect'   => ANIBAS_FM_SITE_BACKUP_INSPECT,
+						'siteBackupDownloadFile' => ANIBAS_FM_SITE_BACKUP_DOWNLOAD_FILE,
 						'deleteSiteBackup'    => ANIBAS_FM_DELETE_SITE_BACKUP,
+						'sendSiteBackupToCloud' => ANIBAS_FM_SEND_SITE_BACKUP_TO_CLOUD,
+						'importSiteBackupFromCloud' => ANIBAS_FM_IMPORT_SITE_BACKUP_FROM_CLOUD,
+						'siteRestoreStart'    => ANIBAS_FM_SITE_RESTORE_START,
+						'siteRestorePoll'     => ANIBAS_FM_SITE_RESTORE_POLL,
+						'siteRestoreCancel'   => ANIBAS_FM_SITE_RESTORE_CANCEL,
+						'siteRestoreFallbackOverwrite' => ANIBAS_FM_SITE_RESTORE_FALLBACK_OVERWRITE,
+						'siteRestoreStatus'   => ANIBAS_FM_SITE_RESTORE_STATUS,
 					),
 					'listNonce'      => wp_create_nonce(ANIBAS_FM_NONCE_LIST),
 					'createNonce'    => wp_create_nonce(ANIBAS_FM_NONCE_CREATE),
 					'deleteNonce'    => wp_create_nonce(ANIBAS_FM_NONCE_DELETE),
 					'settingsNonce'  => wp_create_nonce(ANIBAS_FM_NONCE_SETTINGS),
 					'fmNonce'        => wp_create_nonce(ANIBAS_FM_NONCE_FM),
+					'dbNonce'        => wp_create_nonce(ANIBAS_FM_NONCE_DATABASE),
 					'editorNonce'         => wp_create_nonce(ANIBAS_FM_NONCE_EDITOR),
 					'editorExtensions'    => ANIBAS_FM_EDITOR_EXTENSIONS,
 					'editorDotfiles'      => ANIBAS_FM_EDITOR_DOTFILES,
@@ -200,6 +222,12 @@ class Anibas_File_Manager_Main
 					'fmRefreshRequired'      => (bool) anibas_fm_get_option('fm_password_refresh_required', true),
 					'deleteToTrash'          => (bool) anibas_fm_get_option('delete_to_trash', false),
 					'storageManifest'        => anibas_fm_remote_storage_manifest(),
+					'databaseViewAvailable'  => anibas_fm_database_view_constant_enabled(),
+					'databaseViewEnabled'    => anibas_fm_database_view_enabled(),
+					'databaseEditAvailable'  => anibas_fm_database_edit_constant_enabled(),
+					'databaseEditEnabled'    => anibas_fm_database_edit_enabled(),
+					'databasePasswordRequired' => anibas_fm_database_password_required(),
+					'siteRestoreAvailable'  => (bool) ANIBAS_FM_ENABLE_SITE_RESTORE,
 					'pluginUrl'              => ANIBAS_FILE_MANAGER_PLUGIN_URL,
 				)
 			);
@@ -239,7 +267,17 @@ class Anibas_File_Manager_Main
 						'deleteFileBackup'    => ANIBAS_FM_DELETE_FILE_BACKUP,
 						'deleteFileBackupTree' => ANIBAS_FM_DELETE_FILE_BACKUP_TREE,
 						'listSiteBackups'     => ANIBAS_FM_LIST_SITE_BACKUPS,
+						'siteBackupPreview'   => ANIBAS_FM_SITE_BACKUP_PREVIEW,
+						'siteBackupInspect'   => ANIBAS_FM_SITE_BACKUP_INSPECT,
+						'siteBackupDownloadFile' => ANIBAS_FM_SITE_BACKUP_DOWNLOAD_FILE,
 						'deleteSiteBackup'    => ANIBAS_FM_DELETE_SITE_BACKUP,
+						'sendSiteBackupToCloud' => ANIBAS_FM_SEND_SITE_BACKUP_TO_CLOUD,
+						'importSiteBackupFromCloud' => ANIBAS_FM_IMPORT_SITE_BACKUP_FROM_CLOUD,
+						'siteRestoreStart'    => ANIBAS_FM_SITE_RESTORE_START,
+						'siteRestorePoll'     => ANIBAS_FM_SITE_RESTORE_POLL,
+						'siteRestoreCancel'   => ANIBAS_FM_SITE_RESTORE_CANCEL,
+						'siteRestoreFallbackOverwrite' => ANIBAS_FM_SITE_RESTORE_FALLBACK_OVERWRITE,
+						'siteRestoreStatus'   => ANIBAS_FM_SITE_RESTORE_STATUS,
 					),
 					'nonce'          => wp_create_nonce(ANIBAS_FM_NONCE_SETTINGS),
 					'listNonce'      => wp_create_nonce(ANIBAS_FM_NONCE_LIST),
@@ -261,6 +299,12 @@ class Anibas_File_Manager_Main
 					'deleteToTrash'          => (bool) anibas_fm_get_option('delete_to_trash', false),
 					'remoteFileBackupsEnabled' => (bool) anibas_fm_get_option('remote_file_backups_enabled', false),
 					'storageManifest'        => anibas_fm_remote_storage_manifest(),
+					'databaseViewConstantEnabled' => anibas_fm_database_view_constant_enabled(),
+					'databaseViewEnabled'    => anibas_fm_database_view_enabled(),
+					'databaseEditConstantEnabled' => anibas_fm_database_edit_constant_enabled(),
+					'databaseEditEnabled'    => anibas_fm_database_edit_enabled(),
+					'hasDatabasePassword'    => ! empty(anibas_fm_get_option('database_password_hash', '')),
+					'siteRestoreAvailable'  => (bool) ANIBAS_FM_ENABLE_SITE_RESTORE,
 					'isLocalhost'            => anibas_fm_is_development_site(),
 					'debugMode'              => (bool) anibas_fm_get_option('debug_mode', false),
 				)

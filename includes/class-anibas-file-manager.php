@@ -128,6 +128,7 @@ class Anibas_File_Manager {
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/ajax/class-auth-ajax-handler.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/ajax/class-settings-ajax-handler.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/ajax/class-file-crud-ajax-handler.php';
+		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/ajax/class-database-ajax-handler.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/ajax/class-trash-ajax-handler.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/ajax/class-transfer-ajax-handler.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/ajax/class-upload-ajax-handler.php';
@@ -138,6 +139,7 @@ class Anibas_File_Manager {
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/class-editor-page.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/class-editor-ajax.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/class-storage-manager.php';
+		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/class-site-backup-package-validator.php';
 
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/oauth/class-oauth-provider.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/oauth/class-google-drive-oauth-provider.php';
@@ -153,7 +155,14 @@ class Anibas_File_Manager {
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/archiver/class-tar-create-engine.php';
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/archiver/class-tar-restore-engine.php';
 
+		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/database/class-database-safety-policy.php';
+		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/database/class-database-manager.php';
+		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/database/class-database-backup-codec.php';
+		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/database/class-database-backup-engine.php';
+		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/database/class-database-restore-engine.php';
+
 		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/class-backup-engine.php';
+		require_once plugin_dir_path( dirname( __FILE__ ) ) . 'engine/core/class-site-restore-engine.php';
 
 		/**
 		 * Utilities.

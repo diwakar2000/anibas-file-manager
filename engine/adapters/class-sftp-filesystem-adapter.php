@@ -24,21 +24,33 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
 
     private $backend;
     private $base_path;
+    private $host;
+    private $username;
+    private $password;
+    private $private_key;
+    private $port;
+    private $backend_type;
 
     public function __construct($host, $username, $password = null, $private_key = null, $base_path = DIRECTORY_SEPARATOR, $port = 22)
     {
         $this->base_path = is_string($base_path) && $base_path !== '' ? $base_path : DIRECTORY_SEPARATOR;
+        $this->host = $host;
+        $this->username = $username;
+        $this->password = $password;
+        $this->private_key = $private_key;
+        $this->port = $port;
 
         // Prefer cURL when SFTP is available because it can stream LIST output
         // and stop at the current page budget. phpseclib rawlist() materializes
         // the whole directory, so keep it as the compatibility fallback.
         if (self::curl_supports_sftp()) {
-            $this->backend = new SFTPCurlBackend($host, $username, $password, $private_key, $port);
+            $this->backend_type = 'curl';
         } elseif (class_exists('\phpseclib3\Net\SFTP')) {
-            $this->backend = new SFTPPhpseclibBackend($host, $username, $password, $private_key, $port);
+            $this->backend_type = 'phpseclib';
         } else {
-            $this->backend = new SFTPCurlBackend($host, $username, $password, $private_key, $port);
+            $this->backend_type = 'curl';
         }
+        $this->backend = $this->create_backend($this->backend_type);
     }
 
     private static function curl_supports_sftp(): bool
@@ -50,6 +62,40 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
         return in_array('sftp', $version['protocols'] ?? [], true);
     }
 
+    private static function phpseclib_available(): bool
+    {
+        return class_exists('\phpseclib3\Net\SFTP');
+    }
+
+    private function create_backend(string $type)
+    {
+        if ($type === 'phpseclib') {
+            return new SFTPPhpseclibBackend($this->host, $this->username, $this->password, $this->private_key, $this->port);
+        }
+
+        return new SFTPCurlBackend($this->host, $this->username, $this->password, $this->private_key, $this->port);
+    }
+
+    private function call_backend(string $method, array $args = [])
+    {
+        try {
+            return $this->backend->{$method}(...$args);
+        } catch (\Throwable $e) {
+            if ($this->backend_type !== 'curl' || ! self::phpseclib_available()) {
+                throw $e;
+            }
+
+            ActivityLogger::get_instance()->log_message(
+                'SFTP cURL backend failed for ' . $method . '; retrying with phpseclib: ' . $e->getMessage()
+            );
+
+            $this->backend_type = 'phpseclib';
+            $this->backend = $this->create_backend('phpseclib');
+
+            return $this->backend->{$method}(...$args);
+        }
+    }
+
     public function validate_path($path): string|false
     {
         return anibas_fm_normalize_remote_path((string) $path, $this->base_path);
@@ -58,25 +104,25 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
     public function exists(string $path): bool
     {
         $normalized = $this->normalize_path($path);
-        return $normalized !== false && $this->backend->exists($normalized);
+        return $normalized !== false && $this->call_backend('exists', [$normalized]);
     }
 
     public function is_file(string $path): bool
     {
         $normalized = $this->normalize_path($path);
-        return $normalized !== false && $this->backend->is_file($normalized);
+        return $normalized !== false && $this->call_backend('is_file', [$normalized]);
     }
 
     public function is_dir(string $path): bool
     {
         $normalized = $this->normalize_path($path);
-        return $normalized !== false && $this->backend->is_dir($normalized);
+        return $normalized !== false && $this->call_backend('is_dir', [$normalized]);
     }
 
     public function mkdir(string $path): bool
     {
         $normalized = $this->normalize_path($path);
-        return $normalized !== false && $this->backend->mkdir($normalized);
+        return $normalized !== false && $this->call_backend('mkdir', [$normalized]);
     }
 
     public function scandir(string $path): array
@@ -85,7 +131,7 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
         if ($norm_path === false) {
             return ['items' => [], 'total' => 0];
         }
-        $data      = $this->backend->listDirectory($norm_path);
+        $data      = $this->call_backend('listDirectory', [$norm_path]);
         $items     = [];
         foreach ($data['items'] ?? [] as $item) {
             $item['path'] = $this->to_virtual_path($item['path']);
@@ -100,7 +146,7 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
         if ($normalized === false) {
             return ['items' => [], 'total_items' => 0, 'page' => max(1, $page), 'page_size' => min(1000, max(1, $pageSize)), 'has_more' => false];
         }
-        $data = $this->backend->listDirectory($normalized, $page, $pageSize);
+        $data = $this->call_backend('listDirectory', [$normalized, $page, $pageSize]);
         $data['items'] = $data['items'] ?? [];
         foreach ($data['items'] as &$item) {
             if (isset($item['path'])) {
@@ -120,7 +166,7 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
         if (! method_exists($this->backend, 'iterateDirectory')) {
             return parent::iterateDirectory($path, $cursor, $maxItems, $options);
         }
-        $page = $this->backend->iterateDirectory($normalized, $cursor, $maxItems, $options);
+        $page = $this->call_backend('iterateDirectory', [$normalized, $cursor, $maxItems, $options]);
         $page['entries'] = $page['entries'] ?? [];
         foreach ($page['entries'] as &$entry) {
             if (isset($entry['path'])) {
@@ -134,7 +180,7 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
     public function rmdir(string $path): bool
     {
         $normalized = $this->normalize_path($path);
-        return $normalized !== false && $this->backend->rmdir($normalized);
+        return $normalized !== false && $this->call_backend('rmdir', [$normalized]);
     }
 
     public function queuedRmdir(string $path, string $root = '', bool $allow_trash_root = false): bool
@@ -144,8 +190,8 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
             return false;
         }
         return method_exists($this->backend, 'queuedRmdir')
-            ? $this->backend->queuedRmdir($normalized, $root, $allow_trash_root)
-            : $this->backend->rmdir($normalized);
+            ? $this->call_backend('queuedRmdir', [$normalized, $root, $allow_trash_root])
+            : $this->call_backend('rmdir', [$normalized]);
     }
 
     public function copy(string $source, string $target): bool
@@ -155,7 +201,7 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
         if ($normalized_source === false || $normalized_target === false) {
             return false;
         }
-        return $this->backend->copyFileInChunks($normalized_source, $normalized_target);
+        return $this->call_backend('copyFileInChunks', [$normalized_source, $normalized_target]);
     }
 
     public function copyFileInChunks($source, $target, ?int $chunk_size = null, $bytes_copied = 0): int
@@ -165,7 +211,7 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
         if ($normalized_source === false || $normalized_target === false) {
             return self::COPY_ERROR_SOURCE_NOT_FOUND;
         }
-        return $this->backend->copyFileInChunks($normalized_source, $normalized_target, $chunk_size, $bytes_copied);
+        return $this->call_backend('copyFileInChunks', [$normalized_source, $normalized_target, $chunk_size, $bytes_copied]);
     }
 
     public function getCopyProgress($source, $target): array
@@ -176,7 +222,7 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
             return ['bytes_copied' => 0, 'next_bytes_copied' => 0];
         }
         if (method_exists($this->backend, 'getCopyProgress')) {
-            return $this->backend->getCopyProgress($normalized_source, $normalized_target);
+            return $this->call_backend('getCopyProgress', [$normalized_source, $normalized_target]);
         }
         return ['bytes_copied' => 0, 'next_bytes_copied' => 0];
     }
@@ -188,13 +234,13 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
         if ($normalized_source === false || $normalized_target === false) {
             return false;
         }
-        return $this->backend->move($normalized_source, $normalized_target);
+        return $this->call_backend('move', [$normalized_source, $normalized_target]);
     }
 
     public function unlink(string $path): bool
     {
         $normalized = $this->normalize_path($path);
-        return $normalized !== false && $this->backend->unlink($normalized);
+        return $normalized !== false && $this->call_backend('unlink', [$normalized]);
     }
 
     public function get_contents(string $path): string|false
@@ -203,7 +249,7 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
         if ($normalized === false) {
             return false;
         }
-        return $this->backend->get_contents($normalized);
+        return $this->call_backend('get_contents', [$normalized]);
     }
 
     public function stream_contents(string $path): bool
@@ -213,7 +259,7 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
             return false;
         }
         if (method_exists($this->backend, 'stream_contents')) {
-            return $this->backend->stream_contents($normalized);
+            return $this->call_backend('stream_contents', [$normalized]);
         }
         return parent::stream_contents($path);
     }
@@ -225,7 +271,7 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
             return false;
         }
         if (method_exists($this->backend, 'get_size')) {
-            return $this->backend->get_size($normalized);
+            return $this->call_backend('get_size', [$normalized]);
         }
         return false;
     }
@@ -233,13 +279,13 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
     public function put_contents(string $path, string $content): bool
     {
         $normalized = $this->normalize_path($path);
-        return $normalized !== false && $this->backend->put_contents($normalized, $content);
+        return $normalized !== false && $this->call_backend('put_contents', [$normalized, $content]);
     }
 
     public function append_contents(string $path, string $content): bool
     {
         $normalized = $this->normalize_path($path);
-        return $normalized !== false && $this->backend->append_contents($normalized, $content);
+        return $normalized !== false && $this->call_backend('append_contents', [$normalized, $content]);
     }
 
     public function download_to_local(string $remote_path, string $local_path): bool
@@ -249,13 +295,13 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
             wp_mkdir_p($dir);
         }
         $normalized = $this->normalize_path($remote_path);
-        return $normalized !== false && $this->backend->download_to_local($normalized, $local_path);
+        return $normalized !== false && $this->call_backend('download_to_local', [$normalized, $local_path]);
     }
 
     public function upload_from_local(string $local_path, string $remote_path): bool
     {
         $normalized = $this->normalize_path($remote_path);
-        return $normalized !== false && $this->backend->upload_from_local($local_path, $normalized);
+        return $normalized !== false && $this->call_backend('upload_from_local', [$local_path, $normalized]);
     }
 
     public function supports_chunked_transfer(): bool
@@ -269,7 +315,7 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
         if ($normalized === false) {
             return ['status' => self::COPY_ERROR_SOURCE_NOT_FOUND, 'bytes_copied' => $offset];
         }
-        return $this->backend->download_to_local_chunked($normalized, $local_path, $offset, $chunk_size);
+        return $this->call_backend('download_to_local_chunked', [$normalized, $local_path, $offset, $chunk_size]);
     }
 
     public function upload_from_local_chunked(string $local_path, string $remote_path, int $offset = 0, int $chunk_size = 2097152): array
@@ -278,7 +324,7 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
         if ($normalized === false) {
             return ['status' => self::COPY_ERROR_CREATING_FILE, 'bytes_copied' => $offset];
         }
-        return $this->backend->upload_from_local_chunked($local_path, $normalized, $offset, $chunk_size);
+        return $this->call_backend('upload_from_local_chunked', [$local_path, $normalized, $offset, $chunk_size]);
     }
 
     private function normalize_path($path)
@@ -317,7 +363,7 @@ class SFTPPhpseclibBackend
         $this->sftp = new \phpseclib3\Net\SFTP($host, $port);
 
         if ($private_key) {
-            $key = \phpseclib3\Crypt\PublicKeyLoader::load(file_get_contents($private_key));
+            $key = \phpseclib3\Crypt\PublicKeyLoader::load(anibas_fm_read_small_file($private_key, 65536));
             if (! $this->sftp->login($username, $key)) {
                 throw new \Exception('SFTP key authentication failed');
             }
@@ -843,6 +889,9 @@ class SFTPCurlBackend
         $url = "sftp://{$this->host}:{$this->port}{$path}";
 
         $ch = curl_init();
+        if (! $ch) {
+            throw new \RuntimeException('cURL is not available');
+        }
         curl_setopt($ch, CURLOPT_URL, $url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_TIMEOUT, 25);
@@ -861,8 +910,9 @@ class SFTPCurlBackend
 
         $result = curl_exec($ch);
         $error = curl_error($ch);
+        curl_close($ch);
 
-        if ($error) {
+        if ($error || $result === false) {
             throw new \Exception(esc_html($this->translate_sftp_error($error)));
         }
 
@@ -946,22 +996,18 @@ class SFTPCurlBackend
 
     public function listDirectory($path, int $page = 1, int $pageSize = 100)
     {
-        try {
-            $page = max(1, $page);
-            $pageSize = min(1000, max(1, $pageSize));
-            $offset = ($page - 1) * $pageSize;
-            $data = $this->read_directory_page($path, $offset, $pageSize);
-            return [
-                'items'       => array_values($data['items']),
-                'total_items' => $offset + count($data['items']) + (! empty($data['has_more']) ? 1 : 0),
-                'page'        => $page,
-                'page_size'   => $pageSize,
-                'has_more'    => ! empty($data['has_more']),
-            ];
-        } catch (\Exception $e) {
-            ActivityLogger::get_instance()->log_message('SFTP listDirectory failed for "' . $path . '": ' . $e->getMessage());
-            return ['items' => [], 'total_items' => 0, 'page' => max(1, $page), 'page_size' => min(1000, max(1, $pageSize)), 'has_more' => false];
-        }
+        $page = max(1, $page);
+        $pageSize = min(1000, max(1, $pageSize));
+        $offset = ($page - 1) * $pageSize;
+        $data = $this->read_directory_page($path, $offset, $pageSize);
+
+        return [
+            'items'       => array_values($data['items']),
+            'total_items' => $offset + count($data['items']) + (! empty($data['has_more']) ? 1 : 0),
+            'page'        => $page,
+            'page_size'   => $pageSize,
+            'has_more'    => ! empty($data['has_more']),
+        ];
     }
 
     public function iterateDirectory($path, ?array $cursor = null, int $maxItems = 1000, array $options = []): array
@@ -1161,7 +1207,13 @@ class SFTPCurlBackend
             }
 
             curl_exec($ch);
+            $size_error = curl_error($ch);
             $file_size = curl_getinfo($ch, CURLINFO_CONTENT_LENGTH_DOWNLOAD);
+            curl_close($ch);
+
+            if ($size_error) {
+                throw new \RuntimeException($this->translate_sftp_error($size_error));
+            }
 
             if ($file_size === 0) {
                 return $this->put_contents($target, '')
@@ -1197,10 +1249,11 @@ class SFTPCurlBackend
 
             $chunk_data = curl_exec($source_ch);
             $error = curl_error($source_ch);
+            curl_close($source_ch);
 
             if ($error) {
                 ActivityLogger::get_instance()->log_message('SFTP cURL Copy error: Failed to download chunk at position ' . $bytes_copied . ': ' . $error);
-                return self::COPY_ERROR_DOWNLOADING_CHUNK;
+                throw new \RuntimeException($this->translate_sftp_error($error));
             }
 
             if ($chunk_data === false) {
@@ -1248,12 +1301,13 @@ class SFTPCurlBackend
 
             $upload_result = curl_exec($target_ch);
             $upload_error = curl_error($target_ch);
+            curl_close($target_ch);
             fclose($chunk_handle);
 
             if ($upload_error) {
                 $error_code = ($bytes_copied === 0) ? self::COPY_ERROR_CREATING_FILE : self::COPY_ERROR_APPENDING_TO_FILE;
                 ActivityLogger::get_instance()->log_message('SFTP cURL Copy error: Failed to upload chunk at position ' . $bytes_copied . ': ' . $upload_error . ' (code: ' . $error_code . ')');
-                return $error_code;
+                throw new \RuntimeException($this->translate_sftp_error($upload_error));
             }
 
             if ($upload_result === false) {
@@ -1278,6 +1332,9 @@ class SFTPCurlBackend
             return $is_complete ? self::COPY_OPERATION_COMPLETE : self::COPY_OPERATION_IN_PROGRESS;
         } catch (\Exception $e) {
             ActivityLogger::get_instance()->log_message('SFTP cURL Copy exception at position ' . $bytes_copied . ': ' . $e->getMessage());
+            if (stripos($e->getMessage(), 'SSH') !== false || stripos($e->getMessage(), 'connection') !== false) {
+                throw $e;
+            }
             return self::COPY_ERROR_DOWNLOADING_CHUNK;
         }
     }
@@ -1495,35 +1552,57 @@ class SFTPCurlBackend
 
     public function append_contents($path, $content)
     {
-        // SFTP via curl doesn't support append directly, need to download, append, upload
-        try {
-            $existing = $this->curl_request($path, [CURLOPT_RETURNTRANSFER => true]);
-            $combined = $existing . $content;
-            return $this->upload_content($path, $combined);
-        } catch (\Exception $e) {
-            // File doesn't exist, just write content
-            return $this->upload_content($path, $content);
-        }
+        return $this->upload_content($path, $content, true);
     }
 
-    private function upload_content($path, $content)
+    private function upload_content($path, $content, bool $append = false)
     {
         $url = "sftp://{$this->host}:{$this->port}{$path}";
+        $stream = fopen('php://temp', 'r+'); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
+        if (! $stream) {
+            return false;
+        }
+        fwrite($stream, $content);
+        rewind($stream);
 
         $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_UPLOAD, true);
-        curl_setopt($ch, CURLOPT_INFILE, fopen('data://text/plain,' . $content, 'r'));
-        curl_setopt($ch, CURLOPT_INFILESIZE, strlen($content));
-
-        if ($this->private_key) {
-            curl_setopt($ch, CURLOPT_SSH_PRIVATE_KEYFILE, $this->private_key);
-        } else {
-            curl_setopt($ch, CURLOPT_USERPWD, "{$this->username}:{$this->password}");
+        if (! $ch) {
+            fclose($stream);
+            return false;
         }
 
-        $result = curl_exec($ch);
-        return $result !== false;
+        try {
+            curl_setopt($ch, CURLOPT_URL, $url);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_UPLOAD, true);
+            curl_setopt($ch, CURLOPT_INFILE, $stream);
+            curl_setopt($ch, CURLOPT_INFILESIZE, strlen($content));
+            curl_setopt($ch, CURLOPT_TIMEOUT, 25);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+            if ($append) {
+                curl_setopt($ch, CURLOPT_APPEND, true);
+            }
+
+            if ($this->private_key) {
+                curl_setopt($ch, CURLOPT_SSH_PRIVATE_KEYFILE, $this->private_key);
+                curl_setopt($ch, CURLOPT_SSH_PUBLIC_KEYFILE, $this->private_key . '.pub');
+            } else {
+                curl_setopt($ch, CURLOPT_USERPWD, "{$this->username}:{$this->password}");
+            }
+
+            $result = curl_exec($ch);
+            $error = curl_error($ch);
+
+            if ($error || $result === false) {
+                ActivityLogger::get_instance()->log_message('SFTP cURL put_contents failed for "' . $path . '": ' . ($error ?: 'unknown error'));
+                throw new \RuntimeException($error ?: 'SFTP upload failed');
+            }
+
+            return true;
+        } finally {
+            curl_close($ch);
+            fclose($stream);
+        }
     }
 
     public function download_to_local(string $remote_path, string $local_path): bool
@@ -1550,16 +1629,23 @@ class SFTPCurlBackend
 
             $result = curl_exec($ch);
             $error  = curl_error($ch);
+            curl_close($ch);
             fclose($fp);
+            $fp = null;
 
             if ($error || $result === false) {
                 @unlink($local_path);
-                return false;
+                throw new \RuntimeException($this->translate_sftp_error($error ?: 'SFTP download failed'));
             }
             return true;
         } catch (\Throwable $e) {
-            fclose($fp);
+            if (is_resource($fp)) {
+                fclose($fp);
+            }
             @unlink($local_path);
+            if (stripos($e->getMessage(), 'SSH') !== false || stripos($e->getMessage(), 'connection') !== false) {
+                throw $e;
+            }
             return false;
         }
     }
@@ -1590,10 +1676,20 @@ class SFTPCurlBackend
 
             $result = curl_exec($ch);
             $error  = curl_error($ch);
+            curl_close($ch);
             fclose($fp);
-            return !$error && $result !== false;
+            $fp = null;
+            if ($error || $result === false) {
+                throw new \RuntimeException($this->translate_sftp_error($error ?: 'SFTP upload failed'));
+            }
+            return true;
         } catch (\Throwable $e) {
-            fclose($fp);
+            if (is_resource($fp)) {
+                fclose($fp);
+            }
+            if (stripos($e->getMessage(), 'SSH') !== false || stripos($e->getMessage(), 'connection') !== false) {
+                throw $e;
+            }
             return false;
         }
     }

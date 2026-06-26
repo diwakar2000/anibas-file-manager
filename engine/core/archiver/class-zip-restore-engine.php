@@ -58,12 +58,14 @@ class ZipRestoreEngine {
         $this->state_file    = $this->state_dir . '/state.json';
         $this->lock_file     = $this->state_dir . '/lock';
 
-        $max_time = (int) ini_get( 'max_execution_time' );
-        $this->time_budget = $max_time > 0 ? max( 1, (int) floor( $max_time * 0.6 ) ) : 20;
+        $this->time_budget = function_exists( 'anibas_fm_safe_time_budget' )
+            ? anibas_fm_safe_time_budget( 20, 0.6 )
+            : 20;
 
         $this->chunk_size = intval( anibas_fm_get_option( 'chunk_size', ANIBAS_FM_DEFAULT_CHUNK_SIZE ) );
-        if ( $this->chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN ) $this->chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
-        if ( $this->chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX ) $this->chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
+        $this->chunk_size = function_exists( 'anibas_fm_safe_chunk_size' )
+            ? anibas_fm_safe_chunk_size( $this->chunk_size )
+            : max( ANIBAS_FM_CHUNK_SIZE_MIN, min( ANIBAS_FM_CHUNK_SIZE_MAX, $this->chunk_size ) );
 
     }
 
@@ -168,7 +170,7 @@ class ZipRestoreEngine {
             ];
         }
 
-        $data = json_decode( file_get_contents( $this->state_file ), true );
+        $data = anibas_fm_read_small_json_file( $this->state_file );
 
         return is_array( $data ) ? $data : [
             'cursor' => 0,
@@ -242,7 +244,7 @@ class ZipRestoreEngine {
                 throw new Exception( 'Manifest not built. Call build_manifest() first.' );
             }
 
-            $manifest = json_decode( file_get_contents( $this->manifest_file ), true );
+            $manifest = anibas_fm_read_small_json_file( $this->manifest_file );
 
             if ( ! is_array( $manifest ) || ! isset( $manifest['entries'] ) ) {
                 throw new Exception( 'Invalid manifest file' );
@@ -362,7 +364,7 @@ class ZipRestoreEngine {
             return [ 'current' => 0, 'total' => 0, 'percent' => 0 ];
         }
 
-        $manifest = json_decode( file_get_contents( $this->manifest_file ), true );
+        $manifest = anibas_fm_read_small_json_file( $this->manifest_file );
         $state    = $this->load_state();
         $total    = isset( $manifest['total'] ) ? (int) $manifest['total'] : 0;
         $current  = isset( $state['cursor'] ) ? (int) $state['cursor'] : 0;
@@ -403,7 +405,7 @@ class ZipRestoreEngine {
             return false;
         }
 
-        $manifest = json_decode( file_get_contents( $this->manifest_file ), true );
+        $manifest = anibas_fm_read_small_json_file( $this->manifest_file );
         $state    = $this->load_state();
         $total    = isset( $manifest['total'] ) ? (int) $manifest['total'] : 0;
 

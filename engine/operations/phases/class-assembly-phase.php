@@ -134,82 +134,9 @@ class AssemblyPhase extends OperationPhase
         fclose($out);
     }
 
-    private function is_s3_storage($storage)
-    {
-        return $storage === 's3' || $storage === 's3_compatible' || strpos($storage, 's3') !== false;
-    }
-
     private function assemble_remote_chunks(&$job, $start, $end, $temp_dir, $storage)
     {
-        // Some adapters do not support remote append. Assemble locally first.
-        if ($this->is_s3_storage($storage) || $this->requires_local_upload_assembly($storage)) {
-            $this->assemble_local_chunks($job, $start, $end, $temp_dir);
-            return;
-        }
-
-        $adapter = StorageManager::get_instance()->get_adapter($storage);
-        $target = rtrim($job['destination'], '/') . '/' . $job['file_name'] . '.tmp';
-
-        // Initialize retry tracking
-        if (! isset($job['chunk_retries'])) {
-            $job['chunk_retries'] = [];
-        }
-
-        for ($i = $start; $i < $end; $i++) {
-            $chunk_file = $temp_dir . '/chunk_' . $i;
-            if (! file_exists($chunk_file)) {
-                // Check if this chunk was already processed (shouldn't happen but defensive)
-                if (isset($job['chunk_retries'][$i])) {
-                    // Chunk was being retried but is now missing - fail permanently
-                    throw new \Exception(esc_html__('Chunk ', 'anibas-file-manager') . esc_html($i) . esc_html__(' disappeared during retry (was being retried but file is now missing)', 'anibas-file-manager'));
-                }
-                // Chunk never uploaded - this is a fatal error
-                throw new \Exception(esc_html__('Chunk ', 'anibas-file-manager') . esc_html($i) . esc_html__(' not found - upload may be incomplete. Expected at: ', 'anibas-file-manager') . esc_html($chunk_file));
-            }
-
-            $chunk_content = file_get_contents($chunk_file);
-
-            try {
-                if ($i === 0) {
-                    $success = $adapter->put_contents($target, $chunk_content);
-                    if (! $success) {
-                        throw new \Exception(esc_html__('Failed to create remote file', 'anibas-file-manager'));
-                    }
-                } else {
-                    $success = $adapter->append_contents($target, $chunk_content);
-                    if (! $success) {
-                        throw new \Exception(esc_html__('Failed to append chunk ', 'anibas-file-manager') . esc_html($i));
-                    }
-                }
-
-                // Success - clear retry count for this chunk
-                unset($job['chunk_retries'][$i]);
-                wp_delete_file($chunk_file);
-            } catch (\Exception $e) {
-                // Track retry count
-                if (! isset($job['chunk_retries'][$i])) {
-                    $job['chunk_retries'][$i] = 0;
-                }
-                $job['chunk_retries'][$i]++;
-
-                // Check if max retries reached
-                if ($job['chunk_retries'][$i] >= 3) {
-                    $job['current_chunk'] = $i;
-                    throw new \Exception(esc_html__('Failed to process chunk ', 'anibas-file-manager') . esc_html($i) . esc_html__(' after 3 attempts: ', 'anibas-file-manager') . esc_html($e->getMessage()));
-                }
-
-                // Don't delete chunk file - will retry on next request
-                // Set current_chunk to this failed chunk so next request retries it
-                $job['current_chunk'] = $i;
-                throw new \Exception(esc_html__('Chunk ', 'anibas-file-manager') . esc_html($i) . esc_html__(' failed (attempt ', 'anibas-file-manager') . esc_html($job['chunk_retries'][$i]) . esc_html__('/3): ', 'anibas-file-manager') . esc_html($e->getMessage()));
-            }
-        }
-    }
-
-    private function requires_local_upload_assembly($storage): bool
-    {
-        $adapter = StorageManager::get_instance()->get_adapter($storage);
-        return $adapter && method_exists($adapter, 'requires_local_upload_assembly') && $adapter->requires_local_upload_assembly();
+        $this->assemble_local_chunks($job, $start, $end, $temp_dir);
     }
 
     public function is_complete($work_queue)

@@ -140,6 +140,201 @@ if ( ! function_exists( 'anibas_fm_protect_dir' ) ) {
     }
 }
 
+if ( ! function_exists( 'anibas_fm_safe_time_budget' ) ) {
+    /**
+     * Return a conservative per-request worker budget.
+     *
+     * The configured/default budget is treated as the upper bound. PHP's
+     * max_execution_time, when reported, can only reduce that value.
+     */
+    function anibas_fm_safe_time_budget( int $preferred_seconds = 20, float $execution_fraction = 0.55, int $minimum_seconds = 1 ): int {
+        $preferred_seconds = max( $minimum_seconds, $preferred_seconds );
+        $raw_max_time      = ini_get( 'max_execution_time' );
+        $max_time          = is_numeric( $raw_max_time ) ? (int) $raw_max_time : 0;
+
+        if ( $max_time > 0 ) {
+            $ini_budget = max( $minimum_seconds, (int) floor( $max_time * max( 0.1, min( 0.9, $execution_fraction ) ) ) );
+            return max( $minimum_seconds, min( $preferred_seconds, $ini_budget ) );
+        }
+
+        return $preferred_seconds;
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_parse_size_to_bytes' ) ) {
+    function anibas_fm_parse_size_to_bytes( $value ): ?int {
+        if ( is_int( $value ) ) {
+            return $value >= 0 ? $value : null;
+        }
+        if ( ! is_string( $value ) ) {
+            return null;
+        }
+
+        $value = trim( $value );
+        if ( $value === '' || $value === '-1' ) {
+            return null;
+        }
+
+        $unit = strtolower( substr( $value, -1 ) );
+        $number = (float) $value;
+        if ( $number < 0 ) {
+            return null;
+        }
+
+        switch ( $unit ) {
+            case 'g':
+                $number *= 1024;
+                // no break
+            case 'm':
+                $number *= 1024;
+                // no break
+            case 'k':
+                $number *= 1024;
+                break;
+        }
+
+        return (int) floor( $number );
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_memory_headroom' ) ) {
+    /**
+     * @return array{known:bool,limit:int|null,usage:int,available:int|null}
+     */
+    function anibas_fm_memory_headroom(): array {
+        $limit = anibas_fm_parse_size_to_bytes( ini_get( 'memory_limit' ) );
+        $usage = memory_get_usage( true );
+
+        if ( $limit === null || $limit <= 0 ) {
+            return array(
+                'known'     => false,
+                'limit'     => null,
+                'usage'     => $usage,
+                'available' => null,
+            );
+        }
+
+        return array(
+            'known'     => true,
+            'limit'     => $limit,
+            'usage'     => $usage,
+            'available' => max( 0, $limit - $usage ),
+        );
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_safe_chunk_size' ) ) {
+    function anibas_fm_safe_chunk_size( int $configured_size, int $min_size = ANIBAS_FM_CHUNK_SIZE_MIN, int $max_size = ANIBAS_FM_CHUNK_SIZE_MAX ): int {
+        $configured_size = max( $min_size, min( $max_size, $configured_size ) );
+        $memory = anibas_fm_memory_headroom();
+
+        if ( ! $memory['known'] ) {
+            return min( $configured_size, 4 * 1024 * 1024 );
+        }
+
+        $available = (int) ( $memory['available'] ?? 0 );
+        $safe_max  = (int) floor( $available / 8 );
+        if ( $safe_max < $min_size ) {
+            throw new \RuntimeException( esc_html__( 'Available PHP memory is too low to process file chunks safely.', 'anibas-file-manager' ) );
+        }
+
+        return max( $min_size, min( $configured_size, $safe_max ) );
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_read_small_file' ) ) {
+    function anibas_fm_read_small_file( string $path, int $max_bytes = 1048576 ): string {
+        $path = wp_normalize_path( $path );
+        if ( $path === '' || ! is_file( $path ) ) {
+            throw new \RuntimeException( esc_html__( 'Expected small internal file is missing.', 'anibas-file-manager' ) );
+        }
+
+        $size = (int) filesize( $path );
+        if ( $size > $max_bytes ) {
+            throw new \RuntimeException( esc_html__( 'Internal metadata file is larger than the safe read limit.', 'anibas-file-manager' ) );
+        }
+
+        $handle = @fopen( $path, 'rb' );
+        if ( ! $handle ) {
+            throw new \RuntimeException( esc_html__( 'Failed to open internal metadata file.', 'anibas-file-manager' ) );
+        }
+
+        $contents = '';
+        while ( ! feof( $handle ) ) {
+            $chunk = fread( $handle, min( 65536, max( 1, $max_bytes - strlen( $contents ) ) ) );
+            if ( $chunk === false ) {
+                fclose( $handle );
+                throw new \RuntimeException( esc_html__( 'Failed to read internal metadata file.', 'anibas-file-manager' ) );
+            }
+            $contents .= $chunk;
+            if ( strlen( $contents ) > $max_bytes ) {
+                fclose( $handle );
+                throw new \RuntimeException( esc_html__( 'Internal metadata file exceeded the safe read limit.', 'anibas-file-manager' ) );
+            }
+        }
+        fclose( $handle );
+
+        return $contents;
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_read_small_json_file' ) ) {
+    function anibas_fm_read_small_json_file( string $path, int $max_bytes = 1048576 ): array {
+        $json = anibas_fm_read_small_file( $path, $max_bytes );
+        $data = json_decode( $json, true );
+        return is_array( $data ) ? $data : array();
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_runtime_preflight' ) ) {
+    /**
+     * @return array{ok:bool,errors:array<int,string>,warnings:array<int,string>,memory:array<string,mixed>,disk:array<string,mixed>}
+     */
+    function anibas_fm_runtime_preflight( string $path, int $required_disk_bytes = 0, int $required_memory_bytes = 33554432, bool $require_disk_answer = true ): array {
+        $errors = array();
+        $warnings = array();
+
+        $check_path = is_dir( $path ) ? $path : dirname( $path );
+        while ( $check_path !== '' && ! is_dir( $check_path ) && dirname( $check_path ) !== $check_path ) {
+            $check_path = dirname( $check_path );
+        }
+
+        $free = is_dir( $check_path ) ? @disk_free_space( $check_path ) : false;
+        $disk = array(
+            'path'      => $check_path,
+            'known'     => is_int( $free ) || is_float( $free ),
+            'free'      => ( is_int( $free ) || is_float( $free ) ) ? (int) $free : null,
+            'required'  => max( 0, $required_disk_bytes ),
+        );
+
+        if ( ! $disk['known'] ) {
+            $message = esc_html__( 'The server did not report available disk space, so the backup cannot safely verify that enough space exists.', 'anibas-file-manager' );
+            if ( $require_disk_answer ) {
+                $errors[] = $message;
+            } else {
+                $warnings[] = $message;
+            }
+        } elseif ( $required_disk_bytes > 0 && (int) $disk['free'] < $required_disk_bytes ) {
+            $errors[] = esc_html__( 'Available disk space is lower than the estimated space required for this operation.', 'anibas-file-manager' );
+        }
+
+        $memory = anibas_fm_memory_headroom();
+        if ( ! $memory['known'] ) {
+            $warnings[] = esc_html__( 'PHP memory limit is not reported; the operation will use conservative chunk sizes.', 'anibas-file-manager' );
+        } elseif ( $required_memory_bytes > 0 && (int) ( $memory['available'] ?? 0 ) < $required_memory_bytes ) {
+            $errors[] = esc_html__( 'Available PHP memory is lower than the minimum required to start safely.', 'anibas-file-manager' );
+        }
+
+        return array(
+            'ok'       => empty( $errors ),
+            'errors'   => $errors,
+            'warnings' => $warnings,
+            'memory'   => $memory,
+            'disk'     => $disk,
+        );
+    }
+}
+
 if ( ! function_exists( 'anibas_fm_fetch_request_variable' ) ) {
     function anibas_fm_fetch_request_variable( $from = 'request', $key = false, $default = null ) {
         if ( 'get' === $from ) {
@@ -362,6 +557,9 @@ if ( ! function_exists( 'anibas_fm_get_blocked_paths' ) ) {
             'wp-content/backup-db',
             'wp-content/backups',
             'wp-content/' . ANIBAS_FM_BACKUP_DIR_NAME,
+            '.anibas-site-backup-*',
+            '.anibas-site-restore-*',
+            '.anibas-site-restore-state',
             
             // Logs
             'error_log',
@@ -452,6 +650,80 @@ if ( ! function_exists( 'anibas_fm_update_option' ) ) {
         }
 
         return update_option( 'AnibasFileManagerOptions', $options );
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_truthy_constant' ) ) {
+    function anibas_fm_truthy_constant( array $names ): bool {
+        foreach ( $names as $name ) {
+            if ( ! defined( $name ) ) {
+                continue;
+            }
+
+            $value = constant( $name );
+            if ( is_bool( $value ) ) {
+                if ( $value ) {
+                    return true;
+                }
+                continue;
+            }
+
+            if ( is_numeric( $value ) ) {
+                if ( (int) $value === 1 ) {
+                    return true;
+                }
+                continue;
+            }
+
+            if ( is_string( $value ) ) {
+                if ( in_array( strtolower( trim( $value ) ), array( '1', 'true', 'yes', 'on' ), true ) ) {
+                    return true;
+                }
+                continue;
+            }
+        }
+
+        return false;
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_database_view_constant_enabled' ) ) {
+    function anibas_fm_database_view_constant_enabled(): bool {
+        return anibas_fm_truthy_constant( array(
+            'ANIBAS_FM_ENABLE_DATABASE_VIEW',
+            'anibas_enable_database_view',
+        ) );
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_database_view_enabled' ) ) {
+    function anibas_fm_database_view_enabled(): bool {
+        return anibas_fm_database_view_constant_enabled()
+            && (bool) anibas_fm_get_option( 'database_view_enabled', false );
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_database_edit_constant_enabled' ) ) {
+    function anibas_fm_database_edit_constant_enabled(): bool {
+        return anibas_fm_truthy_constant( array(
+            'ANIBAS_FM_ENABLE_DATABASE_EDIT',
+            'anibas_enable_database_edit',
+        ) );
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_database_edit_enabled' ) ) {
+    function anibas_fm_database_edit_enabled(): bool {
+        return anibas_fm_database_view_enabled()
+            && anibas_fm_database_edit_constant_enabled()
+            && (bool) anibas_fm_get_option( 'database_edit_enabled', false );
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_database_password_required' ) ) {
+    function anibas_fm_database_password_required(): bool {
+        return anibas_fm_database_view_enabled()
+            && ! empty( anibas_fm_get_option( 'database_password_hash', '' ) );
     }
 }
 
@@ -704,9 +976,13 @@ if ( ! function_exists( 'anibas_fm_purge_trash' ) ) {
         $index_file = $trash_dir . '/index.json';
         $index = [];
         if ( file_exists( $index_file ) ) {
-            $raw = file_get_contents( $index_file ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
-            if ( $raw ) {
-                $index = json_decode( $raw, true ) ?: [];
+            try {
+                $raw = anibas_fm_read_small_file( $index_file );
+                if ( $raw ) {
+                    $index = json_decode( $raw, true ) ?: [];
+                }
+            } catch ( \Throwable $e ) {
+                $index = [];
             }
         }
 
@@ -797,6 +1073,93 @@ add_action( 'init', 'anibas_fm_ensure_oauth_refresh_cron' );
 /* =========================================================
    BACKUP HELPERS
 ========================================================= */
+
+if ( ! function_exists( 'anibas_fm_get_site_backup_cloud_folder_name' ) ) {
+    /**
+     * Build the deterministic cloud folder for full-site backup exports.
+     *
+     * The readable part helps admins recognize the site/network. The hash keeps
+     * the folder stable and unique even when multisite labels are long or repeat.
+     */
+    function anibas_fm_get_site_backup_cloud_folder_name(): string {
+        $site_url = is_multisite() ? network_home_url( '/' ) : home_url( '/' );
+        $host     = wp_parse_url( $site_url, PHP_URL_HOST );
+        $labels   = array();
+        $identity = array( (string) $site_url );
+
+        if ( is_multisite() ) {
+            $network = function_exists( 'get_network' ) ? get_network() : null;
+            $network_name = is_object( $network ) && ! empty( $network->site_name )
+                ? (string) $network->site_name
+                : ( get_bloginfo( 'name' ) ?: (string) $host );
+            $labels[] = wp_specialchars_decode( $network_name, ENT_QUOTES );
+
+            $site_count = function_exists( 'get_blog_count' ) ? (int) get_blog_count() : 0;
+            if ( $site_count > 0 ) {
+                $labels[] = $site_count . '-sites';
+                $identity[] = 'site-count:' . $site_count;
+            }
+
+            if ( function_exists( 'get_sites' ) ) {
+                $sites = get_sites( array(
+                    'number'  => 5,
+                    'orderby' => 'domain',
+                    'order'   => 'ASC',
+                ) );
+                foreach ( $sites as $site ) {
+                    $details = function_exists( 'get_blog_details' ) ? get_blog_details( $site->blog_id ) : null;
+                    $label   = is_object( $details ) && ! empty( $details->blogname )
+                        ? (string) $details->blogname
+                        : ( (string) $site->domain . trim( (string) $site->path, '/' ) );
+                    $labels[]   = wp_specialchars_decode( $label, ENT_QUOTES );
+                    $identity[] = (string) $site->domain . (string) $site->path . ':' . $label;
+                }
+                if ( $site_count > count( $sites ) ) {
+                    $labels[] = 'and-' . ( $site_count - count( $sites ) ) . '-more-sites';
+                }
+            }
+        } else {
+            $site_name = get_bloginfo( 'name' ) ?: (string) $host;
+            $labels[] = wp_specialchars_decode( $site_name, ENT_QUOTES );
+            $identity[] = site_url( '/' );
+        }
+
+        $slug = sanitize_title( implode( '-', array_filter( $labels ) ) );
+        $slug = strtolower( (string) preg_replace( '/[^a-z0-9-]+/', '-', $slug ) );
+        $slug = (string) preg_replace( '/-+/', '-', $slug );
+        if ( $slug === '' ) {
+            $slug = sanitize_title( (string) $host );
+            $slug = strtolower( (string) preg_replace( '/[^a-z0-9-]+/', '-', $slug ) );
+            $slug = (string) preg_replace( '/-+/', '-', $slug );
+        }
+        if ( $slug === '' ) {
+            $slug = 'wordpress-site';
+        }
+
+        $slug = trim( substr( $slug, 0, 90 ), '-' );
+        $hash = substr( hash( 'sha256', implode( '|', $identity ) ), 0, 10 );
+
+        return 'anibas-backup-' . $slug . '-' . $hash;
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_is_site_backup_cloud_folder_name' ) ) {
+    function anibas_fm_is_site_backup_cloud_folder_name( string $name ): bool {
+        return str_starts_with( strtolower( trim( $name ) ), 'anibas-backup-' );
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_is_site_backup_cloud_path' ) ) {
+    function anibas_fm_is_site_backup_cloud_path( string $path ): bool {
+        $path = str_replace( '\\', '/', $path );
+        foreach ( explode( '/', trim( $path, '/' ) ) as $segment ) {
+            if ( anibas_fm_is_site_backup_cloud_folder_name( $segment ) ) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
 
 if ( ! function_exists( 'anibas_fm_get_backup_dir' ) ) {
     /**
@@ -924,6 +1287,119 @@ if ( ! function_exists( 'anibas_fm_get_file_backups_dir' ) ) {
             wp_mkdir_p( $dir );
             anibas_fm_protect_dir( $dir );
         }
+        return $dir;
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_get_database_backup_state_dir' ) ) {
+    /**
+     * Get a protected state directory for chunked database backup/restore work.
+     */
+    function anibas_fm_get_database_backup_state_dir( string $job_id ): string {
+        $job_id = preg_replace( '/[^A-Za-z0-9_-]/', '', $job_id ) ?: '';
+        if ( $job_id === '' ) {
+            throw new \InvalidArgumentException( 'Database backup job id is required.' );
+        }
+
+        $root = anibas_fm_get_backup_dir() . '/database-state';
+        if ( ! is_dir( $root ) ) {
+            wp_mkdir_p( $root );
+            anibas_fm_protect_dir( $root );
+        }
+        if ( ! is_dir( $root ) ) {
+            throw new \RuntimeException( 'Failed to create database backup state root.' );
+        }
+
+        $dir = $root . '/' . $job_id;
+        if ( ! is_dir( $dir ) ) {
+            wp_mkdir_p( $dir );
+            anibas_fm_protect_dir( $dir );
+        }
+        if ( ! is_dir( $dir ) ) {
+            throw new \RuntimeException( 'Failed to create database backup state directory.' );
+        }
+
+        return $dir;
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_get_site_backup_payload_dir' ) ) {
+    /**
+     * Get the temporary in-package payload directory for a full-site backup.
+     */
+    function anibas_fm_get_site_backup_payload_dir( string $job_id ): string {
+        $job_id = preg_replace( '/[^A-Za-z0-9_-]/', '', $job_id ) ?: '';
+        if ( $job_id === '' ) {
+            throw new \InvalidArgumentException( 'Site backup job id is required.' );
+        }
+
+        $root = untrailingslashit( wp_normalize_path( ABSPATH ) );
+        $dir  = $root . '/.anibas-site-backup-' . $job_id;
+        if ( ! is_dir( $dir ) ) {
+            wp_mkdir_p( $dir );
+            anibas_fm_protect_dir( $dir );
+        }
+        if ( ! is_dir( $dir ) ) {
+            throw new \RuntimeException( 'Failed to create site backup payload directory.' );
+        }
+
+        return $dir;
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_get_site_restore_state_dir' ) ) {
+    /**
+     * Get a protected state directory for full-site restore jobs.
+     */
+    function anibas_fm_get_site_restore_state_dir( string $job_id ): string {
+        $job_id = preg_replace( '/[^A-Za-z0-9_-]/', '', $job_id ) ?: '';
+        if ( $job_id === '' ) {
+            throw new \InvalidArgumentException( 'Site restore job id is required.' );
+        }
+
+        $site_root = untrailingslashit( wp_normalize_path( ABSPATH ) );
+        $root = $site_root . '/.anibas-site-restore-state';
+        if ( ! is_dir( $root ) ) {
+            wp_mkdir_p( $root );
+            anibas_fm_protect_dir( $root );
+        }
+        if ( ! is_dir( $root ) ) {
+            throw new \RuntimeException( 'Failed to create site restore state root.' );
+        }
+
+        $dir = $root . '/' . $job_id;
+        if ( ! is_dir( $dir ) ) {
+            wp_mkdir_p( $dir );
+            anibas_fm_protect_dir( $dir );
+        }
+        if ( ! is_dir( $dir ) ) {
+            throw new \RuntimeException( 'Failed to create site restore state directory.' );
+        }
+
+        return $dir;
+    }
+}
+
+if ( ! function_exists( 'anibas_fm_get_site_restore_staging_dir' ) ) {
+    /**
+     * Get the filesystem staging directory used before final site file swap.
+     */
+    function anibas_fm_get_site_restore_staging_dir( string $job_id ): string {
+        $job_id = preg_replace( '/[^A-Za-z0-9_-]/', '', $job_id ) ?: '';
+        if ( $job_id === '' ) {
+            throw new \InvalidArgumentException( 'Site restore job id is required.' );
+        }
+
+        $root = untrailingslashit( wp_normalize_path( ABSPATH ) );
+        $dir  = $root . '/.anibas-site-restore-' . $job_id;
+        if ( ! is_dir( $dir ) ) {
+            wp_mkdir_p( $dir );
+            anibas_fm_protect_dir( $dir );
+        }
+        if ( ! is_dir( $dir ) ) {
+            throw new \RuntimeException( 'Failed to create site restore staging directory.' );
+        }
+
         return $dir;
     }
 }
@@ -1578,7 +2054,13 @@ if ( ! function_exists( 'anibas_fm_sanitize_remote_settings' ) ) {
                 if ( ! array_key_exists( $k, $input[ $storage ] ) ) continue;
                 $v = $input[ $storage ][ $k ];
                 $type = $field['type'] ?? 'text';
-                if ( in_array( $type, array( 'toggle', 'checkbox', 'boolean' ), true ) ) {
+                if ( ! empty( $field['secret'] ) ) {
+                    $value = is_scalar( $v ) ? str_replace( chr( 0 ), '', (string) $v ) : '';
+                    if ( isset( $field['maxLength'] ) ) {
+                        $value = substr( $value, 0, (int) $field['maxLength'] );
+                    }
+                    $row[ $k ] = $value;
+                } elseif ( in_array( $type, array( 'toggle', 'checkbox', 'boolean' ), true ) ) {
                     $row[ $k ] = (bool) $v;
                 } elseif ( in_array( $type, array( 'number', 'integer' ), true ) ) {
                     $value = (int) $v;

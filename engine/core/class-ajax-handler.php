@@ -12,7 +12,7 @@ if (! defined('ABSPATH')) exit;
  */
 class AjaxHandler
 {
-    protected $root_path;
+    protected string|false $root_path;
 
     public function __construct()
     {
@@ -145,6 +145,82 @@ class AjaxHandler
         $this->check_nonce(ANIBAS_FM_NONCE_CREATE);
         $this->check_admin_privilege();
         $this->check_fm_token();
+    }
+
+    protected function check_database_view_privilege(): void
+    {
+        $this->check_database_view_enabled();
+
+        $this->check_nonce(ANIBAS_FM_NONCE_DATABASE);
+        $this->check_admin_privilege();
+        $this->check_fm_token();
+        $this->check_database_token();
+    }
+
+    protected function check_database_edit_privilege(): void
+    {
+        $this->check_database_view_privilege();
+
+        if (! anibas_fm_database_edit_constant_enabled()) {
+            $this->send_error(array(
+                'error' => 'DatabaseEditDisabled',
+                'message' => esc_html__('Database editing is disabled. Add ANIBAS_FM_ENABLE_DATABASE_EDIT to wp-config.php to allow it.', 'anibas-file-manager'),
+            ), 403);
+        }
+
+        if (! anibas_fm_database_edit_enabled()) {
+            $this->send_error(array(
+                'error' => 'DatabaseEditDisabled',
+                'message' => esc_html__('Database editing is disabled in settings.', 'anibas-file-manager'),
+            ), 403);
+        }
+    }
+
+    protected function check_database_view_enabled(): void
+    {
+        if (! anibas_fm_database_view_constant_enabled()) {
+            $this->send_error(array(
+                'error' => 'DatabaseViewDisabled',
+                'message' => esc_html__('Database browsing is disabled. Add ANIBAS_FM_ENABLE_DATABASE_VIEW to wp-config.php to allow it.', 'anibas-file-manager'),
+            ), 403);
+        }
+
+        if (! anibas_fm_database_view_enabled()) {
+            $this->send_error(array(
+                'error' => 'DatabaseViewDisabled',
+                'message' => esc_html__('Database browsing is disabled in settings.', 'anibas-file-manager'),
+            ), 403);
+        }
+    }
+
+    protected function check_database_token(): void
+    {
+        if (! anibas_fm_database_password_required()) {
+            return;
+        }
+
+        if (! anibas_fm_fetch_request_variable('request', 'db_token', '')) {
+            $this->send_error(array('error' => 'DBTokenRequired', 'message' => esc_html__('Database password required', 'anibas-file-manager')), 401);
+        }
+
+        if (! $this->has_valid_database_token()) {
+            $this->send_error(array('error' => 'DBTokenRequired', 'message' => esc_html__('Database session expired. Please re-enter the database password.', 'anibas-file-manager')), 401);
+        }
+    }
+
+    protected function has_valid_database_token(): bool
+    {
+        if (! anibas_fm_database_password_required()) {
+            return true;
+        }
+
+        $user_id     = get_current_user_id();
+        $raw_token   = anibas_fm_fetch_request_variable('request', 'db_token', '');
+        $stored_hash = get_transient('anibas_fm_db_token_' . $user_id);
+        $password_hash = anibas_fm_get_option('database_password_hash', '');
+        $expected_hash = $raw_token && $password_hash ? hash('sha256', $raw_token . '|' . $password_hash) : '';
+
+        return $raw_token && $stored_hash && $expected_hash && hash_equals($stored_hash, $expected_hash);
     }
 
     protected function check_save_settings_privilege()

@@ -130,6 +130,35 @@ class SettingsAjaxHandler extends AjaxHandler
             $updates['debug_mode'] = anibas_fm_is_development_site() && anibas_fm_fetch_request_variable('post', 'debug_mode', '0') === '1';
         }
 
+        if (anibas_fm_database_view_constant_enabled()) {
+            if (isset($_POST['database_view_enabled'])) {
+                $updates['database_view_enabled'] = anibas_fm_fetch_request_variable('post', 'database_view_enabled', '0') === '1';
+            }
+
+            if (anibas_fm_database_edit_constant_enabled() && isset($_POST['database_edit_enabled'])) {
+                $updates['database_edit_enabled'] = anibas_fm_fetch_request_variable('post', 'database_edit_enabled', '0') === '1';
+            } elseif (! anibas_fm_database_edit_constant_enabled()) {
+                $updates['database_edit_enabled'] = false;
+            }
+
+            $database_password = anibas_fm_fetch_request_variable('post', 'database_password', '');
+            $remove_database_password = anibas_fm_fetch_request_variable('post', 'remove_database_password', '');
+            if (! empty($database_password)) {
+                $updates['database_password_hash'] = wp_hash_password($database_password);
+                delete_transient('anibas_fm_db_token_' . get_current_user_id());
+            } elseif ($remove_database_password === '1') {
+                $updates['database_password_hash'] = '';
+                delete_transient('anibas_fm_db_token_' . get_current_user_id());
+            }
+        } else {
+            $updates['database_view_enabled'] = false;
+            $updates['database_edit_enabled'] = false;
+        }
+
+        if (array_key_exists('database_view_enabled', $updates) && ! $updates['database_view_enabled']) {
+            $updates['database_edit_enabled'] = false;
+        }
+
         anibas_fm_update_option($updates);
         $this->send_success(array('message' => esc_html__('Settings saved successfully', 'anibas-file-manager')));
     }
@@ -143,6 +172,10 @@ class SettingsAjaxHandler extends AjaxHandler
             $this->check_settings_auth();
 
             $settings = anibas_fm_get_remote_settings();
+            if (anibas_fm_fetch_request_variable('request', 'summary', '') === '1') {
+                $this->send_success($this->remote_settings_availability_summary($settings));
+            }
+
             $providers = anibas_fm_remote_storage_providers();
 
             foreach ($settings as $storage => $conn) {
@@ -172,48 +205,54 @@ class SettingsAjaxHandler extends AjaxHandler
             $this->check_fm_token();
 
             $settings = anibas_fm_get_remote_settings();
-            $summary = array();
-
-            foreach (anibas_fm_remote_storage_providers() as $storage => $provider) {
-                $factory = $provider['adapter_factory'] ?? null;
-                if (! $factory || ! is_callable($factory)) {
-                    continue;
-                }
-
-                $is_available = ! empty($settings[$storage]['enabled'])
-                    && $this->saved_remote_connection_passes($storage, $settings[$storage]);
-
-                $summary[$storage] = array(
-                    'enabled' => $is_available,
-                    'label'   => $provider['label'] ?? $storage,
-                );
-            }
-
-            $this->send_success($summary);
+            $this->send_success($this->remote_settings_availability_summary($settings));
         }
 
         $this->send_error(esc_html__('Invalid nonce.', 'anibas-file-manager'), 401);
     }
 
-    private function saved_remote_connection_passes(string $storage, array $config): bool
+    private function remote_settings_availability_summary(array $settings): array
     {
-        $cache_key = 'anibas_fm_remote_ok_v3_' . $storage . '_' . md5(wp_json_encode($config));
-        $cached = get_transient($cache_key);
+        $summary = array();
 
-        if ($cached === '1' || $cached === '0') {
-            return $cached === '1';
+        foreach (anibas_fm_remote_storage_providers() as $storage => $provider) {
+            $factory = $provider['adapter_factory'] ?? null;
+            if (! $factory || ! is_callable($factory)) {
+                continue;
+            }
+
+            $connection = is_array($settings[$storage] ?? null) ? $settings[$storage] : array();
+            $is_enabled = ! empty($settings[$storage]['enabled']);
+            $connection_status = $is_enabled
+                ? $this->saved_remote_connection_status($storage, $connection)
+                : array('success' => false, 'message' => '');
+            $is_available = $is_enabled && ! empty($connection_status['success']);
+
+            $summary[$storage] = array(
+                'enabled'   => $is_enabled,
+                'available' => $is_available,
+                'label'     => $provider['label'] ?? $storage,
+                'message'   => (string) ($connection_status['message'] ?? ''),
+            );
         }
 
+        return $summary;
+    }
+
+    private function saved_remote_connection_status(string $storage, array $config): array
+    {
         try {
             $result = $this->test_remote_storage($storage, $config);
         } catch (\Throwable $e) {
-            $result = array('success' => false);
+            $result = array('success' => false, 'message' => $e->getMessage());
         }
 
-        $success = ! empty($result['success']);
-        set_transient($cache_key, $success ? '1' : '0', MINUTE_IN_SECONDS);
+        $status = array(
+            'success' => ! empty($result['success']),
+            'message' => (string) ($result['message'] ?? ''),
+        );
 
-        return $success;
+        return $status;
     }
 
     public function save_remote_settings()
@@ -223,8 +262,17 @@ class SettingsAjaxHandler extends AjaxHandler
 
         $raw      = json_decode(stripslashes(anibas_fm_fetch_request_variable('post', 'settings', '')), true);
         $sanitized = anibas_fm_sanitize_remote_settings($raw);
+        $availability = $this->disable_new_unavailable_remote_connections($sanitized);
+        $sanitized = $availability['settings'];
         update_option('anibas_fm_remote_connections', $sanitized);
-        $this->send_success();
+
+        $message = empty($availability['disabled'])
+            ? esc_html__('Remote settings saved successfully.', 'anibas-file-manager')
+            : esc_html__('Remote settings saved. Unavailable storage was left disabled.', 'anibas-file-manager');
+        $this->send_success(array(
+            'message'  => $message,
+            'disabled' => $availability['disabled'],
+        ));
     }
 
     public function test_remote_connection()
@@ -305,5 +353,54 @@ class SettingsAjaxHandler extends AjaxHandler
 
         $result = call_user_func($tester, $config);
         return is_array($result) ? $result : ['success' => false, 'message' => esc_html__('Connection test failed', 'anibas-file-manager')];
+    }
+
+    private function disable_new_unavailable_remote_connections(array $settings): array
+    {
+        $next = anibas_fm_decrypt_remote_settings($settings);
+        if (! is_array($next)) {
+            return array('settings' => $settings, 'disabled' => array());
+        }
+
+        $existing = anibas_fm_get_remote_settings();
+        $providers = anibas_fm_remote_storage_providers();
+        $disabled = array();
+
+        foreach ($next as $storage => $config) {
+            if (! is_array($config) || empty($config['enabled'])) {
+                continue;
+            }
+
+            $previous = is_array($existing[$storage] ?? null) ? $existing[$storage] : array();
+            $was_enabled = ! empty($previous['enabled']);
+            if ($was_enabled && ! $this->remote_connection_config_changed($config, $previous)) {
+                continue;
+            }
+
+            $status = $this->saved_remote_connection_status($storage, $config);
+            if (! empty($status['success'])) {
+                continue;
+            }
+
+            $next[$storage]['enabled'] = false;
+            $disabled[$storage] = array(
+                'label'   => $providers[$storage]['label'] ?? $storage,
+                'message' => (string) ($status['message'] ?? ''),
+            );
+        }
+
+        return array(
+            'settings' => empty($disabled) ? $settings : anibas_fm_encrypt_remote_settings($next),
+            'disabled' => $disabled,
+        );
+    }
+
+    private function remote_connection_config_changed(array $next, array $previous): bool
+    {
+        unset($next['enabled'], $previous['enabled']);
+        ksort($next);
+        ksort($previous);
+
+        return wp_json_encode($next) !== wp_json_encode($previous);
     }
 }

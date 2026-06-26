@@ -15,6 +15,7 @@ class LocalFileSystemAdapter extends FileSystemAdapter
     private array $protectedPaths = [];
     private \WP_Filesystem_Direct $fs;
     private string $lastFailureReason = '';
+    private bool $allowPrivateBackupPaths = false;
 
     public function __construct()
     {
@@ -26,6 +27,11 @@ class LocalFileSystemAdapter extends FileSystemAdapter
     public function is_local_storage(): bool
     {
         return true;
+    }
+
+    public function setAllowPrivateBackupPaths(bool $allow): void
+    {
+        $this->allowPrivateBackupPaths = $allow;
     }
 
     /* =========================================================
@@ -94,8 +100,11 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         // Must be inside WordPress root.
         $root_norm = untrailingslashit(wp_normalize_path($this->rootPath));
         $real_norm = untrailingslashit(wp_normalize_path($real));
+        $is_private_backup_path = $this->isPrivateBackupPath($real);
         if ($real_norm !== $root_norm && strpos(trailingslashit($real_norm), trailingslashit($root_norm)) !== 0) {
-            return false;
+            if (! $this->allowPrivateBackupPaths || ! $is_private_backup_path) {
+                return false;
+            }
         }
 
         // Block symlinks (only check if path exists)
@@ -103,13 +112,16 @@ class LocalFileSystemAdapter extends FileSystemAdapter
             return false;
         }
 
-        if ($this->isPrivateBackupPath($real)) {
+        if ($is_private_backup_path && ! $this->allowPrivateBackupPaths) {
             return false;
         }
 
         // Block protected paths
         foreach ($this->protectedPaths as $protected) {
             if ($real === $protected || strpos(trailingslashit($real), trailingslashit($protected)) === 0) {
+                if ($is_private_backup_path && $this->allowPrivateBackupPaths) {
+                    continue;
+                }
                 return false;
             }
         }
@@ -350,10 +362,21 @@ class LocalFileSystemAdapter extends FileSystemAdapter
             return false;
         }
 
-        $candidates = [untrailingslashit($content_root) . DIRECTORY_SEPARATOR . ANIBAS_FM_BACKUP_DIR_NAME];
+        $candidates = [
+            untrailingslashit($content_root) . DIRECTORY_SEPARATOR . ANIBAS_FM_BACKUP_DIR_NAME,
+            untrailingslashit(wp_normalize_path(ABSPATH)) . DIRECTORY_SEPARATOR . '.anibas-site-backup-*',
+            untrailingslashit(wp_normalize_path(ABSPATH)) . DIRECTORY_SEPARATOR . '.anibas-site-restore-*',
+            untrailingslashit(wp_normalize_path(ABSPATH)) . DIRECTORY_SEPARATOR . '.anibas-site-restore-state',
+        ];
         $private_dirs = glob(untrailingslashit($content_root) . DIRECTORY_SEPARATOR . '.anibas-backups-*', GLOB_NOSORT);
         if (is_array($private_dirs)) {
             $candidates = array_merge($candidates, $private_dirs);
+        }
+        foreach (array('.anibas-site-backup-*', '.anibas-site-restore-*') as $pattern) {
+            $dirs = glob(untrailingslashit(wp_normalize_path(ABSPATH)) . DIRECTORY_SEPARATOR . $pattern, GLOB_NOSORT);
+            if (is_array($dirs)) {
+                $candidates = array_merge($candidates, $dirs);
+            }
         }
 
         foreach ($candidates as $candidate) {
@@ -404,6 +427,17 @@ class LocalFileSystemAdapter extends FileSystemAdapter
             return false;
         }
 
+        $siteRoot = realpath(ABSPATH) ?: $this->normalizePath(ABSPATH);
+        if ($siteRoot && ($real === $siteRoot || strpos(trailingslashit($real), trailingslashit($siteRoot)) === 0)) {
+            $siteRelative = trim(str_replace('\\', '/', substr($real, strlen($siteRoot))), '/');
+            $siteTopLevel = explode('/', $siteRelative)[0] ?? '';
+            if (strpos($siteTopLevel, '.anibas-site-backup-') === 0
+                || strpos($siteTopLevel, '.anibas-site-restore-') === 0
+                || $siteTopLevel === '.anibas-site-restore-state') {
+                return true;
+            }
+        }
+
         $contentRoot = realpath(WP_CONTENT_DIR) ?: $this->normalizePath(WP_CONTENT_DIR);
         if (! $contentRoot || ($real !== $contentRoot && strpos(trailingslashit($real), trailingslashit($contentRoot)) !== 0)) {
             return false;
@@ -412,7 +446,11 @@ class LocalFileSystemAdapter extends FileSystemAdapter
         $relative = trim(str_replace('\\', '/', substr($real, strlen($contentRoot))), '/');
         $topLevel = explode('/', $relative)[0] ?? '';
 
-        return $topLevel === ANIBAS_FM_BACKUP_DIR_NAME || strpos($topLevel, '.anibas-backups-') === 0;
+        return $topLevel === ANIBAS_FM_BACKUP_DIR_NAME
+            || strpos($topLevel, '.anibas-backups-') === 0
+            || strpos($topLevel, '.anibas-site-backup-') === 0
+            || strpos($topLevel, '.anibas-site-restore-') === 0
+            || $topLevel === '.anibas-site-restore-state';
     }
 
     /* =========================================================

@@ -71,13 +71,15 @@ class TarCreateEngine {
         $this->state_file    = $output . '.state.json';
         $this->lock_file     = $output . '.lock';
 
-        $max_time = (int) ini_get( 'max_execution_time' );
-        $this->time_budget = $max_time > 0 ? max( 1, (int) floor( $max_time * 0.6 ) ) : 20;
+        $this->time_budget = function_exists( 'anibas_fm_safe_time_budget' )
+            ? anibas_fm_safe_time_budget( 20, 0.6 )
+            : 20;
 
         // Read chunk size for streaming file data
         $this->chunk_size = intval( anibas_fm_get_option( 'chunk_size', ANIBAS_FM_DEFAULT_CHUNK_SIZE ) );
-        if ( $this->chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN ) $this->chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
-        if ( $this->chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX ) $this->chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
+        $this->chunk_size = function_exists( 'anibas_fm_safe_chunk_size' )
+            ? anibas_fm_safe_chunk_size( $this->chunk_size )
+            : max( ANIBAS_FM_CHUNK_SIZE_MIN, min( ANIBAS_FM_CHUNK_SIZE_MAX, $this->chunk_size ) );
     }
 
     /* ------------------------------------- */
@@ -157,7 +159,7 @@ class TarCreateEngine {
             ];
         }
 
-        $data = json_decode( file_get_contents( $this->state_file ), true );
+        $data = anibas_fm_read_small_json_file( $this->state_file );
 
         return is_array( $data ) ? $data : [
             'cursor'          => 0,

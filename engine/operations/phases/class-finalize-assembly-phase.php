@@ -50,7 +50,7 @@ class FinalizeAssemblyPhase extends OperationPhase
                 $log->log_message(sprintf('[Finalize] S3 upload in progress: %s / %s (part %d)', size_format($uploaded), size_format($total), $state['part_number'] ?? 1));
                 return; // caller will invoke again next poll
             }
-        } elseif ($this->requires_local_upload_assembly($storage)) {
+        } else {
             $job['current_phase'] = 'remote_upload';
             $done = $this->finalize_chunked_remote($job, $storage);
             $job['s3_upload_done'] = $done;
@@ -63,15 +63,6 @@ class FinalizeAssemblyPhase extends OperationPhase
             } else {
                 return;
             }
-        } else {
-            $job['current_phase'] = 'finalize';
-            $log->log_message('[Finalize] Uploading "' . $job['file_name'] . '" to remote storage: ' . $storage);
-            $final_path = $this->finalize_remote($job, $storage);
-            $job['current_file_bytes'] = $job['current_file_size'];
-            $this->verify_file_size($job, $final_path, $storage);
-            $this->cleanup_temp($job['temp_dir']);
-            $job['s3_upload_done'] = true;
-            $log->log_message('[Finalize] Remote finalize complete: ' . $final_path);
         }
 
         // Delete assembly token after successful completion
@@ -267,25 +258,6 @@ class FinalizeAssemblyPhase extends OperationPhase
         }
 
         return $target;
-    }
-
-    private function finalize_remote(&$job, $storage)
-    {
-        $adapter = StorageManager::get_instance()->get_adapter($storage);
-        $temp_file = rtrim($job['destination'], '/') . '/' . $job['file_name'] . '.tmp';
-        $final_file = rtrim($job['destination'], '/') . '/' . $job['file_name'];
-
-        if (! $adapter->move($temp_file, $final_file)) {
-            throw new \Exception(esc_html__('Failed to rename temp file', 'anibas-file-manager'));
-        }
-
-        return $final_file;
-    }
-
-    private function requires_local_upload_assembly($storage): bool
-    {
-        $adapter = StorageManager::get_instance()->get_adapter($storage);
-        return $adapter && method_exists($adapter, 'requires_local_upload_assembly') && $adapter->requires_local_upload_assembly();
     }
 
     private function cleanup_temp($temp_dir)

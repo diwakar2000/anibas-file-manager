@@ -42,13 +42,14 @@ class FileCrudAjaxHandler extends AjaxHandler
 
             try {
                 $result = $adapter->listDirectory($dir, $page, $page_size);
+                $items = $this->decorate_file_items($result['items'] ?? []);
                 $this->send_success(array(
                     'path' => $dir,
                     'page' => $result['page'] ?? $page,
                     'page_size' => $result['page_size'] ?? $page_size,
-                    'total_items' => $result['total_items'] ?? count($result['items'] ?? []),
+                    'total_items' => $result['total_items'] ?? count($items),
                     'has_more' => ! empty($result['has_more']),
-                    'items' => $result['items'] ?? []
+                    'items' => $items
                 ));
             } catch (\Exception $e) {
                 $this->send_error(array('error' => esc_html($e->getMessage())));
@@ -56,7 +57,9 @@ class FileCrudAjaxHandler extends AjaxHandler
         } else {
             if ($path = $this->validate_path($dir)) {
                 $fm = new LocalFileSystemAdapter();
-                $this->send_success($fm->listDirectory($path, $page, $page_size));
+                $result = $fm->listDirectory($path, $page, $page_size);
+                $result['items'] = $this->decorate_file_items($result['items'] ?? []);
+                $this->send_success($result);
             } else {
                 $this->send_error(array('error' => 'PathInvalid', 'message' => esc_html__('Path does not exist', 'anibas-file-manager')));
             }
@@ -642,7 +645,15 @@ class FileCrudAjaxHandler extends AjaxHandler
             if (! $full_path || ! is_file($full_path)) {
                 $this->send_error(array('error' => 'NotFound', 'message' => esc_html__('File not found', 'anibas-file-manager')));
             }
-            $content = file_get_contents($full_path, false, null, 0, $limit);
+            $handle = @fopen($full_path, 'rb');
+            if (! $handle) {
+                $this->send_error(array('error' => 'ReadFailed', 'message' => esc_html__('Failed to read file', 'anibas-file-manager')));
+            }
+            $content = fread($handle, $limit);
+            fclose($handle);
+            if ($content === false) {
+                $this->send_error(array('error' => 'ReadFailed', 'message' => esc_html__('Failed to read file', 'anibas-file-manager')));
+            }
             $this->send_success(array('content' => $content));
         } else {
             $adapter   = StorageManager::get_instance()->get_adapter($storage);
@@ -701,9 +712,48 @@ class FileCrudAjaxHandler extends AjaxHandler
                 $this->send_error(array('error' => 'NotFound', 'message' => esc_html__('Could not fetch details', 'anibas-file-manager')));
             }
 
-            $this->send_success(array('details' => $details));
+            $this->send_success(array('details' => $this->decorate_file_item($details)));
         } catch (\Throwable $e) {
             $this->send_error(array('error' => 'Exception', 'message' => esc_html($e->getMessage())));
         }
+    }
+
+    private function decorate_file_items(array $items): array
+    {
+        foreach ($items as $key => $item) {
+            if (is_array($item)) {
+                $items[$key] = $this->decorate_file_item($item);
+            }
+        }
+        return $items;
+    }
+
+    private function decorate_file_item(array $item): array
+    {
+        $name = (string) ($item['name'] ?? $item['filename'] ?? basename((string) ($item['path'] ?? '')));
+        $path = (string) ($item['path'] ?? '');
+
+        if (! empty($item['is_folder'])) {
+            if (anibas_fm_is_site_backup_cloud_folder_name($name)) {
+                $item['file_type'] = esc_html__('Full Site Backup Folder', 'anibas-file-manager');
+                $item['backup_kind'] = 'site_backup_folder';
+            }
+            return $item;
+        }
+
+        if (strtolower(pathinfo($name, PATHINFO_EXTENSION)) !== 'anfm') {
+            return $item;
+        }
+
+        if (anibas_fm_is_site_backup_cloud_path($path)) {
+            $item['file_type'] = esc_html__('ANFM Full Site Backup', 'anibas-file-manager');
+            $item['archive_kind'] = 'site_backup';
+            $item['backup_kind'] = 'full_site';
+        } else {
+            $item['file_type'] = esc_html__('Anibas Archive', 'anibas-file-manager');
+            $item['archive_kind'] = 'archive';
+        }
+
+        return $item;
     }
 }

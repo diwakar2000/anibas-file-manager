@@ -214,6 +214,7 @@ class RemoteOAuthManager
         $settings['token_expires_at'] = 0;
         $settings['token_scope'] = '';
         $settings['oauth_connected_at'] = 0;
+        $settings['enabled'] = false;
 
         return $settings;
     }

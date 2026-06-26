@@ -44,9 +44,13 @@ class TrashAjaxHandler extends AjaxHandler
         $index_file = $trash_dir . '/index.json';
         $index = [];
         if (file_exists($index_file)) {
-            $content = file_get_contents($index_file);
-            if ($content) {
-                $index = json_decode($content, true) ?: [];
+            try {
+                $content = anibas_fm_read_small_file($index_file);
+                if ($content) {
+                    $index = json_decode($content, true) ?: [];
+                }
+            } catch (\Throwable $e) {
+                $index = [];
             }
         }
 

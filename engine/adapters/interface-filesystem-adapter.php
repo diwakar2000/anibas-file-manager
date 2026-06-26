@@ -298,8 +298,9 @@ abstract class FileSystemAdapter
      */
     public function upload_from_local(string $local_path, string $remote_path): bool
     {
-        $content = file_get_contents($local_path); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
-        if ($content === false) {
+        try {
+            $content = anibas_fm_read_small_file($local_path);
+        } catch (\Throwable $e) {
             return false;
         }
         return $this->put_contents($remote_path, $content) !== false;

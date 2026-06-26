@@ -20,7 +20,17 @@ class BackupAjaxHandler extends AjaxHandler
             ANIBAS_FM_DELETE_FILE_BACKUP  => 'delete_file_backup',
             ANIBAS_FM_DELETE_FILE_BACKUP_TREE => 'delete_file_backup_tree',
             ANIBAS_FM_LIST_SITE_BACKUPS   => 'list_site_backups',
+            ANIBAS_FM_SITE_BACKUP_PREVIEW => 'site_backup_preview',
+            ANIBAS_FM_SITE_BACKUP_INSPECT => 'site_backup_inspect',
+            ANIBAS_FM_SITE_BACKUP_DOWNLOAD_FILE => 'site_backup_download_file',
             ANIBAS_FM_DELETE_SITE_BACKUP  => 'delete_site_backup',
+            ANIBAS_FM_SEND_SITE_BACKUP_TO_CLOUD => 'send_site_backup_to_cloud',
+            ANIBAS_FM_IMPORT_SITE_BACKUP_FROM_CLOUD => 'import_site_backup_from_cloud',
+            ANIBAS_FM_SITE_RESTORE_START  => 'site_restore_start',
+            ANIBAS_FM_SITE_RESTORE_POLL   => 'site_restore_poll',
+            ANIBAS_FM_SITE_RESTORE_CANCEL => 'site_restore_cancel',
+            ANIBAS_FM_SITE_RESTORE_FALLBACK_OVERWRITE => 'site_restore_fallback_overwrite',
+            ANIBAS_FM_SITE_RESTORE_STATUS => 'site_restore_status',
             ANIBAS_FM_BACKUP_START        => 'backup_start',
             ANIBAS_FM_BACKUP_POLL         => 'backup_poll',
             ANIBAS_FM_BACKUP_CANCEL       => 'backup_cancel',
@@ -104,7 +114,11 @@ class BackupAjaxHandler extends AjaxHandler
                 $marker   = $src_path . '/.source';
                 if (! file_exists($marker)) continue;
 
-                $raw     = (string) @file_get_contents($marker);
+                try {
+                    $raw = anibas_fm_read_small_file($marker);
+                } catch (\Throwable $e) {
+                    continue;
+                }
                 $parts   = explode('|', $raw, 2);
                 $storage = $parts[0] ?? 'local';
                 $source  = $parts[1] ?? '';
@@ -170,7 +184,11 @@ class BackupAjaxHandler extends AjaxHandler
             $this->send_error(array('error' => esc_html__('Backup not found', 'anibas-file-manager')));
         }
 
-        $raw     = (string) @file_get_contents($marker);
+        try {
+            $raw = anibas_fm_read_small_file($marker);
+        } catch (\Throwable $e) {
+            $this->send_error(array('error' => esc_html__('Backup metadata is corrupt', 'anibas-file-manager')));
+        }
         $parts   = explode('|', $raw, 2);
         $storage = $parts[0] ?? '';
         $target  = $parts[1] ?? '';
@@ -764,15 +782,16 @@ class BackupAjaxHandler extends AjaxHandler
     private function file_backup_chunk_size(): int
     {
         $chunk_size = intval(anibas_fm_get_option('chunk_size', ANIBAS_FM_DEFAULT_CHUNK_SIZE));
-        if ($chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN) $chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
-        if ($chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX) $chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
-        return $chunk_size;
+        return function_exists('anibas_fm_safe_chunk_size')
+            ? anibas_fm_safe_chunk_size($chunk_size)
+            : max(ANIBAS_FM_CHUNK_SIZE_MIN, min(ANIBAS_FM_CHUNK_SIZE_MAX, $chunk_size));
     }
 
     private function file_backup_time_budget(): int
     {
-        $max_time = (int) ini_get('max_execution_time');
-        return $max_time > 0 ? max(1, (int) floor($max_time * 0.6)) : 20;
+        return function_exists('anibas_fm_safe_time_budget')
+            ? anibas_fm_safe_time_budget(20, 0.6)
+            : 20;
     }
 
     public function delete_file_backup()
@@ -882,6 +901,9 @@ class BackupAjaxHandler extends AjaxHandler
                     'format'   => $ext,
                     'mtime'    => $item->getMTime(),
                     'filesize' => $item->getSize(),
+                    'restore_supported' => $ext === 'anfm',
+                    'restore_enabled' => (bool) ANIBAS_FM_ENABLE_SITE_RESTORE,
+                    'restorable' => $ext === 'anfm' && (bool) ANIBAS_FM_ENABLE_SITE_RESTORE,
                 );
             }
         }
@@ -919,12 +941,555 @@ class BackupAjaxHandler extends AjaxHandler
             $this->send_error(array('error' => esc_html__('Cannot delete a backup that is currently being created', 'anibas-file-manager')));
         }
 
+        $restore_lock = SiteRestoreEngine::get_lock();
+        if ($restore_lock && ! empty($restore_lock['archive']) && basename((string) $restore_lock['archive']) === basename($real_path)) {
+            $this->send_error(array('error' => esc_html__('Cannot delete a backup that is currently being restored', 'anibas-file-manager')));
+        }
+
         if (! @unlink($real_path)) {
             $this->send_error(array('error' => esc_html__('Failed to delete site backup', 'anibas-file-manager')));
         }
 
         ActivityLogger::log('deleted_site_backup', basename($real_path), 'site-backup');
         $this->send_success(array('message' => esc_html__('Backup deleted', 'anibas-file-manager')));
+    }
+
+    public function send_site_backup_to_cloud()
+    {
+        $this->check_backup_privilege();
+
+        $job_id = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'job_id', ''));
+        if ($job_id !== '') {
+            $this->send_site_backup_cloud_status($job_id);
+            return;
+        }
+
+        $name = sanitize_file_name(anibas_fm_fetch_request_variable('post', 'name', ''));
+        $dest_storage = sanitize_key(anibas_fm_fetch_request_variable('post', 'storage', ''));
+        $destination = '/';
+
+        if ($dest_storage === '' || $dest_storage === 'local') {
+            $this->send_error(array('error' => esc_html__('Choose a cloud storage destination.', 'anibas-file-manager')));
+        }
+
+        try {
+            $source_path = $this->resolve_site_backup_path($name, false);
+            $this->assert_site_backup_not_busy($source_path);
+
+            $sm = StorageManager::get_instance();
+            $validation = $sm->validate_cross_storage_transfer('local', $dest_storage);
+            if (is_wp_error($validation)) {
+                $this->send_error(array('error' => $validation->get_error_message()));
+            }
+
+            $adapter = $this->get_storage_adapter($dest_storage);
+            if (! $adapter) {
+                $this->send_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
+            }
+
+            $folder_name = anibas_fm_get_site_backup_cloud_folder_name();
+            $dest_dir = $this->resolve_site_backup_cloud_destination($adapter, $destination, $folder_name);
+
+            $job_id = BackgroundProcessor::enqueue_cross_storage_job(
+                $source_path,
+                $dest_dir,
+                'copy',
+                'rename',
+                'local',
+                $dest_storage,
+                array(
+                    'allow_private_backup_source' => true,
+                    'ui_group_action' => 'copy',
+                    'ui_group_mode' => 'site_backup_cloud_upload',
+                    'ui_group_label' => sprintf(
+                        /* translators: 1: backup file name, 2: remote folder name. */
+                        esc_html__('Upload backup %1$s to %2$s', 'anibas-file-manager'),
+                        basename($source_path),
+                        $folder_name
+                    ),
+                    'ui_group_source' => basename($source_path),
+                    'ui_group_destination' => $dest_dir,
+                )
+            );
+
+            if (is_wp_error($job_id)) {
+                $this->send_error(array(
+                    'error' => $job_id->get_error_code(),
+                    'message' => $job_id->get_error_message(),
+                ));
+            }
+
+            ActivityLogger::log('started_site_backup_cloud_upload', basename($source_path), $dest_storage);
+            set_transient($this->site_backup_cloud_job_key($job_id), array(
+                'name' => basename($source_path),
+                'storage' => $dest_storage,
+                'destination' => $dest_dir,
+                'folder' => $folder_name,
+                'started_at' => time(),
+            ), 2 * HOUR_IN_SECONDS);
+
+            $this->send_success(array(
+                'status' => 'running',
+                'job_id' => $job_id,
+                'storage' => $dest_storage,
+                'destination' => $dest_dir,
+                'folder' => $folder_name,
+                'message' => esc_html__('Backup upload started', 'anibas-file-manager'),
+            ));
+        } catch (\Throwable $e) {
+            $this->send_error(array('error' => esc_html($e->getMessage())));
+        }
+    }
+
+    public function import_site_backup_from_cloud()
+    {
+        $this->check_backup_privilege();
+
+        $source = anibas_fm_fetch_request_variable('post', 'source', '');
+        $source_storage = sanitize_key(anibas_fm_fetch_request_variable('post', 'storage', ''));
+
+        if ($source_storage === '' || $source_storage === 'local') {
+            $this->send_error(array('error' => esc_html__('Choose a cloud backup file.', 'anibas-file-manager')));
+        }
+
+        try {
+            $sm = StorageManager::get_instance();
+            $validation = $sm->validate_cross_storage_transfer($source_storage, 'local');
+            if (is_wp_error($validation)) {
+                $this->send_error(array('error' => $validation->get_error_message()));
+            }
+
+            $adapter = $this->get_storage_adapter($source_storage);
+            if (! $adapter) {
+                $this->send_error(array('error' => esc_html__('Invalid storage', 'anibas-file-manager')));
+            }
+
+            $source_path = $adapter->validate_path($source);
+            if ($source_path === false || ! $adapter->is_file($source_path)) {
+                $this->send_error(array('error' => esc_html__('Cloud backup file not found.', 'anibas-file-manager')));
+            }
+
+            if (! anibas_fm_is_site_backup_cloud_path($source_path) || strtolower(pathinfo($source_path, PATHINFO_EXTENSION)) !== 'anfm') {
+                $this->send_error(array('error' => esc_html__('Only ANFM full-site backups from an Anibas backup folder can be imported.', 'anibas-file-manager')));
+            }
+
+            $backup_name = sanitize_file_name(basename($source_path));
+            if ($backup_name === '' || strtolower(pathinfo($backup_name, PATHINFO_EXTENSION)) !== 'anfm') {
+                $backup_name = 'cloud-site-backup-' . gmdate('Ymd-His') . '.anfm';
+            }
+
+            $backup_dir = anibas_fm_get_backup_dir();
+            $destination = trailingslashit($backup_dir) . $backup_name;
+
+            $job_id = BackgroundProcessor::enqueue_cross_storage_job(
+                $source_path,
+                $destination,
+                'copy',
+                'rename',
+                $source_storage,
+                'local',
+                array(
+                    'dest_is_final' => true,
+                    'allow_private_backup_destination' => true,
+                    'ui_group_mode' => 'site_backup_cloud_import',
+                    'ui_group_label' => sprintf(
+                        /* translators: %s: backup file name. */
+                        esc_html__('Import cloud backup %s', 'anibas-file-manager'),
+                        $backup_name
+                    ),
+                    'ui_group_source' => basename($source_path),
+                )
+            );
+
+            if (is_wp_error($job_id)) {
+                $this->send_error(array(
+                    'error' => $job_id->get_error_code(),
+                    'message' => $job_id->get_error_message(),
+                ));
+            }
+
+            ActivityLogger::log('started_site_backup_cloud_import', $backup_name, $source_storage);
+            $this->send_success(array(
+                'status' => 'running',
+                'job_id' => $job_id,
+                'source' => $source_path,
+                'destination' => esc_html__('Local Backups', 'anibas-file-manager'),
+                'message' => esc_html__('Backup import started', 'anibas-file-manager'),
+            ));
+        } catch (\Throwable $e) {
+            $this->send_error(array('error' => esc_html($e->getMessage())));
+        }
+    }
+
+    public function site_backup_preview()
+    {
+        $this->check_backup_privilege();
+
+        $name     = sanitize_file_name(anibas_fm_fetch_request_variable('post', 'name', ''));
+        $password = anibas_fm_fetch_request_variable('post', 'password', '');
+        $limit    = (int) anibas_fm_fetch_request_variable('post', 'limit', 80);
+
+        try {
+            $path = $this->resolve_site_backup_path($name, true);
+            $validator = new SiteBackupPackageValidator();
+            $package = $validator->validate($path);
+            $package_public = array(
+                'size'               => (int) ($package['size'] ?? 0),
+                'version'            => (int) ($package['version'] ?? 0),
+                'password_protected' => ! empty($package['password_protected']),
+                'manifest_size'      => (int) ($package['manifest_size'] ?? 0),
+            );
+
+            if (! empty($package['password_protected']) && $password === '') {
+                $this->send_success(array(
+                    'password_required' => true,
+                    'package'           => $package_public,
+                    'manifest'          => null,
+                ));
+            }
+
+            $engine = ArchiveRestoreEngine::get_instance($path, anibas_fm_get_backup_dir());
+            try {
+                $manifest = $engine->preview_manifest($password !== '' ? (string) $password : null, $limit, false);
+            } finally {
+                $engine->cleanup();
+            }
+
+            $this->send_success(array(
+                'password_required' => false,
+                'package'           => $package_public,
+                'manifest'          => $manifest,
+            ));
+        } catch (\Throwable $e) {
+            $this->send_error(array('error' => esc_html($e->getMessage())));
+        }
+    }
+
+    public function site_backup_inspect()
+    {
+        $this->check_backup_privilege();
+
+        $name      = sanitize_file_name(anibas_fm_fetch_request_variable('post', 'name', ''));
+        $password  = anibas_fm_fetch_request_variable('post', 'password', '');
+        $mode      = sanitize_key(anibas_fm_fetch_request_variable('post', 'mode', 'prepare'));
+        $directory = (string) anibas_fm_fetch_request_variable('post', 'directory', '');
+        $query     = (string) anibas_fm_fetch_request_variable('post', 'query', '');
+        $cursor    = max(0, (int) anibas_fm_fetch_request_variable('post', 'cursor', 0));
+        $limit     = max(0, (int) anibas_fm_fetch_request_variable('post', 'limit', 0));
+
+        try {
+            $path = $this->resolve_site_backup_path($name, true);
+            $validator = new SiteBackupPackageValidator();
+            $package = $validator->validate($path);
+            $package_public = $this->site_backup_package_public($package);
+
+            if (! empty($package['password_protected']) && $password === '') {
+                $this->send_success(array(
+                    'password_required' => true,
+                    'package'           => $package_public,
+                    'inspect'           => null,
+                ));
+            }
+
+            $engine = ArchiveRestoreEngine::get_instance($path, anibas_fm_get_backup_dir());
+            $inspect = $engine->prepare_manifest_cache_step($password !== '' ? (string) $password : null);
+
+            if (empty($inspect['complete']) || $mode === 'prepare') {
+                $this->send_success(array(
+                    'password_required' => false,
+                    'package'           => $package_public,
+                    'inspect'           => $inspect,
+                ));
+            }
+
+            if ($mode === 'browse') {
+                $this->send_success(array(
+                    'password_required' => false,
+                    'package'           => $package_public,
+                    'inspect'           => $inspect,
+                    'tree'              => $engine->browse_manifest($directory, $cursor, $limit),
+                ));
+            }
+
+            if ($mode === 'search') {
+                $this->send_success(array(
+                    'password_required' => false,
+                    'package'           => $package_public,
+                    'inspect'           => $inspect,
+                    'search'            => $engine->search_manifest($query, $cursor, $limit),
+                ));
+            }
+
+            $this->send_error(array('error' => 'InvalidInspectMode', 'message' => esc_html__('Invalid backup inspection mode.', 'anibas-file-manager')), 400);
+        } catch (\Throwable $e) {
+            $this->send_error(array('error' => esc_html($e->getMessage())));
+        }
+    }
+
+    public function site_backup_download_file()
+    {
+        $this->check_backup_privilege();
+
+        $name     = sanitize_file_name(anibas_fm_fetch_request_variable('post', 'name', ''));
+        $password = anibas_fm_fetch_request_variable('post', 'password', '');
+        $entry    = (string) anibas_fm_fetch_request_variable('post', 'entry', '');
+
+        try {
+            $path = $this->resolve_site_backup_path($name, true);
+            $validator = new SiteBackupPackageValidator();
+            $package = $validator->validate($path);
+            if (! empty($package['password_protected']) && $password === '') {
+                wp_die(esc_html__('Backup password is required.', 'anibas-file-manager'), esc_html__('Error', 'anibas-file-manager'), array('response' => 401));
+            }
+
+            $engine = ArchiveRestoreEngine::get_instance($path, anibas_fm_get_backup_dir());
+            if (! $engine->manifest_cache_ready()) {
+                wp_die(esc_html__('Inspect the backup before downloading individual files.', 'anibas-file-manager'), esc_html__('Error', 'anibas-file-manager'), array('response' => 409));
+            }
+
+            $engine->stream_manifest_file($entry, $password !== '' ? (string) $password : null);
+        } catch (\Throwable $e) {
+            wp_die(esc_html($e->getMessage()), esc_html__('Error', 'anibas-file-manager'), array('response' => 400));
+        }
+    }
+
+    private function site_backup_package_public(array $package): array
+    {
+        return array(
+            'size'               => (int) ($package['size'] ?? 0),
+            'version'            => (int) ($package['version'] ?? 0),
+            'password_protected' => ! empty($package['password_protected']),
+            'manifest_size'      => (int) ($package['manifest_size'] ?? 0),
+        );
+    }
+
+    public function site_restore_start()
+    {
+        $this->check_backup_privilege();
+        $this->check_site_restore_enabled();
+
+        $name     = sanitize_file_name(anibas_fm_fetch_request_variable('post', 'name', ''));
+        $password = anibas_fm_fetch_request_variable('post', 'password', '');
+        $db_mode  = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'db_mode', SiteRestoreEngine::DB_MODE_STAGING_SWAP));
+        $preserve_old_data = filter_var(anibas_fm_fetch_request_variable('post', 'preserve_old_data', false), FILTER_VALIDATE_BOOLEAN);
+
+        try {
+            $path = $this->resolve_site_backup_path($name, true);
+            $result = SiteRestoreEngine::start($path, $password !== '' ? (string) $password : null, $db_mode, $preserve_old_data);
+            $this->send_success($result);
+        } catch (\Throwable $e) {
+            $this->send_error(array('error' => esc_html($e->getMessage())));
+        }
+    }
+
+    public function site_restore_poll()
+    {
+        $this->check_backup_privilege();
+        $this->check_site_restore_enabled();
+
+        $job_id   = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'job_id', ''));
+        $password = anibas_fm_fetch_request_variable('post', 'password', '');
+        if ($job_id === '') {
+            $this->send_error(array('error' => esc_html__('Missing restore job id', 'anibas-file-manager')));
+        }
+
+        try {
+            $engine = new SiteRestoreEngine($job_id);
+            $progress = $engine->run_step($password !== '' ? (string) $password : null);
+            $this->send_success(array(
+                'done' => ! empty($progress['complete']),
+                'progress' => $progress,
+            ));
+        } catch (\Throwable $e) {
+            $this->send_error(array('error' => esc_html($e->getMessage())));
+        }
+    }
+
+    public function site_restore_cancel()
+    {
+        $this->check_backup_privilege();
+        $this->check_site_restore_enabled();
+
+        $job_id = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'job_id', ''));
+        if ($job_id === '') {
+            $this->send_error(array('error' => esc_html__('Missing restore job id', 'anibas-file-manager')));
+        }
+
+        try {
+            $engine = new SiteRestoreEngine($job_id);
+            $engine->cancel();
+            $this->send_success(array('cancelled' => true));
+        } catch (\Throwable $e) {
+            $this->send_error(array(
+                'error' => 'SiteRestoreCancelRejected',
+                'message' => esc_html($e->getMessage()),
+            ), 409);
+        }
+    }
+
+    public function site_restore_fallback_overwrite()
+    {
+        $this->check_backup_privilege();
+        $this->check_site_restore_enabled();
+
+        $job_id = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'job_id', ''));
+        if ($job_id === '') {
+            $this->send_error(array('error' => esc_html__('Missing restore job id', 'anibas-file-manager')));
+        }
+
+        try {
+            $engine = new SiteRestoreEngine($job_id);
+            $progress = $engine->fallback_to_overwrite();
+            $this->send_success(array(
+                'progress' => $progress,
+            ));
+        } catch (\Throwable $e) {
+            $this->send_error(array('error' => esc_html($e->getMessage())));
+        }
+    }
+
+    public function site_restore_status()
+    {
+        $this->check_backup_privilege();
+        $this->check_site_restore_enabled();
+
+        $lock = SiteRestoreEngine::get_lock();
+        if (! $lock) {
+            $this->send_success(array('running' => false));
+            return;
+        }
+
+        try {
+            $engine = new SiteRestoreEngine((string) $lock['job_id']);
+            $this->send_success(array(
+                'running' => true,
+                'job_id' => (string) $lock['job_id'],
+                'archive' => (string) ($lock['archive'] ?? ''),
+                'started_at' => (int) ($lock['started_at'] ?? 0),
+                'progress' => $engine->current_progress(),
+            ));
+        } catch (\Throwable $e) {
+            SiteRestoreEngine::clear_lock();
+            $this->send_success(array('running' => false));
+        }
+    }
+
+    private function check_site_restore_enabled(): void
+    {
+        if (! (bool) ANIBAS_FM_ENABLE_SITE_RESTORE) {
+            $this->send_error(array(
+                'error' => 'SiteRestoreDisabled',
+                'message' => esc_html__('Site restore is disabled. Add ANIBAS_FM_ENABLE_SITE_RESTORE to wp-config.php to enable it.', 'anibas-file-manager'),
+            ), 403);
+        }
+    }
+
+    private function resolve_site_backup_path(string $name, bool $require_anfm): string
+    {
+        if (empty($name) || strpos($name, '..') !== false || strpos($name, '/') !== false || strpos($name, '\\') !== false) {
+            throw new \RuntimeException(esc_html__('Invalid backup name', 'anibas-file-manager'));
+        }
+
+        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        if ($require_anfm && $ext !== 'anfm') {
+            throw new \RuntimeException(esc_html__('Site restore only accepts ANFM backups.', 'anibas-file-manager'));
+        }
+        if (! $require_anfm && ! in_array($ext, array('tar', 'anfm'), true)) {
+            throw new \RuntimeException(esc_html__('Invalid backup format', 'anibas-file-manager'));
+        }
+
+        $backup_dir = anibas_fm_get_backup_dir();
+        $full_path  = $backup_dir . '/' . $name;
+        $real_dir   = realpath($backup_dir);
+        $real_path  = realpath($full_path);
+
+        if (! $real_dir || ! $real_path || strpos($real_path, trailingslashit($real_dir)) !== 0 || ! is_file($real_path)) {
+            throw new \RuntimeException(esc_html__('Backup not found', 'anibas-file-manager'));
+        }
+
+        return wp_normalize_path($real_path);
+    }
+
+    private function assert_site_backup_not_busy(string $real_path): void
+    {
+        $lock = anibas_fm_get_backup_lock();
+        if ($lock && ! empty($lock['output']) && basename((string) $lock['output']) === basename($real_path)) {
+            throw new \RuntimeException(esc_html__('Cannot upload a backup that is still being created.', 'anibas-file-manager'));
+        }
+
+        $restore_lock = SiteRestoreEngine::get_lock();
+        if ($restore_lock && ! empty($restore_lock['archive']) && basename((string) $restore_lock['archive']) === basename($real_path)) {
+            throw new \RuntimeException(esc_html__('Cannot upload a backup that is currently being restored.', 'anibas-file-manager'));
+        }
+    }
+
+    private function send_site_backup_cloud_status(string $job_id): void
+    {
+        $registered = get_transient($this->site_backup_cloud_job_key($job_id));
+        if (! is_array($registered)) {
+            $this->send_error(array('error' => esc_html__('Upload job not found', 'anibas-file-manager')));
+        }
+
+        $job = BackgroundProcessor::get_job_status($job_id);
+
+        if (! $job) {
+            $this->send_error(array('error' => esc_html__('Upload job not found', 'anibas-file-manager')));
+        }
+
+        $status = (string) ($job['status'] ?? '');
+        if (in_array($status, array('completed', 'failed', 'cancelled'), true)) {
+            delete_transient($this->site_backup_cloud_job_key($job_id));
+        }
+
+        $this->send_success(array(
+            'status' => $status,
+            'job_id' => $job_id,
+            'done' => in_array($status, array('completed', 'failed', 'cancelled'), true),
+            'storage' => $registered['storage'] ?? '',
+            'destination' => $registered['destination'] ?? '',
+            'folder' => $registered['folder'] ?? '',
+            'job' => $job,
+        ));
+    }
+
+    private function resolve_site_backup_cloud_destination(FileSystemAdapter $adapter, string $destination, string $folder_name): string
+    {
+        $base_dir = $adapter->validate_path($destination);
+        if ($base_dir === false) {
+            throw new \RuntimeException(esc_html__('Invalid destination path', 'anibas-file-manager'));
+        }
+
+        $dest_dir = $adapter->validate_path($this->join_remote_path($base_dir, $folder_name));
+        if ($dest_dir === false) {
+            throw new \RuntimeException(esc_html__('Invalid backup destination path', 'anibas-file-manager'));
+        }
+
+        if ($adapter->exists($dest_dir)) {
+            if (! $adapter->is_dir($dest_dir)) {
+                throw new \RuntimeException(esc_html__('A file already exists with the backup folder name.', 'anibas-file-manager'));
+            }
+            return $dest_dir;
+        }
+
+        if (! $adapter->mkdir($dest_dir) || ! $adapter->is_dir($dest_dir)) {
+            throw new \RuntimeException(esc_html__('Backup folder is not accessible on the selected cloud storage.', 'anibas-file-manager'));
+        }
+
+        return $dest_dir;
+    }
+
+    private function join_remote_path(string $base_dir, string $name): string
+    {
+        $base_dir = trim(str_replace('\\', '/', $base_dir));
+        if ($base_dir === '' || $base_dir === '/') {
+            return '/' . trim($name, '/');
+        }
+        return rtrim($base_dir, '/') . '/' . trim($name, '/');
+    }
+
+    private function site_backup_cloud_job_key(string $job_id): string
+    {
+        return 'anibas_fm_site_backup_cloud_job_' . preg_replace('/[^A-Za-z0-9_-]/', '', $job_id);
     }
 
     /* =========================================================

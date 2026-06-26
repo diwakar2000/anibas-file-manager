@@ -12,7 +12,7 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 class ArchiveManifestStore {
 
-    private const ENTRY_BATCH_LIMIT = 1000;
+    private const WRITE_BUFFER_LINE_LIMIT = 250;
 
     public static function build_step(
         array $source_paths,
@@ -46,13 +46,15 @@ class ArchiveManifestStore {
         }
 
         $lines = array();
-        $entries_written = 0;
 
         if ( ! empty( $state['pending_entries'] ) && is_array( $state['pending_entries'] ) ) {
             foreach ( $state['pending_entries'] as $entry ) {
                 if ( is_array( $entry ) ) {
                     $lines[] = wp_json_encode( $entry ) . "\n";
-                    $entries_written++;
+                    if ( count( $lines ) >= self::WRITE_BUFFER_LINE_LIMIT ) {
+                        self::append_entries( $entries_file, $lines );
+                        $lines = array();
+                    }
                 }
             }
             unset( $state['pending_entries'] );
@@ -83,6 +85,10 @@ class ArchiveManifestStore {
             for ( ; $iterator->valid(); $iterator->next() ) {
                 if ( $iterator->isDot() ) {
                     $state['stack'][ $idx ]['position'] = (int) $iterator->key() + 1;
+                    if ( $time_budget > 0 && microtime( true ) - $started >= $time_budget ) {
+                        $done = false;
+                        break;
+                    }
                     continue;
                 }
 
@@ -95,7 +101,6 @@ class ArchiveManifestStore {
                     }
                     if ( $include_dirs ) {
                         self::queue_entry( $lines, $state, $full, $state['base_path'], 0, true );
-                        $entries_written++;
                     }
                     $state['stack'][] = array( 'path' => $full, 'position' => 0 );
                     $done = false;
@@ -108,11 +113,14 @@ class ArchiveManifestStore {
                     }
                     $size = (int) @filesize( $full );
                     self::queue_entry( $lines, $state, $full, $state['base_path'], $size, false );
-                    $entries_written++;
                 }
 
-                if ( $entries_written >= self::ENTRY_BATCH_LIMIT
-                    || ( $time_budget > 0 && microtime( true ) - $started >= $time_budget ) ) {
+                if ( count( $lines ) >= self::WRITE_BUFFER_LINE_LIMIT ) {
+                    self::append_entries( $entries_file, $lines );
+                    $lines = array();
+                }
+
+                if ( $time_budget > 0 && microtime( true ) - $started >= $time_budget ) {
                     $done = false;
                     break;
                 }
@@ -122,8 +130,7 @@ class ArchiveManifestStore {
                 array_pop( $state['stack'] );
             }
 
-            if ( $entries_written >= self::ENTRY_BATCH_LIMIT
-                || ( $time_budget > 0 && microtime( true ) - $started >= $time_budget ) ) {
+            if ( $time_budget > 0 && microtime( true ) - $started >= $time_budget ) {
                 break;
             }
         }
@@ -152,7 +159,10 @@ class ArchiveManifestStore {
     }
 
     public static function read_manifest( string $manifest_file ): array {
-        $manifest = json_decode( (string) @file_get_contents( $manifest_file ), true );
+        if ( ! is_file( $manifest_file ) ) {
+            return array();
+        }
+        $manifest = anibas_fm_read_small_json_file( $manifest_file );
         return is_array( $manifest ) ? $manifest : array();
     }
 
@@ -249,8 +259,9 @@ class ArchiveManifestStore {
     }
 
     private static function default_time_budget(): int {
-        $max_time = (int) ini_get( 'max_execution_time' );
-        return $max_time > 0 ? max( 1, (int) floor( $max_time * 0.6 ) ) : 20;
+        return function_exists( 'anibas_fm_safe_time_budget' )
+            ? anibas_fm_safe_time_budget( 20, 0.6 )
+            : 20;
     }
 
     private static function initial_build_state( array $source_paths, string $base_path, array $excluded_dirs ): array {
@@ -293,7 +304,7 @@ class ArchiveManifestStore {
         if ( ! file_exists( $state_file ) ) {
             return array();
         }
-        $state = json_decode( (string) @file_get_contents( $state_file ), true );
+        $state = anibas_fm_read_small_json_file( $state_file );
         if ( ! is_array( $state ) ) {
             return array();
         }

@@ -18,14 +18,25 @@ class RemoteStorageTester
 		$is_passive = array_key_exists('is_passive', $config) ? (bool) $config['is_passive'] : true;
 
 		try {
+			$resolved = anibas_fm_normalize_remote_path('/', (string) ($config['base_path'] ?? '/'));
+			if ($resolved === false) {
+				return ['success' => false, 'message' => 'Invalid base path'];
+			}
+
 			$ch = curl_init();
+			if (! $ch) {
+				return ['success' => false, 'message' => 'FTP extension is not available'];
+			}
 			$protocol = $use_ssl ? 'ftps' : 'ftp';
-			$url = "{$protocol}://{$config['host']}:{$port}/";
+			$list_path = rtrim($resolved, '/') . '/';
+			$encoded_path = implode('/', array_map('rawurlencode', explode('/', $list_path)));
+			$url = "{$protocol}://{$config['host']}:{$port}{$encoded_path}";
 
 			curl_setopt($ch, CURLOPT_URL, $url);
-			curl_setopt($ch, CURLOPT_USERPWD, "{$config['username']}:{$config['password']}");
+			curl_setopt($ch, CURLOPT_USERPWD, "{$config['username']}:" . (string) ($config['password'] ?? ''));
 			curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 			curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+			curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
 			curl_setopt($ch, CURLOPT_FTPLISTONLY, true);
 
 			if ($is_passive) {
@@ -39,17 +50,18 @@ class RemoteStorageTester
 
 			if ($use_ssl) {
 				curl_setopt($ch, CURLOPT_USE_SSL, CURLFTPSSL_ALL);
+				curl_setopt($ch, CURLOPT_FTPSSLAUTH, CURLFTPAUTH_TLS);
 				$insecure = ! empty($config['insecure_ssl']);
 				curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, ! $insecure);
 				curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, $insecure ? 0 : 2);
 			}
 
-			curl_exec($ch);
+			$result = curl_exec($ch);
 			$error = curl_error($ch);
-			$http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+			curl_close($ch);
 
-			if ($error) {
-				return ['success' => false, 'message' => $error];
+			if ($error || $result === false) {
+				return ['success' => false, 'message' => $error ?: 'FTP connection failed'];
 			}
 
 			return ['success' => true, 'message' => 'Connected successfully'];
@@ -67,15 +79,8 @@ class RemoteStorageTester
 		$port = $config['port'] ?? 22;
 
 		try {
-			$adapter = new SFTPFileSystemAdapter(
-				$config['host'],
-				$config['username'],
-				$config['password'] ?? null,
-				$config['private_key'] ?? null,
-				$config['base_path'] ?? '/',
-				$port
-			);
-			$adapter->listDirectory('/');
+			$adapter = StorageManager::create_sftp_adapter(array_merge($config, array('port' => $port)));
+			self::assert_adapter_root_listable($adapter);
 
 			return ['success' => true, 'message' => 'Connected successfully'];
 		} catch (\Exception $e) {
@@ -90,17 +95,8 @@ class RemoteStorageTester
 		}
 
 		try {
-			$s3 = new AnibasS3Client(
-				$config['access_key'],
-				$config['secret_key'],
-				$config['region'] ?? 'us-east-1'
-			);
-
-			// Test connection by listing objects (minimal impact)
-			$s3->listObjectsV2([
-				'Bucket' => $config['bucket'],
-				'MaxKeys' => 1
-			]);
+			$adapter = StorageManager::create_s3_adapter($config);
+			self::assert_adapter_root_listable($adapter);
 
 			return ['success' => true, 'message' => 'Connected successfully'];
 		} catch (\Exception $e) {
@@ -115,19 +111,8 @@ class RemoteStorageTester
 		}
 
 		try {
-			$s3 = new AnibasS3Client(
-				$config['access_key'],
-				$config['secret_key'],
-				$config['region'] ?? 'us-east-1',
-				$config['endpoint'],
-				true // Always path-style for S3-compatible
-			);
-
-			// Test connection by listing objects (minimal impact)
-			$s3->listObjectsV2([
-				'Bucket' => $config['bucket'],
-				'MaxKeys' => 1
-			]);
+			$adapter = StorageManager::create_s3_compatible_adapter($config);
+			self::assert_adapter_root_listable($adapter);
 
 			return ['success' => true, 'message' => 'Connected successfully'];
 		} catch (\Exception $e) {
@@ -143,7 +128,7 @@ class RemoteStorageTester
 
 		try {
 			$adapter = StorageManager::create_gdrive_adapter($config);
-			$adapter->listDirectory('/');
+			self::assert_adapter_root_listable($adapter);
 			return ['success' => true, 'message' => 'Connected successfully'];
 		} catch (\Exception $e) {
 			return ['success' => false, 'message' => $e->getMessage()];
@@ -161,7 +146,7 @@ class RemoteStorageTester
 			if (! $adapter->is_dir('/')) {
 				return ['success' => false, 'message' => 'Root path is not accessible'];
 			}
-			$adapter->listDirectory('/');
+			self::assert_adapter_root_listable($adapter);
 			return ['success' => true, 'message' => 'Connected successfully'];
 		} catch (\Exception $e) {
 			return ['success' => false, 'message' => $e->getMessage()];
@@ -208,5 +193,13 @@ class RemoteStorageTester
 			$segments[] = $segment;
 		}
 		return $segments ? '/' . implode('/', $segments) : '';
+	}
+
+	private static function assert_adapter_root_listable($adapter): void
+	{
+		$page = $adapter->iterateDirectory('/', null, 1);
+		if (! is_array($page) || ! array_key_exists('entries', $page)) {
+			throw new \RuntimeException('Root path is not accessible');
+		}
 	}
 }

@@ -90,7 +90,15 @@ class EditorAjax extends AjaxHandler
                 $this->send_error(['error' => 'FileTooLarge', 'message' => esc_html__('File exceeds the 10 MB editor limit.', 'anibas-file-manager')]);
             }
 
-            $chunk = file_get_contents($full_path, false, null, $offset, $chunk_size);
+            $handle = @fopen($full_path, 'rb');
+            if (! $handle || fseek($handle, $offset) !== 0) {
+                if ($handle) {
+                    fclose($handle);
+                }
+                $this->send_error(['error' => 'ReadFailed']);
+            }
+            $chunk = fread($handle, $chunk_size);
+            fclose($handle);
             if ($chunk === false) {
                 $this->send_error(['error' => 'ReadFailed']);
             }

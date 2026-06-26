@@ -21,8 +21,11 @@
  *     4B  Manifest size (uint32 LE)
  *   [File data: sequential encrypted chunks]
  *     [12B IV][16B GCM Tag][4B len][ciphertext]
- *   [Manifest: at end, same encrypted chunk format]
- *     JSON: {"files":[{"name","size","offset","chunks"},...]}
+ *   [Manifest: encrypted chunk stream]
+ *     JSONL: first line metadata, following lines file entries.
+ *   [Footer: 64 bytes at physical EOF]
+ *     Magic, footer/archive versions, final package size, manifest offset/size,
+ *     and SHA-256 of the encrypted manifest region.
  *
  * Usage:
  *   $engine = ArchiveCreateEngine::get_instance($source, $output, $password);
@@ -41,13 +44,17 @@ use Exception;
 class ArchiveCreateEngine {
 
     const MAGIC             = 'ANFM';
-    const VERSION           = 1;
+    const VERSION           = 2;
     const HEADER_SIZE       = 50;
     const CIPHER            = 'aes-256-gcm';
     const IV_LENGTH         = 12;
     const TAG_LENGTH        = 16;
     const SALT_LENGTH       = 32;
     const PBKDF2_ITERATIONS = 100000;
+    const FOOTER_MAGIC      = 'ANFMEND!';
+    const FOOTER_VERSION    = 1;
+    const FOOTER_SIZE       = 64;
+    const MANIFEST_CHUNK_SIZE = 1048576;
 
     private string $source;
     private string $output;
@@ -90,12 +97,14 @@ class ArchiveCreateEngine {
         $this->state_file         = $output . '.state.json';
         $this->lock_file          = $output . '.lock';
 
-        $max_time = (int) ini_get( 'max_execution_time' );
-        $this->time_budget = $max_time > 0 ? max( 1, (int) floor( $max_time * 0.6 ) ) : 20;
+        $this->time_budget = function_exists( 'anibas_fm_safe_time_budget' )
+            ? anibas_fm_safe_time_budget( 20, 0.6 )
+            : 20;
 
         $this->chunk_size = intval( anibas_fm_get_option( 'chunk_size', ANIBAS_FM_DEFAULT_CHUNK_SIZE ) );
-        if ( $this->chunk_size < ANIBAS_FM_CHUNK_SIZE_MIN ) $this->chunk_size = ANIBAS_FM_CHUNK_SIZE_MIN;
-        if ( $this->chunk_size > ANIBAS_FM_CHUNK_SIZE_MAX ) $this->chunk_size = ANIBAS_FM_CHUNK_SIZE_MAX;
+        $this->chunk_size = function_exists( 'anibas_fm_safe_chunk_size' )
+            ? anibas_fm_safe_chunk_size( $this->chunk_size )
+            : max( ANIBAS_FM_CHUNK_SIZE_MIN, min( ANIBAS_FM_CHUNK_SIZE_MAX, $this->chunk_size ) );
 
     }
 
@@ -236,7 +245,7 @@ class ArchiveCreateEngine {
                 'password_protected' => false,
             ];
         }
-        $data = json_decode( file_get_contents( $this->state_file ), true );
+        $data = anibas_fm_read_small_json_file( $this->state_file );
         return is_array( $data ) ? $data : $this->load_state_defaults();
     }
 
@@ -291,12 +300,82 @@ class ArchiveCreateEngine {
     /**
      * Update header with manifest offset and size.
      */
-    private function finalize_header( int $manifest_offset, int $manifest_size ) {
+    private function finalize_header( int $manifest_offset, int $manifest_size ): void {
         $fh = fopen( $this->output, 'r+b' );
         fseek( $fh, 38 ); // offset to manifest_offset field
         fwrite( $fh, pack( 'P', $manifest_offset ) );
         fwrite( $fh, pack( 'V', $manifest_size ) );
         fclose( $fh );
+    }
+
+    /**
+     * Write a fixed-size footer at the physical end of the ANFM package.
+     *
+     * Footer layout (64 bytes):
+     *   8B magic "ANFMEND!"
+     *   1B footer version
+     *   1B archive version
+     *   2B footer flags/reserved
+     *   8B final package size
+     *   8B manifest offset
+     *   4B manifest size
+     *   32B SHA-256 of the encrypted manifest region
+     */
+    private function write_footer( int $manifest_offset, int $manifest_size, string $manifest_hash ): int {
+        if ( strlen( $manifest_hash ) !== 32 ) {
+            throw new Exception( 'Invalid ANFM footer hash length' );
+        }
+
+        $package_size = $manifest_offset + $manifest_size + self::FOOTER_SIZE;
+        $footer = self::FOOTER_MAGIC
+            . pack( 'C', self::FOOTER_VERSION )
+            . pack( 'C', self::VERSION )
+            . pack( 'v', 0 )
+            . pack( 'P', $package_size )
+            . pack( 'P', $manifest_offset )
+            . pack( 'V', $manifest_size )
+            . $manifest_hash;
+
+        if ( strlen( $footer ) !== self::FOOTER_SIZE ) {
+            throw new Exception( 'Invalid ANFM footer size' );
+        }
+
+        $fh = fopen( $this->output, 'r+b' );
+        if ( ! $fh ) {
+            throw new Exception( 'Failed to open archive for footer write' );
+        }
+        fseek( $fh, $manifest_offset + $manifest_size );
+        $written = fwrite( $fh, $footer );
+        fclose( $fh );
+
+        if ( $written !== self::FOOTER_SIZE ) {
+            throw new Exception( 'Failed to write ANFM footer' );
+        }
+
+        return $package_size;
+    }
+
+    private function hash_file_region( int $offset, int $length ): string {
+        $fh = fopen( $this->output, 'rb' );
+        if ( ! $fh ) {
+            throw new Exception( 'Failed to open archive for footer hash' );
+        }
+
+        fseek( $fh, $offset );
+        $remaining = $length;
+        $ctx = hash_init( 'sha256' );
+        while ( $remaining > 0 ) {
+            $chunk = fread( $fh, min( 1048576, $remaining ) );
+            if ( $chunk === false || $chunk === '' ) {
+                fclose( $fh );
+                throw new Exception( 'Failed to hash ANFM manifest' );
+            }
+            $remaining -= strlen( $chunk );
+            hash_update( $ctx, $chunk );
+        }
+        fclose( $fh );
+
+        return hash_final( $ctx, true );
     }
 
     /* ------------------------------------- */
@@ -434,18 +513,31 @@ class ArchiveCreateEngine {
                 $key_material = hex2bin( $state['key_material_hex'] );
                 $is_protected = ! empty( $state['password_protected'] );
                 $key = self::resolve_key( $password, $key_material, $is_protected );
+                $start = microtime( true );
 
-                $manifest_json   = $this->build_archive_manifest_json( $state );
-                $manifest_offset = $state['archive_pos'];
+                if ( ! $this->summarize_archive_entries_step( $state, $scan, $start ) ) {
+                    $this->save_state( $state );
+                    $this->release_lock( $lock );
+                    return true;
+                }
 
-                $fh = fopen( $this->output, 'r+b' );
-                fseek( $fh, $manifest_offset );
-                $manifest_size = self::write_encrypted_chunk( $fh, $manifest_json, $key );
-                fclose( $fh );
+                if ( ! $this->write_archive_manifest_step( $state, $key, $start ) ) {
+                    $this->save_state( $state );
+                    $this->release_lock( $lock );
+                    return true;
+                }
 
-                // Write manifest location into header
+                $manifest_offset = (int) $state['manifest_offset'];
+                $manifest_size = (int) $state['manifest_archive_pos'] - $manifest_offset;
+                $manifest_hash = $this->hash_file_region( $manifest_offset, $manifest_size );
+                $package_size  = $this->write_footer( $manifest_offset, $manifest_size, $manifest_hash );
+
+                // Write manifest location into header after the footer exists.
                 $this->finalize_header( $manifest_offset, $manifest_size );
 
+                $state['archive_pos'] = $package_size;
+                $state['package_size'] = $package_size;
+                $state['manifest_hash'] = bin2hex( $manifest_hash );
                 $state['phase'] = 'complete';
                 $this->save_state( $state );
                 $this->release_lock( $lock );
@@ -462,63 +554,255 @@ class ArchiveCreateEngine {
     }
 
     private function append_archive_manifest_entry( int $cursor, array $entry ): void {
-        $line = wp_json_encode( array(
+        $json = wp_json_encode( array(
             'cursor' => $cursor,
             'entry'  => $entry,
-        ) ) . "\n";
-        file_put_contents( $this->archive_manifest_entries_file, $line, FILE_APPEND | LOCK_EX ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
+        ) );
+        if ( ! is_string( $json ) ) {
+            throw new Exception( 'Failed to encode archive manifest entry' );
+        }
+        file_put_contents( $this->archive_manifest_entries_file, $json . "\n", FILE_APPEND | LOCK_EX ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
     }
 
-    private function build_archive_manifest_json( array $state ): string {
-        $tmp_manifest = $this->archive_manifest_entries_file . '.tmp';
-        $out = fopen( $tmp_manifest, 'wb' );
-        if ( ! $out ) {
-            throw new Exception( 'Failed to prepare archive manifest' );
+    private function summarize_archive_entries_step( array &$state, array $scan, float $started ): bool {
+        if ( ! empty( $state['manifest_summary_complete'] ) ) {
+            return true;
         }
 
-        fwrite( $out, '{"files":[' );
-        $first = true;
+        if ( ! isset( $state['manifest_summary'] ) || ! is_array( $state['manifest_summary'] ) ) {
+            $state['manifest_summary'] = array(
+                'total'         => 0,
+                'total_size'    => 0,
+                'max_file_size' => 0,
+                'max_file_name' => '',
+            );
+            $state['manifest_summary_entry_offset'] = 0;
+            $state['manifest_summary_last_cursor'] = -1;
+            $state['manifest_summary_legacy_index'] = 0;
+            $state['manifest_summary_legacy_done'] = false;
+        }
 
-        if ( ! empty( $state['file_entries'] ) && is_array( $state['file_entries'] ) ) {
-            foreach ( $state['file_entries'] as $entry ) {
-                if ( ! is_array( $entry ) ) {
-                    continue;
+        if ( empty( $state['manifest_summary_legacy_done'] ) ) {
+            $legacy_entries = ! empty( $state['file_entries'] ) && is_array( $state['file_entries'] )
+                ? $state['file_entries']
+                : array();
+            $index = max( 0, (int) ( $state['manifest_summary_legacy_index'] ?? 0 ) );
+            $count = count( $legacy_entries );
+
+            while ( $index < $count ) {
+                if ( is_array( $legacy_entries[ $index ] ) ) {
+                    $this->add_entry_to_summary( $state['manifest_summary'], $legacy_entries[ $index ] );
                 }
-                fwrite( $out, $first ? '' : ',' );
-                fwrite( $out, wp_json_encode( $entry ) );
-                $first = false;
+                $index++;
+                $state['manifest_summary_legacy_index'] = $index;
+
+                if ( ( microtime( true ) - $started ) > $this->time_budget ) {
+                    return false;
+                }
             }
+
+            $state['manifest_summary_legacy_done'] = true;
         }
 
         if ( is_file( $this->archive_manifest_entries_file ) ) {
             $in = fopen( $this->archive_manifest_entries_file, 'rb' );
-            if ( $in ) {
-                $last_cursor = -1;
+            if ( ! $in ) {
+                throw new Exception( 'Failed to read archive manifest entries' );
+            }
+
+            $offset = max( 0, (int) ( $state['manifest_summary_entry_offset'] ?? 0 ) );
+            if ( $offset > 0 ) {
+                fseek( $in, $offset );
+            }
+
+            $last_cursor = (int) ( $state['manifest_summary_last_cursor'] ?? -1 );
+            try {
                 while ( ( $line = fgets( $in ) ) !== false ) {
+                    $next = ftell( $in );
                     $row = json_decode( trim( $line ), true );
-                    if ( ! is_array( $row ) ) {
-                        continue;
+                    if ( is_array( $row ) ) {
+                        $cursor = isset( $row['cursor'] ) ? (int) $row['cursor'] : $last_cursor + 1;
+                        $entry = isset( $row['entry'] ) && is_array( $row['entry'] ) ? $row['entry'] : $row;
+                        if ( $cursor > $last_cursor ) {
+                            $this->add_entry_to_summary( $state['manifest_summary'], $entry );
+                            $last_cursor = $cursor;
+                            $state['manifest_summary_last_cursor'] = $last_cursor;
+                        }
                     }
-                    $cursor = isset( $row['cursor'] ) ? (int) $row['cursor'] : $last_cursor + 1;
-                    $entry  = isset( $row['entry'] ) && is_array( $row['entry'] ) ? $row['entry'] : $row;
-                    if ( $cursor <= $last_cursor ) {
-                        continue;
+
+                    $state['manifest_summary_entry_offset'] = $next !== false ? (int) $next : $offset;
+                    if ( ( microtime( true ) - $started ) > $this->time_budget ) {
+                        return false;
                     }
-                    fwrite( $out, $first ? '' : ',' );
-                    fwrite( $out, wp_json_encode( $entry ) );
-                    $first = false;
-                    $last_cursor = $cursor;
                 }
+            } finally {
                 fclose( $in );
             }
         }
 
-        fwrite( $out, ']}' );
-        fclose( $out );
+        $summary = is_array( $state['manifest_summary'] ?? null ) ? $state['manifest_summary'] : array();
+        if ( (int) ( $summary['total'] ?? 0 ) === 0 && (int) ( $scan['total'] ?? 0 ) === 0 ) {
+            $state['manifest_summary'] = array(
+                'total'         => 0,
+                'total_size'    => 0,
+                'max_file_size' => 0,
+                'max_file_name' => '',
+            );
+        }
 
-        $json = (string) file_get_contents( $tmp_manifest ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
-        wp_delete_file( $tmp_manifest );
-        return $json;
+        $state['manifest_summary_complete'] = true;
+        return true;
+    }
+
+    private function write_archive_manifest_step( array &$state, string $key, float $started ): bool {
+        if ( ! empty( $state['manifest_write_complete'] ) ) {
+            return true;
+        }
+
+        if ( empty( $state['manifest_write_started'] ) ) {
+            $state['manifest_write_started'] = true;
+            $state['manifest_offset'] = (int) $state['archive_pos'];
+            $state['manifest_archive_pos'] = (int) $state['archive_pos'];
+            $state['manifest_entry_offset'] = 0;
+            $state['manifest_last_cursor'] = -1;
+            $state['manifest_legacy_index'] = 0;
+            $state['manifest_legacy_done'] = false;
+            $state['manifest_meta_written'] = false;
+        }
+
+        $fh = fopen( $this->output, 'r+b' );
+        if ( ! $fh ) {
+            throw new Exception( 'Failed to open archive for manifest write' );
+        }
+        fseek( $fh, (int) $state['manifest_archive_pos'] );
+
+        $buffer = '';
+        $flush = function () use ( &$buffer, &$state, $fh, $key ): void {
+            if ( $buffer === '' ) {
+                return;
+            }
+            $state['manifest_archive_pos'] = (int) $state['manifest_archive_pos'] + self::write_encrypted_chunk( $fh, $buffer, $key );
+            $buffer = '';
+        };
+        $emit = function ( string $line ) use ( &$buffer, $flush ): void {
+            if ( strlen( $line ) > self::MANIFEST_CHUNK_SIZE ) {
+                throw new Exception( 'Archive manifest entry exceeds the safe chunk size' );
+            }
+            if ( $buffer !== '' && strlen( $buffer ) + strlen( $line ) > self::MANIFEST_CHUNK_SIZE ) {
+                $flush();
+            }
+            $buffer .= $line;
+        };
+
+        try {
+            if ( empty( $state['manifest_meta_written'] ) ) {
+                $summary = is_array( $state['manifest_summary'] ?? null ) ? $state['manifest_summary'] : array();
+                $meta = array(
+                    'manifest_format'  => 'jsonl',
+                    'manifest_version' => 2,
+                    'total'            => (int) ( $summary['total'] ?? 0 ),
+                    'total_size'       => (int) ( $summary['total_size'] ?? 0 ),
+                    'max_file_size'    => (int) ( $summary['max_file_size'] ?? 0 ),
+                    'max_file_name'    => (string) ( $summary['max_file_name'] ?? '' ),
+                );
+                $meta_json = wp_json_encode( array( 'meta' => $meta ) );
+                if ( ! is_string( $meta_json ) ) {
+                    throw new Exception( 'Failed to encode archive manifest metadata' );
+                }
+                $emit( $meta_json . "\n" );
+                $flush();
+                $state['manifest_meta_written'] = true;
+
+                if ( ( microtime( true ) - $started ) > $this->time_budget ) {
+                    return false;
+                }
+            }
+
+            if ( empty( $state['manifest_legacy_done'] ) ) {
+                $legacy_entries = ! empty( $state['file_entries'] ) && is_array( $state['file_entries'] )
+                    ? $state['file_entries']
+                    : array();
+                $index = max( 0, (int) ( $state['manifest_legacy_index'] ?? 0 ) );
+                $count = count( $legacy_entries );
+
+                while ( $index < $count ) {
+                    if ( is_array( $legacy_entries[ $index ] ) ) {
+                        $entry_json = wp_json_encode( $legacy_entries[ $index ] );
+                        if ( ! is_string( $entry_json ) ) {
+                            throw new Exception( 'Failed to encode archive manifest entry' );
+                        }
+                        $emit( $entry_json . "\n" );
+                    }
+                    $index++;
+                    $state['manifest_legacy_index'] = $index;
+
+                    if ( ( microtime( true ) - $started ) > $this->time_budget ) {
+                        $flush();
+                        return false;
+                    }
+                }
+
+                $state['manifest_legacy_done'] = true;
+            }
+
+            if ( is_file( $this->archive_manifest_entries_file ) ) {
+                $in = fopen( $this->archive_manifest_entries_file, 'rb' );
+                if ( ! $in ) {
+                    throw new Exception( 'Failed to read archive manifest entries' );
+                }
+
+                $offset = max( 0, (int) ( $state['manifest_entry_offset'] ?? 0 ) );
+                if ( $offset > 0 ) {
+                    fseek( $in, $offset );
+                }
+
+                $last_cursor = (int) ( $state['manifest_last_cursor'] ?? -1 );
+                try {
+                    while ( ( $line = fgets( $in ) ) !== false ) {
+                        $next = ftell( $in );
+                        $row = json_decode( trim( $line ), true );
+                        if ( is_array( $row ) ) {
+                            $cursor = isset( $row['cursor'] ) ? (int) $row['cursor'] : $last_cursor + 1;
+                            $entry = isset( $row['entry'] ) && is_array( $row['entry'] ) ? $row['entry'] : $row;
+                            if ( $cursor > $last_cursor ) {
+                                $entry_json = wp_json_encode( $entry );
+                                if ( ! is_string( $entry_json ) ) {
+                                    throw new Exception( 'Failed to encode archive manifest entry' );
+                                }
+                                $emit( $entry_json . "\n" );
+                                $last_cursor = $cursor;
+                                $state['manifest_last_cursor'] = $last_cursor;
+                            }
+                        }
+
+                        $state['manifest_entry_offset'] = $next !== false ? (int) $next : $offset;
+                        if ( ( microtime( true ) - $started ) > $this->time_budget ) {
+                            $flush();
+                            return false;
+                        }
+                    }
+                } finally {
+                    fclose( $in );
+                }
+            }
+
+            $flush();
+            $state['manifest_write_complete'] = true;
+            return true;
+        } finally {
+            fclose( $fh );
+        }
+    }
+
+    private function add_entry_to_summary( array &$summary, array $entry ): void {
+        $size = (int) ( $entry['size'] ?? 0 );
+        $name = (string) ( $entry['name'] ?? '' );
+        $summary['total'] = (int) ( $summary['total'] ?? 0 ) + 1;
+        $summary['total_size'] = (int) ( $summary['total_size'] ?? 0 ) + $size;
+        if ( $size > (int) ( $summary['max_file_size'] ?? 0 ) ) {
+            $summary['max_file_size'] = $size;
+            $summary['max_file_name'] = $name;
+        }
     }
 
     /* ------------------------------------- */
@@ -533,9 +817,17 @@ class ArchiveCreateEngine {
         $scan  = ArchiveManifestStore::read_manifest( $this->scan_manifest_file );
         $state = $this->load_state();
 
-        $total      = (int) ( $scan['total'] ?? 0 );
+        $phase = (string) ( $state['phase'] ?? 'init' );
+        $summary = is_array( $state['manifest_summary'] ?? null ) ? $state['manifest_summary'] : array();
+        $total = (int) ( $scan['total'] ?? 0 );
         $total_size = (int) ( $scan['total_size'] ?? 0 );
-        $current    = (int) ( $state['cursor'] ?? 0 );
+        $current = (int) ( $state['cursor'] ?? 0 );
+
+        if ( $phase === 'complete' && ! empty( $state['manifest_summary_complete'] ) ) {
+            $total = (int) ( $summary['total'] ?? 0 );
+            $total_size = (int) ( $summary['total_size'] ?? 0 );
+            $current = $total;
+        }
 
         return [
             'current'         => $current,
@@ -543,7 +835,7 @@ class ArchiveCreateEngine {
             'percent'         => $total > 0 ? round( ( $current / $total ) * 100, 2 ) : 0,
             'bytes_processed' => (int) ( $state['bytes_processed'] ?? 0 ),
             'total_size'      => $total_size,
-            'phase'           => $state['phase'] ?? 'init',
+            'phase'           => $phase,
         ];
     }
 
