@@ -57,6 +57,9 @@ class EditorAjax extends AjaxHandler
 
     // ── Chunked read ─────────────────────────────────────────────────────────
 
+    // Every base64_encode() call below transports a raw binary file chunk to the
+    // editor over JSON (which cannot carry arbitrary binary safely); none of it is
+    // logic obfuscation.
     public function get_file_chunk(): void
     {
         $this->check_editor_privilege();
@@ -104,7 +107,7 @@ class EditorAjax extends AjaxHandler
             }
 
             $this->send_success([
-                'chunk'     => base64_encode($chunk),
+                'chunk'     => base64_encode($chunk), // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode
                 'offset'    => $offset,
                 'length'    => strlen($chunk),
                 'file_size' => $file_size,
@@ -144,7 +147,7 @@ class EditorAjax extends AjaxHandler
                 $this->send_error(['error' => 'FileTooLarge', 'message' => esc_html__('File exceeds the 10 MB editor limit.', 'anibas-file-manager')]);
             }
             $this->send_success([
-                'chunk'     => base64_encode($content),
+                'chunk'     => base64_encode($content), // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode
                 'offset'    => 0,
                 'length'    => strlen($content),
                 'file_size' => strlen($content),
@@ -161,7 +164,7 @@ class EditorAjax extends AjaxHandler
                 ? ($offset + strlen($chunk)) >= $file_size
                 : strlen($chunk) < $chunk_size;
             $this->send_success([
-                'chunk'     => base64_encode($chunk),
+                'chunk'     => base64_encode($chunk), // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode
                 'offset'    => $offset,
                 'length'    => strlen($chunk),
                 'file_size' => $file_size !== false ? $file_size : -1,
@@ -179,7 +182,7 @@ class EditorAjax extends AjaxHandler
         $chunk = substr($content, $offset, $chunk_size);
 
         $this->send_success([
-            'chunk'     => base64_encode($chunk),
+            'chunk'     => base64_encode($chunk), // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode
             'offset'    => $offset,
             'length'    => strlen($chunk),
             'file_size' => $total,

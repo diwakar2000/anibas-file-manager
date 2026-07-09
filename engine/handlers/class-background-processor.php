@@ -1131,11 +1131,13 @@ class BackgroundProcessor {
             $logs = array_slice( $logs, -100 );
         }
         
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents -- dedicated plugin log file, not user-controlled
         file_put_contents( $log_file, wp_json_encode( $logs, JSON_PRETTY_PRINT ) );
-        
+
         // Keep last failed job separately
         if ( $event === 'failed' || $job['status'] === 'failed' ) {
             $failed_log_file = $log_dir . '/last-failed-job.json';
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents -- dedicated plugin log file, not user-controlled
             file_put_contents( $failed_log_file, wp_json_encode( $job, JSON_PRETTY_PRINT ) );
         }
     }

@@ -630,7 +630,10 @@ class DatabaseRestoreEngine
         }
 
         if (function_exists('is_serialized') && is_serialized($value)) {
-            $unserialized = @unserialize($value, ['allowed_classes' => true]);
+            // allowed_classes is false so objects come back as __PHP_Incomplete_class
+            // (no constructor/wakeup/destruct executes) but still round-trip correctly
+            // through serialize() below, since only public properties are rewritten.
+            $unserialized = @unserialize($value, ['allowed_classes' => false]);
             if ($unserialized !== false || $value === serialize(false)) {
                 return serialize($this->rewrite_restore_structure($unserialized, $map));
             }

@@ -35,7 +35,11 @@ class AsyncWorkerDispatcher
         $args = [
             'timeout'   => 0.1,
             'blocking'  => false,
-            'sslverify' => apply_filters('https_local_ssl_verify', false),
+            // Mirrors WP core's own wp-cron.php loopback: 'https_local_ssl_verify'
+            // defaults to false there too, because self-signed/staging certs on the
+            // same site would otherwise break the loopback. This request only ever
+            // targets admin_url() on the current site, never third-party traffic.
+            'sslverify' => apply_filters('https_local_ssl_verify', false), // phpcs:ignore WordPress.WP.SslVerify.enable_ssl_verify_false_use_disable_message
             'body'      => [
                 'action'        => 'anibas_fm_run_worker',
                 'worker_secret' => $secret,

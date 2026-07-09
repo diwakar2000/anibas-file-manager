@@ -46,10 +46,18 @@ function anibas_fm_delete_plugin_data()
 	delete_option('AnibasFileManagerOptions');
 	delete_option('anibas_fm_job_queue_v2');
 	delete_option('anibas_s3_transfer_log');
-	
+	delete_option('anibas_fm_remote_connections');
+	delete_option('anibas_fm_archive_jobs');
+
 	// Delete log directory and option before resetting option
 	$log_dir = get_option('anibas_file_manager_log_dir');
 	delete_option('anibas_file_manager_log_dir');
+
+	// Delete backup directory and option before resetting option. This directory
+	// can contain full-site backups (including database dumps), so it must not
+	// be left behind on the filesystem after uninstall.
+	$backup_dir = get_option('anibas_file_manager_backup_dir');
+	delete_option('anibas_file_manager_backup_dir');
 
 	// Delete work queue options. esc_like() escapes the literal underscores in the prefix so
 	// they are not interpreted as LIKE single-char wildcards.
@@ -81,6 +89,10 @@ function anibas_fm_delete_plugin_data()
 		
 		if (! empty($log_dir) && $wp_filesystem->is_dir($log_dir)) {
 			$wp_filesystem->delete($log_dir, true);
+		}
+
+		if (! empty($backup_dir) && $wp_filesystem->is_dir($backup_dir)) {
+			$wp_filesystem->delete($backup_dir, true);
 		}
 	}
 }

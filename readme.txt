@@ -61,6 +61,18 @@ Backup, restore, archive, database export/import, and upload assembly are split 
 = What is the maximum file size for the editor? =
 By default, the editor supports files up to 10 MB. This can be configured via constants if your server memory allows for larger chunks.
 
+== Third-Party Services ==
+
+This plugin can optionally connect your site to the following third-party services when you explicitly configure and enable them under File Manager -> Settings -> Remote Storage. No data is sent to any of these services unless you turn on the corresponding integration and provide your own credentials.
+
+* **Amazon S3 / S3-compatible storage** - file listing, upload, download, and delete requests are sent directly to the S3 endpoint you configure. [AWS Privacy Notice](https://aws.amazon.com/privacy/) / [AWS Customer Agreement](https://aws.amazon.com/agreement/)
+* **Dropbox** - connects via Dropbox OAuth; file/folder operations are sent to the Dropbox API (`api.dropboxapi.com`, `content.dropboxapi.com`). [Dropbox Privacy Policy](https://www.dropbox.com/privacy) / [Dropbox Terms](https://www.dropbox.com/terms)
+* **Google Drive** - connects via Google OAuth; file/folder operations are sent to the Google Drive API (`www.googleapis.com`). [Google Privacy Policy](https://policies.google.com/privacy) / [Google Terms of Service](https://policies.google.com/terms)
+* **Microsoft OneDrive** - connects via Microsoft OAuth; file/folder operations are sent to the Microsoft Graph API (`graph.microsoft.com`, `login.microsoftonline.com`). [Microsoft Privacy Statement](https://privacy.microsoft.com/privacystatement) / [Microsoft Services Agreement](https://www.microsoft.com/servicesagreement)
+* **FTP/FTPS and SFTP** - connects directly to the host and port you configure using credentials you provide; no Anibas-operated or other third-party server is involved.
+
+Remote storage credentials and OAuth tokens are encrypted at rest in the WordPress database and are only transmitted to the provider you configure.
+
 == Source Code ==
 
 The full source code and build instructions are available at:

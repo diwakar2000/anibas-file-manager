@@ -51,9 +51,8 @@ class RemoteStorageTester
 			if ($use_ssl) {
 				curl_setopt($ch, CURLOPT_USE_SSL, CURLFTPSSL_ALL);
 				curl_setopt($ch, CURLOPT_FTPSSLAUTH, CURLFTPAUTH_TLS);
-				$insecure = ! empty($config['insecure_ssl']);
-				curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, ! $insecure);
-				curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, $insecure ? 0 : 2);
+				curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+				curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
 			}
 
 			$result = curl_exec($ch);

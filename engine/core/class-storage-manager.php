@@ -71,8 +71,7 @@ class StorageManager {
             $c['base_path'] ?? '/',
             $c['use_ssl'] ?? false,
             $c['port'] ?? 21,
-            $is_passive,
-            ! empty( $c['insecure_ssl'] )
+            $is_passive
         );
     }
 

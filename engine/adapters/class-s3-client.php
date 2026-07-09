@@ -187,6 +187,13 @@ class AnibasS3Client
 	/**
 	 * Execute a signed S3 request via cURL.
 	 *
+	 * cURL is used intentionally instead of wp_remote_request()/WP_Http: uploads
+	 * stream from a seekable resource via CURLOPT_INFILE and downloads stream to
+	 * either a file sink (CURLOPT_FILE) or a chunked CURLOPT_WRITEFUNCTION callback,
+	 * so large objects never get buffered fully in memory. WP_Http has no equivalent
+	 * for streaming an upload body from a resource or a chunked download callback.
+	 * Certificate verification is always forced on (CURLOPT_SSL_VERIFYPEER => true).
+	 *
 	 * @param string      $method
 	 * @param string      $bucket
 	 * @param string      $key

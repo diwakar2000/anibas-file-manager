@@ -1528,7 +1528,9 @@ if ( ! function_exists( 'anibas_fm_encrypt_value' ) ) {
         if ( $ct === false ) {
             return $plaintext;
         }
-        return 'afm1:' . base64_encode( $iv . $tag . $ct );
+        // base64_encode() here makes AES-256-GCM binary ciphertext safe to store as
+        // an option string; it is not logic obfuscation.
+        return 'afm1:' . base64_encode( $iv . $tag . $ct ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode
     }
 }
 
@@ -1607,7 +1609,6 @@ if ( ! function_exists( 'anibas_fm_remote_storage_providers' ) ) {
                             'fields' => array(
                                 array( 'key' => 'use_ssl', 'type' => 'checkbox', 'label' => __( 'Use SSL (FTPS)', 'anibas-file-manager' ), 'default' => false, 'showWhen' => $enabled_when ),
                                 array( 'key' => 'is_passive', 'type' => 'checkbox', 'label' => __( 'Passive Mode', 'anibas-file-manager' ), 'default' => true, 'help' => __( 'Passive mode works on most networks. Disable only if your server requires Active mode.', 'anibas-file-manager' ), 'showWhen' => $enabled_when ),
-                                array( 'key' => 'insecure_ssl', 'type' => 'checkbox', 'label' => __( 'Allow insecure SSL', 'anibas-file-manager' ), 'default' => false, 'hidden' => true ),
                             ),
                         ),
                     ),

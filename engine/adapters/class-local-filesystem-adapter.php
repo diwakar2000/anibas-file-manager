@@ -944,6 +944,11 @@ class LocalFileSystemAdapter extends FileSystemAdapter
             return false;
         }
 
+        // WP_Filesystem has no append mode; its put_contents() would require reading
+        // the whole file back and rewriting it on every chunk, turning resumable
+        // chunked uploads (the caller of this method) into O(n^2) work for large
+        // files. Path is already validated above via assertAllowed().
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
         $handle = fopen($validated, 'ab');
         if (! $handle) {
             return false;
