@@ -630,7 +630,14 @@ class DatabaseRestoreEngine
         }
 
         if (function_exists('is_serialized') && is_serialized($value)) {
-            $unserialized = @unserialize($value, ['allowed_classes' => true]);
+            // allowed_classes is restricted to stdClass (not true/false): stdClass has
+            // no constructor/wakeup/destruct magic methods, so it's always safe to
+            // instantiate and its properties can still be rewritten below like a plain
+            // array. Any other class name comes back as __PHP_Incomplete_Class instead
+            // of being instantiated for real, which blocks PHP object-injection gadget
+            // chains from a crafted backup package while keeping the common case
+            // (stdClass, arrays, strings) working exactly as before.
+            $unserialized = @unserialize($value, ['allowed_classes' => ['stdClass']]);
             if ($unserialized !== false || $value === serialize(false)) {
                 return serialize($this->rewrite_restore_structure($unserialized, $map));
             }
@@ -674,7 +681,16 @@ class DatabaseRestoreEngine
 
         if (is_object($value)) {
             foreach ($value as $key => $item) {
-                $value->{$key} = $this->rewrite_restore_structure($item, $map);
+                try {
+                    // A serialized custom class we don't recognize (i.e. not stdClass)
+                    // comes back from unserialize() as an __PHP_Incomplete_Class, which
+                    // PHP refuses to mutate via property assignment. Leave such objects
+                    // as-is rather than letting that throw and abort the whole restore;
+                    // the URL(s) inside it simply won't be rewritten in that rare case.
+                    $value->{$key} = $this->rewrite_restore_structure($item, $map);
+                } catch (\Throwable $e) {
+                    continue;
+                }
             }
         }
 

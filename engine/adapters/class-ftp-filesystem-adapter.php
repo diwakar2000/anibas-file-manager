@@ -13,10 +13,9 @@ class FTPFileSystemAdapter extends FileSystemAdapter
     private $port;
     private $use_ssl;
     private $is_passive;
-    private $insecure_ssl;
     private $last_copy_progress = null;
 
-    public function __construct($host, $username, $password, $base_path = '/', $use_ssl = false, $port = null, $is_passive = true, $insecure_ssl = false)
+    public function __construct($host, $username, $password, $base_path = '/', $use_ssl = false, $port = null, $is_passive = true)
     {
         $this->host = $host;
         $this->username = $username;
@@ -25,7 +24,6 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         $this->use_ssl = $use_ssl;
         $this->port = $port ?? ($use_ssl ? 990 : 21);
         $this->is_passive = $is_passive;
-        $this->insecure_ssl = (bool) $insecure_ssl;
     }
 
     public function validate_path(string $path): string|false
@@ -71,8 +69,11 @@ class FTPFileSystemAdapter extends FileSystemAdapter
         if ($this->use_ssl) {
             curl_setopt($ch, CURLOPT_USE_SSL, CURLFTPSSL_ALL);
             curl_setopt($ch, CURLOPT_FTPSSLAUTH, CURLFTPAUTH_TLS);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, ! $this->insecure_ssl);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, $this->insecure_ssl ? 0 : 2);
+            // Certificate verification is always on; WordPress.org policy disallows
+            // shipping any code path that can disable it (CURLOPT_SSL_VERIFYPEER/HOST
+            // default to verified already, set explicitly here for clarity).
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
         }
 
         foreach ($options as $key => $value) {

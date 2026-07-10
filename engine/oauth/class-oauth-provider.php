@@ -188,14 +188,18 @@ abstract class OAuthProvider
         );
     }
 
+    // base64_encode() here is base64url encoding for an OAuth 2.0 PKCE code_verifier
+    // (RFC 7636), not logic obfuscation.
     public static function code_verifier(): string
     {
-        return rtrim(strtr(base64_encode(random_bytes(64)), '+/', '-_'), '=');
+        return rtrim(strtr(base64_encode(random_bytes(64)), '+/', '-_'), '='); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode
     }
 
+    // base64_encode() here is base64url encoding for the PKCE code_challenge (RFC 7636),
+    // not logic obfuscation.
     protected function code_challenge(string $code_verifier): string
     {
-        return rtrim(strtr(base64_encode(hash('sha256', $code_verifier, true)), '+/', '-_'), '=');
+        return rtrim(strtr(base64_encode(hash('sha256', $code_verifier, true)), '+/', '-_'), '='); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode
     }
 
     protected function token_request(array $body): array

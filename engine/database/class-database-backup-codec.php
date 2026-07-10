@@ -32,7 +32,9 @@ class DatabaseBackupCodec
                 throw new \InvalidArgumentException('Database backup row contains a non-scalar value.');
             }
 
-            $encoded[$column] = ['b64' => base64_encode((string) $value)];
+            // base64_encode() here makes arbitrary binary column values (BLOBs, binary
+            // strings) safe to embed in a JSONL backup line; not logic obfuscation.
+            $encoded[$column] = ['b64' => base64_encode((string) $value)]; // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode
         }
 
         $line = wp_json_encode(['values' => $encoded], JSON_UNESCAPED_SLASHES);

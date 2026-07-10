@@ -40,6 +40,12 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
         $this->private_key = $private_key;
         $this->port = $port;
 
+        // Verify the server's host key before touching either transport backend.
+        // cURL's sftp:// wrapper has no host-key verification hook available on
+        // supported PHP versions, so this runs unconditionally through phpseclib
+        // (always vendored) rather than being duplicated per backend.
+        self::verify_host_key((string) $host, (int) $port);
+
         // Prefer cURL when SFTP is available because it can stream LIST output
         // and stop at the current page budget. phpseclib rawlist() materializes
         // the whole directory, so keep it as the compatibility fallback.
@@ -51,6 +57,70 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
             $this->backend_type = 'curl';
         }
         $this->backend = $this->create_backend($this->backend_type);
+    }
+
+    /**
+     * Trust-on-first-use SSH host key verification. The fingerprint of the
+     * first successful connection to a given host:port is pinned in a site
+     * option; subsequent connections must present the same key or the
+     * connection is refused. This protects against MITM/DNS-spoofing attacks
+     * that would otherwise be invisible, since neither cURL's sftp:// wrapper
+     * nor a bare phpseclib login() verify host keys by default.
+     *
+     * @throws \Exception if the presented host key does not match the pinned one.
+     */
+    private static function verify_host_key(string $host, int $port): void
+    {
+        if ($host === '' || ! class_exists('\phpseclib3\Net\SSH2')) {
+            return;
+        }
+
+        try {
+            $ssh = new \phpseclib3\Net\SSH2($host, $port);
+            $key_string = $ssh->getServerPublicHostKey();
+            $ssh->disconnect();
+        } catch (\Throwable $e) {
+            // Let the real connection attempt (below) surface the actual network/auth error.
+            return;
+        }
+
+        if (! is_string($key_string) || $key_string === '') {
+            return;
+        }
+
+        $parts = explode(' ', $key_string, 2);
+        $key_b64 = $parts[1] ?? $parts[0];
+        $raw_key = base64_decode($key_b64, true);
+        if ($raw_key === false) {
+            return;
+        }
+
+        $fingerprint = 'SHA256:' . rtrim(strtr(base64_encode(hash('sha256', $raw_key, true)), '+/', '-_'), '=');
+
+        $option_name = 'anibas_fm_sftp_host_keys';
+        $known = get_option($option_name, []);
+        if (! is_array($known)) {
+            $known = [];
+        }
+        $host_id = strtolower($host) . ':' . $port;
+
+        if (isset($known[$host_id])) {
+            if (! hash_equals((string) $known[$host_id], $fingerprint)) {
+                throw new \Exception(sprintf(
+                    /* translators: 1: host:port, 2: previously trusted fingerprint, 3: newly presented fingerprint, 4: option name */
+                    esc_html__('SFTP host key for %1$s does not match the previously trusted key (expected %2$s, got %3$s). Refusing to connect - this may indicate a man-in-the-middle attack. If the server key was intentionally rotated, remove this host\'s entry from the "%4$s" option to re-trust it.', 'anibas-file-manager'),
+                    esc_html($host_id),
+                    esc_html((string) $known[$host_id]),
+                    esc_html($fingerprint),
+                    esc_html($option_name)
+                ));
+            }
+            return;
+        }
+
+        $known[$host_id] = $fingerprint;
+        update_option($option_name, $known);
+        ActivityLogger::get_instance()->log_message("SFTP: trusted new host key for {$host_id} ({$fingerprint})");
     }
 
     private static function curl_supports_sftp(): bool

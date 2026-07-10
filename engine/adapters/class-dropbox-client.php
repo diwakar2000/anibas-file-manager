@@ -76,6 +76,11 @@ class AnibasDropboxClient
 
     public function stream_download(string $path, callable $writer): bool
     {
+        // Uses cURL rather than wp_remote_request() intentionally: this streams the
+        // response body through a CURLOPT_WRITEFUNCTION callback in bounded chunks so
+        // large files never get buffered fully in memory. wp_remote_request()/WP_Http
+        // has no equivalent streaming-callback API, so it cannot be substituted here
+        // without reading whole files into memory first.
         if (! function_exists('curl_init')) {
             return false;
         }
