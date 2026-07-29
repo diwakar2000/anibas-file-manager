@@ -4,6 +4,8 @@ namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+// phpcs:disable WordPress.WP.AlternativeFunctions -- Editor preview/save uses bounded byte chunks and best-effort local backup snapshots.
+
 
 /**
  * AJAX handlers for the file editor.
@@ -38,7 +40,10 @@ class EditorAjax extends AjaxHandler
 
         $path     = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'path', ''));
         $storage  = sanitize_text_field(anibas_fm_fetch_request_variable('post', 'storage', 'local'));
-        $can_edit = (bool) anibas_fm_fetch_request_variable('post', 'can_edit', false);
+        $requested_can_edit = filter_var(
+            anibas_fm_fetch_request_variable('post', 'can_edit', false),
+            FILTER_VALIDATE_BOOLEAN
+        );
 
         if (empty($path)) {
             $this->send_error(['error' => esc_html__('Path required', 'anibas-file-manager')]);
@@ -47,6 +52,12 @@ class EditorAjax extends AjaxHandler
         if (! EditorPage::is_editable_file($path)) {
             $this->send_error(['error' => 'UnsupportedFileType', 'message' => esc_html__('This file type cannot be opened in the editor.', 'anibas-file-manager')]);
         }
+
+        if (! $this->editor_target_exists($path, $storage)) {
+            $this->send_error(['error' => 'NotFound']);
+        }
+
+        $can_edit = $requested_can_edit && $this->server_can_edit_file($path, $storage);
 
         $user_id     = get_current_user_id();
         $session_key = EditorPage::session_key($user_id, $path, $storage);
@@ -89,6 +100,9 @@ class EditorAjax extends AjaxHandler
             }
 
             $file_size = filesize($full_path);
+            if ($file_size === false) {
+                $this->send_error(['error' => 'ReadFailed']);
+            }
             if ($file_size > ANIBAS_FM_EDITOR_MAX_BYTES) {
                 $this->send_error(['error' => 'FileTooLarge', 'message' => esc_html__('File exceeds the 10 MB editor limit.', 'anibas-file-manager')]);
             }
@@ -126,10 +140,13 @@ class EditorAjax extends AjaxHandler
             $this->send_error(['error' => 'NotFound']);
         }
 
-        $file_size = method_exists($adapter, 'get_file_size') ? $adapter->get_file_size($full_path) : false;
+        $file_size = $this->remote_file_size($adapter, $full_path);
 
         if ($file_size !== false && $file_size > ANIBAS_FM_EDITOR_MAX_BYTES) {
             $this->send_error(['error' => 'FileTooLarge', 'message' => esc_html__('File exceeds the 10 MB editor limit.', 'anibas-file-manager')]);
+        }
+        if ($file_size === false && ! method_exists($adapter, 'read_chunk')) {
+            $this->send_error(['error' => 'SizeUnknown', 'message' => esc_html__('Cannot safely edit this remote file because its size could not be verified.', 'anibas-file-manager')]);
         }
 
         // FTP has no range-read support — fetch whole file, check size
@@ -225,6 +242,10 @@ class EditorAjax extends AjaxHandler
             $this->send_error(['error' => 'ReadOnly', 'message' => esc_html__('You do not have permission to edit this file.', 'anibas-file-manager')], 403);
         }
 
+        if (! $this->server_can_edit_file($path, $storage)) {
+            $this->send_error(['error' => 'ReadOnly', 'message' => esc_html__('You do not have permission to edit this file.', 'anibas-file-manager')], 403);
+        }
+
         $content = base64_decode($content_b64, true);
         if ($content === false) {
             $this->send_error(['error' => 'InvalidContent']);
@@ -308,6 +329,10 @@ class EditorAjax extends AjaxHandler
         if (! file_exists($full_path) || ! is_file($full_path)) {
             return;
         }
+        $size = filesize($full_path);
+        if ($size === false || $size > ANIBAS_FM_EDITOR_MAX_BYTES) {
+            return;
+        }
         if (anibas_fm_has_recent_file_backup('local', $full_path)) {
             return;
         }
@@ -322,7 +347,7 @@ class EditorAjax extends AjaxHandler
         }
     }
 
-    private function backup_remote_file_before_save($adapter, string $storage, string $full_path): void
+    private function backup_remote_file_before_save(FileSystemAdapter $adapter, string $storage, string $full_path): void
     {
         if (anibas_fm_has_recent_file_backup($storage, $full_path)) {
             return;
@@ -331,13 +356,15 @@ class EditorAjax extends AjaxHandler
             if (! $adapter->is_file($full_path)) {
                 return;
             }
-            $content = $adapter->get_contents($full_path);
-            if ($content === false) {
+
+            $size = $this->remote_file_size($adapter, $full_path);
+            if ($size === false || $size > ANIBAS_FM_EDITOR_MAX_BYTES) {
                 return;
             }
+
             $dest = $this->prepare_file_backup_target($storage, $full_path);
             if ($dest) {
-                file_put_contents($dest, $content); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_put_contents_file_put_contents
+                $adapter->download_to_local($full_path, $dest);
             }
         } catch (\Throwable $e) {
             // Best-effort — don't block the save if backup fails
@@ -347,5 +374,57 @@ class EditorAjax extends AjaxHandler
     private function prepare_file_backup_target(string $storage, string $source_path): ?string
     {
         return anibas_fm_prepare_file_backup_target($storage, $source_path);
+    }
+
+    private function editor_target_exists(string $path, string $storage): bool
+    {
+        if ($storage === 'local') {
+            $full_path = $this->validate_local_path($path);
+            return is_string($full_path) && is_file($full_path);
+        }
+
+        $adapter = StorageManager::get_instance()->get_adapter($storage);
+        if (! $adapter instanceof FileSystemAdapter) {
+            return false;
+        }
+
+        $full_path = $adapter->validate_path($path);
+        return is_string($full_path) && $adapter->is_file($full_path);
+    }
+
+    private function server_can_edit_file(string $path, string $storage): bool
+    {
+        if (! EditorPage::is_editable_file($path)) {
+            return false;
+        }
+
+        if ($storage === 'local') {
+            $full_path = $this->validate_local_path($path);
+            return is_string($full_path)
+                && is_file($full_path)
+                && is_readable($full_path)
+                && is_writable($full_path);
+        }
+
+        $adapter = StorageManager::get_instance()->get_adapter($storage);
+        if (! $adapter instanceof FileSystemAdapter) {
+            return false;
+        }
+
+        $full_path = $adapter->validate_path($path);
+        return is_string($full_path) && $adapter->is_file($full_path);
+    }
+
+    private function remote_file_size(FileSystemAdapter $adapter, string $full_path): int|false
+    {
+        if (method_exists($adapter, 'get_file_size')) {
+            $size = $adapter->get_file_size($full_path);
+            if (is_int($size) && $size >= 0) {
+                return $size;
+            }
+        }
+
+        $size = $adapter->get_size($full_path);
+        return is_int($size) && $size >= 0 ? $size : false;
     }
 }

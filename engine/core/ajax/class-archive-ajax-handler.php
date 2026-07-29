@@ -513,8 +513,17 @@ class ArchiveAjaxHandler extends AjaxHandler
         $pwd    = ! empty($password) ? $password : null;
 
         if ($phase === 'init') {
-            $info = $engine->load_archive_manifest($pwd);
-            $this->send_success(array('phase' => 'ready', 'info' => $info));
+            $scan = $engine->prepare_manifest_cache_step($pwd);
+            if (empty($scan['complete'])) {
+                $this->send_success(array(
+                    'phase' => 'scan_running',
+                    'info'  => $scan,
+                ));
+            }
+            $this->send_success(array('phase' => 'ready', 'info' => array(
+                'total'      => (int) ($scan['total'] ?? 0),
+                'total_size' => (int) ($scan['total_size'] ?? 0),
+            )));
         }
 
         if ($phase === 'run') {
@@ -538,7 +547,13 @@ class ArchiveAjaxHandler extends AjaxHandler
         $engine = TarRestoreEngine::get_instance($archive, $dest);
 
         if ($phase === 'init') {
-            $engine->build_manifest();
+            $scan = $engine->build_manifest_step();
+            if (empty($scan['complete'])) {
+                $this->send_success(array(
+                    'phase' => 'scan_running',
+                    'info'  => $scan,
+                ));
+            }
             $this->send_success(array('phase' => 'ready', 'info' => array('total' => $engine->progress()['total'])));
         }
 
@@ -563,7 +578,13 @@ class ArchiveAjaxHandler extends AjaxHandler
         $engine = ZipRestoreEngine::get_instance($archive, $dest);
 
         if ($phase === 'init') {
-            $engine->build_manifest();
+            $scan = $engine->build_manifest_step();
+            if (empty($scan['complete'])) {
+                $this->send_success(array(
+                    'phase' => 'scan_running',
+                    'info'  => $scan,
+                ));
+            }
             $this->send_success(array('phase' => 'ready', 'info' => array('total' => $engine->progress()['total'])));
         }
 

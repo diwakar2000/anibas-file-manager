@@ -665,11 +665,24 @@ class FileCrudAjaxHandler extends AjaxHandler
                 $this->send_error(array('error' => 'NotFound', 'message' => esc_html__('File not found', 'anibas-file-manager')));
             }
 
-            // Refuse preview for files larger than the limit — fetching the whole
-            // file into memory is unsafe for large files on remote storage.
             $file_size = method_exists($adapter, 'get_file_size') ? $adapter->get_file_size($full_path) : false;
+            if (! is_int($file_size) || $file_size < 0) {
+                $file_size = method_exists($adapter, 'get_size') ? $adapter->get_size($full_path) : false;
+            }
             if ($file_size !== false && $file_size > $limit) {
                 $this->send_error(array('error' => 'FileTooLarge', 'message' => esc_html__('File is too large to preview', 'anibas-file-manager')));
+            }
+
+            if (method_exists($adapter, 'read_chunk')) {
+                $content = $adapter->read_chunk($full_path, 0, $limit);
+                if ($content !== false) {
+                    $this->send_success(array('content' => $content));
+                }
+                $this->send_error(array('error' => 'ReadFailed', 'message' => esc_html__('Failed to read from remote storage', 'anibas-file-manager')));
+            }
+
+            if ($file_size === false) {
+                $this->send_error(array('error' => 'SizeUnknown', 'message' => esc_html__('Cannot safely preview this remote file because its size could not be verified.', 'anibas-file-manager')));
             }
 
             $content = $adapter->get_contents($full_path);

@@ -20,6 +20,8 @@ namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+// phpcs:disable WordPress.WP.AlternativeFunctions -- TAR restore requires byte-accurate streaming, seeks, atomic renames, and manifest sidecar files.
+
 use Exception;
 
 class TarRestoreEngine {
@@ -29,6 +31,8 @@ class TarRestoreEngine {
 
     private string $state_dir;
     private string $manifest_file;
+    private string $manifest_entries_file;
+    private string $manifest_scan_state_file;
     private string $state_file;
     private string $lock_file;
 
@@ -64,6 +68,8 @@ class TarRestoreEngine {
         }
         $this->state_dir     = $state_dir;
         $this->manifest_file = $this->state_dir . '/manifest.json';
+        $this->manifest_entries_file = $this->state_dir . '/manifest.entries.jsonl';
+        $this->manifest_scan_state_file = $this->state_dir . '/manifest.scan-state.json';
         $this->state_file    = $this->state_dir . '/state.json';
         $this->lock_file     = $this->state_dir . '/lock';
 
@@ -163,76 +169,240 @@ class TarRestoreEngine {
      * Records each entry's name, size, type, and byte offset within the
      * archive for efficient extraction.
      */
-    public function build_manifest() {
-        if ( file_exists( $this->manifest_file ) ) {
-            return;
+    public function build_manifest(): void {
+        do {
+            $result = $this->build_manifest_step( PHP_INT_MAX );
+        } while ( empty( $result['complete'] ) );
+    }
+
+    public function build_manifest_step( ?int $time_budget = null ): array {
+        if ( $this->manifest_ready() ) {
+            return $this->manifest_scan_progress( true, $this->load_manifest_meta() );
         }
 
-        $fh      = fopen( $this->archive, 'rb' );
-        $entries = [];
-        $total_size = 0;
+        if ( file_exists( $this->manifest_file ) && ! file_exists( $this->manifest_entries_file ) ) {
+            wp_delete_file( $this->manifest_file );
+        }
 
-        while ( true ) {
-            $header_block = fread( $fh, 512 );
-            if ( strlen( $header_block ) < 512 ) {
-                break; // Unexpected end
-            }
+        $budget = $time_budget ?? ( function_exists( 'anibas_fm_safe_time_budget' )
+            ? max( 2, anibas_fm_safe_time_budget( 10, 0.45 ) )
+            : 8 );
+        $start = microtime( true );
+        $state = $this->load_manifest_scan_state();
+        $tmp_entries = $this->manifest_entries_file . '.tmp';
+        $tmp_meta = $this->manifest_file . '.tmp';
 
-            $entry = $this->parse_header( $header_block );
-            if ( $entry === null ) {
-                break; // End-of-archive marker
-            }
+        if ( ! empty( $state['started'] ) && ! file_exists( $tmp_entries ) ) {
+            wp_delete_file( $this->manifest_scan_state_file );
+            $state = $this->load_manifest_scan_state();
+        }
 
-            // Handle GNU long name extension (type 'L')
-            if ( $entry['type_flag'] === 'L' ) {
-                $long_name_data = fread( $fh, $entry['size'] );
-                $long_name = rtrim( $long_name_data, "\0" );
-                // Skip padding
-                $remainder = $entry['size'] % 512;
-                if ( $remainder > 0 ) {
-                    fread( $fh, 512 - $remainder );
-                }
-                // Next header is the actual file with this long name
+        if ( empty( $state['started'] ) ) {
+            wp_delete_file( $tmp_entries );
+            wp_delete_file( $tmp_meta );
+            $state['started'] = true;
+        }
+
+        $fh = fopen( $this->archive, 'rb' );
+        if ( ! $fh ) {
+            throw new Exception( 'Cannot open TAR archive' );
+        }
+        $entries_fh = fopen( $tmp_entries, 'ab' );
+        if ( ! $entries_fh ) {
+            fclose( $fh );
+            throw new Exception( 'Failed to prepare TAR manifest' );
+        }
+
+        try {
+            fseek( $fh, (int) ( $state['archive_offset'] ?? 0 ) );
+            while ( true ) {
                 $header_block = fread( $fh, 512 );
                 if ( strlen( $header_block ) < 512 ) {
                     break;
                 }
+
                 $entry = $this->parse_header( $header_block );
                 if ( $entry === null ) {
                     break;
                 }
-                $entry['name'] = $long_name;
+
+                if ( $entry['type_flag'] === 'L' ) {
+                    $long_name_data = fread( $fh, $entry['size'] );
+                    $long_name = rtrim( $long_name_data, "\0" );
+                    $remainder = $entry['size'] % 512;
+                    if ( $remainder > 0 ) {
+                        fread( $fh, 512 - $remainder );
+                    }
+                    $header_block = fread( $fh, 512 );
+                    if ( strlen( $header_block ) < 512 ) {
+                        break;
+                    }
+                    $entry = $this->parse_header( $header_block );
+                    if ( $entry === null ) {
+                        break;
+                    }
+                    $entry['name'] = $long_name;
+                }
+
+                $data_offset = ftell( $fh );
+                if ( $data_offset === false ) {
+                    throw new Exception( 'Failed to read TAR manifest position' );
+                }
+
+                $manifest_entry = array(
+                    'n' => (string) $entry['name'],
+                    's' => (int) $entry['size'],
+                    'd' => (bool) $entry['is_dir'],
+                    'o' => (int) $data_offset,
+                );
+                $encoded = wp_json_encode( $manifest_entry );
+                if ( ! is_string( $encoded ) || fwrite( $entries_fh, $encoded . "\n" ) === false ) {
+                    throw new Exception( 'Failed to write TAR manifest entry' );
+                }
+
+                $state['total'] = (int) ( $state['total'] ?? 0 ) + 1;
+                if ( empty( $entry['is_dir'] ) ) {
+                    $state['total_size'] = (int) ( $state['total_size'] ?? 0 ) + (int) $entry['size'];
+                }
+
+                $next_offset = (int) $data_offset;
+                if ( $entry['size'] > 0 ) {
+                    $data_blocks = (int) ceil( $entry['size'] / 512 ) * 512;
+                    $next_offset += $data_blocks;
+                    fseek( $fh, $next_offset );
+                }
+                $state['archive_offset'] = $next_offset;
+
+                if ( ( microtime( true ) - $start ) > $budget ) {
+                    fclose( $entries_fh );
+                    fclose( $fh );
+                    $this->save_manifest_scan_state( $state );
+                    return $this->manifest_scan_progress( false, $state );
+                }
             }
 
-            $data_offset = ftell( $fh );
+            fclose( $entries_fh );
+            $entries_fh = null;
+            fclose( $fh );
+            $fh = null;
 
-            $entries[] = [
-                'n'     => $entry['name'],
-                's'     => $entry['size'],
-                'd'     => $entry['is_dir'],
-                'o'     => $data_offset,
-            ];
-
-            if ( ! $entry['is_dir'] ) {
-                $total_size += $entry['size'];
+            $archive_size = filesize( $this->archive );
+            $meta = array(
+                'total'          => (int) ( $state['total'] ?? 0 ),
+                'total_size'     => (int) ( $state['total_size'] ?? 0 ),
+                'archive_offset' => is_int( $archive_size ) ? $archive_size : (int) ( $state['archive_offset'] ?? 0 ),
+            );
+            $encoded_meta = wp_json_encode( $meta );
+            if ( ! is_string( $encoded_meta ) || @file_put_contents( $tmp_meta, $encoded_meta ) === false ) {
+                throw new Exception( 'Failed to write TAR manifest metadata' );
             }
+            if ( ! rename( $tmp_entries, $this->manifest_entries_file )
+                || ! rename( $tmp_meta, $this->manifest_file ) ) {
+                throw new Exception( 'Failed to finalize TAR manifest' );
+            }
+            wp_delete_file( $this->manifest_scan_state_file );
+            return $this->manifest_scan_progress( true, $meta );
+        } catch ( \Throwable $e ) {
+            if ( is_resource( $entries_fh ) ) {
+                fclose( $entries_fh );
+            }
+            if ( is_resource( $fh ) ) {
+                fclose( $fh );
+            }
+            throw $e;
+        }
+    }
 
-            // Skip past file data + padding
-            if ( $entry['size'] > 0 ) {
-                $data_blocks = (int) ceil( $entry['size'] / 512 ) * 512;
-                fseek( $fh, $data_offset + $data_blocks );
+    private function manifest_ready(): bool {
+        return file_exists( $this->manifest_file ) && file_exists( $this->manifest_entries_file );
+    }
+
+    private function load_manifest_meta(): array {
+        $meta = anibas_fm_read_small_json_file( $this->manifest_file );
+        return is_array( $meta ) ? $meta : array();
+    }
+
+    private function load_manifest_scan_state(): array {
+        if ( file_exists( $this->manifest_scan_state_file ) ) {
+            $state = anibas_fm_read_small_json_file( $this->manifest_scan_state_file );
+            if ( is_array( $state ) && isset( $state['archive_offset'] ) ) {
+                return $state;
             }
         }
 
+        return array(
+            'started'        => false,
+            'archive_offset' => 0,
+            'total'          => 0,
+            'total_size'     => 0,
+        );
+    }
+
+    private function save_manifest_scan_state( array $state ): void {
+        $tmp = $this->manifest_scan_state_file . '.tmp';
+        $encoded = wp_json_encode( $state );
+        if ( ! is_string( $encoded ) || @file_put_contents( $tmp, $encoded ) === false ) {
+            throw new Exception( 'Failed to save TAR manifest scan state' );
+        }
+        rename( $tmp, $this->manifest_scan_state_file );
+    }
+
+    private function manifest_scan_progress( bool $complete, array $state ): array {
+        $archive_size = max( 1, (int) filesize( $this->archive ) );
+        $processed = min( $archive_size, (int) ( $state['archive_offset'] ?? 0 ) );
+
+        return array(
+            'complete'       => $complete,
+            'total'          => (int) ( $state['total'] ?? 0 ),
+            'total_size'     => (int) ( $state['total_size'] ?? 0 ),
+            'processed'      => $processed,
+            'total_items'    => $archive_size,
+            'percent'        => round( min( 100, ( $processed / $archive_size ) * 100 ), 2 ),
+        );
+    }
+
+    private function read_manifest_entry_at_offset( $entries_fh, int $offset ): array {
+        if ( fseek( $entries_fh, $offset ) !== 0 ) {
+            throw new Exception( 'Failed to seek TAR manifest entry' );
+        }
+
+        $line = fgets( $entries_fh );
+        if ( $line === false ) {
+            throw new Exception( 'Failed to read TAR manifest entry' );
+        }
+
+        $next_offset = ftell( $entries_fh );
+        $entry = json_decode( trim( $line ), true );
+        if ( ! is_array( $entry ) || ! isset( $entry['n'] ) ) {
+            throw new Exception( 'Invalid TAR manifest entry' );
+        }
+
+        return array( $entry, is_int( $next_offset ) ? $next_offset : $offset );
+    }
+
+    private function manifest_offset_for_cursor( int $cursor ): int {
+        if ( $cursor <= 0 ) {
+            return 0;
+        }
+
+        $fh = fopen( $this->manifest_entries_file, 'rb' );
+        if ( ! $fh ) {
+            return 0;
+        }
+
+        $offset = 0;
+        for ( $i = 0; $i < $cursor; $i++ ) {
+            if ( fgets( $fh ) === false ) {
+                break;
+            }
+            $pos = ftell( $fh );
+            if ( is_int( $pos ) ) {
+                $offset = $pos;
+            }
+        }
         fclose( $fh );
 
-        $tmp = $this->manifest_file . '.tmp';
-        file_put_contents( $tmp, wp_json_encode( [
-            'total'      => count( $entries ),
-            'total_size' => $total_size,
-            'entries'    => $entries,
-        ] ) );
-        rename( $tmp, $this->manifest_file );
+        return $offset;
     }
 
     /* ------------------------------------- */
@@ -242,18 +412,20 @@ class TarRestoreEngine {
     private function load_state(): array {
         if ( ! file_exists( $this->state_file ) ) {
             return [
-                'cursor'      => 0,
-                'file_offset' => 0,
+                'cursor'       => 0,
+                'file_offset'  => 0,
+                'entry_offset' => 0,
             ];
         }
         $data = anibas_fm_read_small_json_file( $this->state_file );
         return is_array( $data ) ? $data : [
-            'cursor'      => 0,
-            'file_offset' => 0,
+            'cursor'       => 0,
+            'file_offset'  => 0,
+            'entry_offset' => 0,
         ];
     }
 
-    private function save_state( array $state ) {
+    private function save_state( array $state ): void {
         $tmp = $this->state_file . '.tmp';
         file_put_contents( $tmp, wp_json_encode( $state ) );
         rename( $tmp, $this->state_file );
@@ -313,21 +485,20 @@ class TarRestoreEngine {
      */
     public function run_step(): bool {
         $lock = $this->acquire_lock();
+        $fh = null;
+        $entries_fh = null;
 
         try {
-            if ( ! file_exists( $this->manifest_file ) ) {
+            if ( ! $this->manifest_ready() ) {
                 throw new Exception( 'Manifest not built. Call build_manifest() first.' );
             }
 
-            $manifest = anibas_fm_read_small_json_file( $this->manifest_file );
-
-            if ( ! is_array( $manifest ) || ! isset( $manifest['entries'] ) ) {
-                throw new Exception( 'Invalid manifest file' );
-            }
-
-            $entries = $manifest['entries'];
-            $total   = count( $entries );
+            $manifest = $this->load_manifest_meta();
+            $total   = (int) ( $manifest['total'] ?? 0 );
             $state   = $this->load_state();
+            if ( ! array_key_exists( 'entry_offset', $state ) ) {
+                $state['entry_offset'] = $this->manifest_offset_for_cursor( (int) ( $state['cursor'] ?? 0 ) );
+            }
 
             if ( $state['cursor'] >= $total ) {
                 $this->release_lock( $lock );
@@ -335,10 +506,17 @@ class TarRestoreEngine {
             }
 
             $fh    = fopen( $this->archive, 'rb' );
+            if ( ! $fh ) {
+                throw new Exception( 'Cannot open TAR archive' );
+            }
+            $entries_fh = fopen( $this->manifest_entries_file, 'rb' );
+            if ( ! $entries_fh ) {
+                throw new Exception( 'Failed to open TAR manifest entries' );
+            }
             $start = microtime( true );
 
             while ( $state['cursor'] < $total ) {
-                $entry      = $entries[ $state['cursor'] ];
+                [ $entry, $next_entry_offset ] = $this->read_manifest_entry_at_offset( $entries_fh, (int) ( $state['entry_offset'] ?? 0 ) );
                 $name       = $entry['n'];
                 $size       = (int) $entry['s'];
                 $is_dir     = ! empty( $entry['d'] );
@@ -352,9 +530,11 @@ class TarRestoreEngine {
                     }
                     $state['cursor']++;
                     $state['file_offset'] = 0;
+                    $state['entry_offset'] = $next_entry_offset;
                     $this->save_state( $state );
 
                     if ( ( microtime( true ) - $start ) > $this->time_budget ) {
+                        fclose( $entries_fh );
                         fclose( $fh );
                         $this->release_lock( $lock );
                         return true;
@@ -389,6 +569,7 @@ class TarRestoreEngine {
                     // Check time budget after each chunk
                     if ( ( microtime( true ) - $start ) > $this->time_budget ) {
                         fclose( $out );
+                        fclose( $entries_fh );
                         fclose( $fh );
                         $this->save_state( $state );
                         $this->release_lock( $lock );
@@ -401,14 +582,22 @@ class TarRestoreEngine {
                 // File complete — advance cursor
                 $state['cursor']++;
                 $state['file_offset'] = 0;
+                $state['entry_offset'] = $next_entry_offset;
                 $this->save_state( $state );
             }
 
+            fclose( $entries_fh );
             fclose( $fh );
             $this->release_lock( $lock );
             return false;
 
-        } catch ( Exception $e ) {
+        } catch ( \Throwable $e ) {
+            if ( is_resource( $entries_fh ) ) {
+                fclose( $entries_fh );
+            }
+            if ( is_resource( $fh ) ) {
+                fclose( $fh );
+            }
             $this->release_lock( $lock );
             throw $e;
         }
@@ -419,11 +608,11 @@ class TarRestoreEngine {
     /* ------------------------------------- */
 
     public function progress(): array {
-        if ( ! file_exists( $this->manifest_file ) ) {
+        if ( ! $this->manifest_ready() ) {
             return [ 'current' => 0, 'total' => 0, 'percent' => 0 ];
         }
 
-        $manifest = anibas_fm_read_small_json_file( $this->manifest_file );
+        $manifest = $this->load_manifest_meta();
         $state    = $this->load_state();
         $total    = isset( $manifest['total'] ) ? (int) $manifest['total'] : 0;
         $current  = isset( $state['cursor'] ) ? (int) $state['cursor'] : 0;
@@ -442,8 +631,12 @@ class TarRestoreEngine {
     public function cleanup() {
         $files = [
             $this->manifest_file,
+            $this->manifest_entries_file,
             $this->state_file,
             $this->lock_file,
+            $this->manifest_entries_file . '.tmp',
+            $this->manifest_scan_state_file,
+            $this->manifest_scan_state_file . '.tmp',
             $this->manifest_file . '.tmp',
             $this->state_file . '.tmp',
         ];
@@ -458,10 +651,10 @@ class TarRestoreEngine {
     }
 
     public function is_complete(): bool {
-        if ( ! file_exists( $this->manifest_file ) ) {
+        if ( ! $this->manifest_ready() ) {
             return false;
         }
-        $manifest = anibas_fm_read_small_json_file( $this->manifest_file );
+        $manifest = $this->load_manifest_meta();
         $state    = $this->load_state();
         $total    = isset( $manifest['total'] ) ? (int) $manifest['total'] : 0;
         return $state['cursor'] >= $total;

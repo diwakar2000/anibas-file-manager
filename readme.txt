@@ -4,7 +4,7 @@ Donate link: https://diwakar2000.com.np/
 Tags: file manager, database browser, cloud storage, backups, s3
 Requires at least: 6.0
 Tested up to: 6.9
-Stable tag: 1.2.0
+Stable tag: 1.3.0
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 Requires PHP: 8.0
@@ -19,12 +19,12 @@ Anibas File Manager is a powerful, modern, and secure file management solution f
 
 *   **File & Folder Operations**: Browse with an expandable sidebar tree, paginated list/grid views, previews, create, rename, duplicate, copy, move, delete, and conflict resolution.
 *   **Built-in Code Editor**: CodeMirror editor with syntax highlighting for PHP, JS, TS, CSS, HTML, JSON, YAML, SQL, Python, and more. Supports dot-files and chunked loading.
-*   **Archive & Backup Management**: Create/extract ZIP, TAR, and custom ANFM archives, run database + file ANFM full-site backups with streaming encrypted manifests, header/footer completeness checks, and rolling per-file edit backups.
+*   **Archive & Backup Management**: Create/extract ZIP, TAR, and ANFM archives, run full-site backups/restores, inspect backup contents, and keep rolling per-file edit backups.
 *   **Optional Database Browser**: Browse current-site and multisite/network tables, inspect schema/indexes, page through rows, and optionally edit cells or add rows behind explicit database safeguards.
 *   **Storage Backends**: Local filesystem, FTP/FTPS, SFTP, Amazon S3, S3-compatible storage, Google Drive, OneDrive, and Dropbox.
 *   **OAuth Cloud Connections**: Google Drive, OneDrive, and Dropbox use OAuth connection flows with encrypted token storage.
 *   **Live Cloud Availability**: Remote storage settings and storage pickers distinguish enabled connections from currently reachable connections, and offline providers are disabled until they reconnect.
-*   **Advanced Upload System**: Chunked, resumable uploads with progress tracking, immediate worker dispatch, and provider-aware multipart/upload-session support.
+*   **Advanced Upload System**: Chunked uploads with progress tracking, immediate worker dispatch, validated upload sessions, and provider-aware multipart support.
 *   **Background Processing**: Large copy, move, delete, empty-folder, archive, restore, backup, and upload-assembly operations run in conservative bounded phases. PHP timeout settings can only reduce the internal budget.
 *   **Large Directory Support**: Remote/cloud listings and background scans use pagination/cursors where providers support it.
 *   **Runtime Preflight**: Backup and restore check conservative PHP memory headroom and disk availability before starting, and report unknown disk availability instead of assuming it is safe.
@@ -44,7 +44,7 @@ Anibas File Manager is a powerful, modern, and secure file management solution f
 Yes. We implement multi-layer security including path normalization, realpath validation, and a blacklist of critical WordPress files/directories that cannot be accessed or modified.
 
 = Does it support remote storage? =
-Absolutely. It supports FTP/FTPS, SFTP, Amazon S3, S3-compatible storage like DigitalOcean Spaces, Wasabi, MinIO, and Cloudflare R2, plus OAuth-backed Google Drive, OneDrive, and Dropbox.
+Absolutely. It supports FTP/FTPS, SFTP, Amazon S3, S3-compatible storage like DigitalOcean Spaces, Wasabi, MinIO, and Cloudflare R2, plus OAuth-backed Google Drive, OneDrive, and Dropbox. Transfers between two remote providers should go through local storage.
 
 = Does it include database browsing? =
 Yes, but it is disabled by default. Add `define('ANIBAS_FM_ENABLE_DATABASE_VIEW', true);` to `wp-config.php`, then enable database browsing from File Manager -> Settings -> Security.
@@ -55,8 +55,14 @@ Yes, when you also add `define('ANIBAS_FM_ENABLE_DATABASE_EDIT', true);` and ena
 = Where are backup files stored? =
 Full-site backups and per-file edit backups are stored in a hidden protected directory under `wp-content/.anibas-backups-{random}`. In the UI, use File Manager -> Settings -> Backups to view file backups and full-site backup archives. Full-site restore is hidden unless `ANIBAS_FM_ENABLE_SITE_RESTORE` is enabled in wp-config.php.
 
+= Can cloud backups be restored? =
+Yes. Import a remote full-site `.anfm` backup into local backup storage first, then restore it from File Manager -> Settings -> Backups.
+
 = How does it avoid backup and restore timeouts? =
 Backup, restore, archive, database export/import, and upload assembly are split into bounded phases. Full-site ANFM packages stream encrypted JSONL manifests, database rows use JSONL row streams, and filesystem files are read through chunks/streams. Small `file_get_contents`-style reads are limited to plugin-owned metadata files under 1 MB.
+
+= Which wp-config.php constants unlock advanced features? =
+Use `ANIBAS_FM_ENABLE_DATABASE_VIEW` for the Database tab, `ANIBAS_FM_ENABLE_DATABASE_EDIT` for database edits, and `ANIBAS_FM_ENABLE_SITE_RESTORE` for full-site restore. OAuth providers can also use `ANIBAS_FM_GOOGLE_DRIVE_CLIENT_ID`, `ANIBAS_FM_GOOGLE_DRIVE_CLIENT_SECRET`, `ANIBAS_FM_ONEDRIVE_CLIENT_ID`, `ANIBAS_FM_ONEDRIVE_CLIENT_SECRET`, `ANIBAS_FM_ONEDRIVE_TENANT`, and `ANIBAS_FM_DROPBOX_APP_KEY`. Retention and limits can be tuned with `ANIBAS_FM_BACKUP_MAX_AGE`, `ANIBAS_FM_FILE_BACKUP_KEEP`, `ANIBAS_FM_EDITOR_MAX_BYTES`, `ANIBAS_FM_CHUNK_SIZE_MIN`, `ANIBAS_FM_DEFAULT_CHUNK_SIZE`, and `ANIBAS_FM_CHUNK_SIZE_MAX`.
 
 = What is the maximum file size for the editor? =
 By default, the editor supports files up to 10 MB. This can be configured via constants if your server memory allows for larger chunks.
@@ -81,29 +87,28 @@ https://github.com/diwakar2000/anibas-file-manager
 == Screenshots ==
 
 1. The main file explorer showing the sidebar tree and file grid.
-2. Plugin configuration settings.
-3. The built-in code editor with syntax highlighting for a HTML tags.
+2. Backup settings with full-site backup inspection and restore controls.
+3. Remote storage settings with live connection status.
+4. The Database tab with schema, indexes, and paginated rows.
+5. The built-in code editor with syntax highlighting for HTML and other file types.
 
 == Changelog ==
 
+= 1.3.0 =
+* Added opt-in full-site restore with staged file/database restore, preserve-old-data choices, critical-stage cancellation rules, and overwrite fallback when staging cannot continue.
+* Added searchable ANFM backup inspection with chunked indexing, tree browsing, search, and single-file downloads.
+* Added cloud backup send/import flows, including remote full-site backup detection and import into local backup storage before restore.
+* Improved database tools with saved table/page state, safer add-row defaults, password-expiry recovery, explicit redaction, and no destructive row-delete UI.
+* Hardened backup, archive, and database streams with ANFM header/footer validation, JSONL manifests, conservative memory/disk preflight, and URL rewriting during restore.
+* Hardened AJAX and security paths for raw JSON values, encrypted credential saves, editor permissions, storage-bound tokens, and upload-session validation.
+* Improved remote storage reliability with live availability checks, disabled offline destinations, SFTP fallback/binary-upload fixes, bounded previews/downloads, and clearer cloud status.
+* Added reusable custom dialogs for sensitive backup/restore/send flows and cleaned up PHP 8 typing/WPCS handling.
+
 = 1.2.0 =
-* Added an opt-in Database tab with current-site and multisite/network table scopes.
-* Added schema and index inspection, row estimates, bounded numbered paging, and jump-to-page controls for database tables.
-* Added chunked database backup/restore with typed manifest validation, base64 JSONL row streams, keyset pagination, and staging-table restore mode.
-* Made full-site backups ANFM-only, embedded the database payload in the package, and added restore package validation for extension, ANFM header metadata, EOF footer metadata, recorded package size, and encrypted manifest hash.
-* Added opt-in full-site restore from the Backups page with staged archive extraction, database restore, plugin deactivation/recovery snapshot, and final wp-content/root-file swap.
-* Added runtime backup/restore preflight for conservative PHP memory headroom and disk availability, with explicit admin-facing errors when disk availability cannot be determined safely.
-* Updated ANFM packages to stream encrypted JSONL archive manifests, avoiding full-manifest memory loads on very large sites while preserving EOF metadata validation.
-* Tightened chunking rules so filesystem files are streamed or bounded to small plugin-owned metadata files rather than loaded wholesale.
-* Added guarded database cell editing and row insertion behind explicit wp-config constants, Settings toggles, nonces, optional database password sessions, and primary-key validation.
-* Added metadata-aware add-row defaults for SQL defaults, current date/time fields, numeric fields, JSON/text, and enum values.
-* Added explicit database redaction for `user_pass` and protected WordPress option/site-meta values such as site URLs, cron state, and rewrite rules.
-* Removed destructive row-delete UI and blocked users/usermeta deletion at the backend policy layer.
-* Improved database navigation persistence so the active mode, selected table, and page survive refreshes.
-* Improved database password expiry recovery so the active table can continue after re-authentication without requiring a full page refresh.
-* Improved remote-storage availability checks so Settings and storage pickers distinguish enabled providers from currently reachable providers.
-* Prevented newly enabled or changed remote providers from being saved as active unless their live connection check passes.
-* Fixed SFTP SSH-layer fallback and binary upload handling for cURL/phpseclib backends.
+* Added the guarded Database tab with scoped table access, schema/index inspection, numbered pagination, and optional cell editing/add-row controls.
+* Added protected ANFM full-site backup creation with database payloads, encrypted manifests, and hidden backup storage.
+* Improved large-operation queues for remote pagination, archives, delete/empty-folder, upload assembly, and zero-byte files.
+* Hardened delete/trash tokens, archive restore state storage, remote path confinement, and backup browsing.
 
 = 1.1.0 =
 * Added Google Drive, OneDrive, and Dropbox storage providers with OAuth connection flows.

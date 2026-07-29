@@ -4,6 +4,8 @@ namespace Anibas;
 
 if (! defined('ABSPATH')) exit;
 
+// phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended -- Settings AJAX methods use explicit nonce/auth helpers before consuming request fields.
+
 /**
  * AJAX endpoints for plugin settings and remote-storage connection management.
  */
@@ -23,7 +25,7 @@ class SettingsAjaxHandler extends AjaxHandler
         add_action('admin_post_' . ANIBAS_FM_REMOTE_OAUTH_CALLBACK, array($this, 'remote_oauth_callback'));
     }
 
-    public function save_settings()
+    public function save_settings(): void
     {
         $this->check_save_settings_privilege();
 
@@ -163,7 +165,7 @@ class SettingsAjaxHandler extends AjaxHandler
         $this->send_success(array('message' => esc_html__('Settings saved successfully', 'anibas-file-manager')));
     }
 
-    public function get_remote_settings()
+    public function get_remote_settings(): void
     {
         $nonce = anibas_fm_fetch_request_variable('request', 'nonce');
 
@@ -255,16 +257,33 @@ class SettingsAjaxHandler extends AjaxHandler
         return $status;
     }
 
-    public function save_remote_settings()
+    public function save_remote_settings(): void
     {
         $this->check_save_settings_privilege();
         $this->check_settings_auth();
 
-        $raw      = json_decode(stripslashes(anibas_fm_fetch_request_variable('post', 'settings', '')), true);
-        $sanitized = anibas_fm_sanitize_remote_settings($raw);
-        $availability = $this->disable_new_unavailable_remote_connections($sanitized);
-        $sanitized = $availability['settings'];
-        update_option('anibas_fm_remote_connections', $sanitized);
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- nonce/settings auth are checked above; JSON is decoded raw then whitelisted by anibas_fm_sanitize_remote_settings().
+        $payload = isset($_POST['settings']) ? wp_unslash($_POST['settings']) : '';
+        if (! is_string($payload) || $payload === '') {
+            $this->send_error(esc_html__('Invalid remote settings payload.', 'anibas-file-manager'), 400);
+        }
+
+        $raw = json_decode($payload, true);
+        if (! is_array($raw) || json_last_error() !== JSON_ERROR_NONE) {
+            $this->send_error(esc_html__('Invalid remote settings payload.', 'anibas-file-manager'), 400);
+        }
+
+        try {
+            $sanitized = anibas_fm_sanitize_remote_settings($raw);
+            $availability = $this->disable_new_unavailable_remote_connections($sanitized);
+            $sanitized = $availability['settings'];
+            update_option('anibas_fm_remote_connections', $sanitized);
+        } catch (\RuntimeException $e) {
+            $this->send_error(array(
+                'error'   => 'CredentialEncryptionFailed',
+                'message' => esc_html($e->getMessage()),
+            ), 500);
+        }
 
         $message = empty($availability['disabled'])
             ? esc_html__('Remote settings saved successfully.', 'anibas-file-manager')
@@ -275,7 +294,7 @@ class SettingsAjaxHandler extends AjaxHandler
         ));
     }
 
-    public function test_remote_connection()
+    public function test_remote_connection(): void
     {
         $this->check_save_settings_privilege();
         $this->check_settings_auth();
@@ -309,7 +328,7 @@ class SettingsAjaxHandler extends AjaxHandler
         }
     }
 
-    public function start_remote_oauth()
+    public function start_remote_oauth(): void
     {
         $this->check_save_settings_privilege();
         $this->check_settings_auth();
@@ -323,12 +342,12 @@ class SettingsAjaxHandler extends AjaxHandler
         $this->send_success($result);
     }
 
-    public function remote_oauth_callback()
+    public function remote_oauth_callback(): void
     {
         RemoteOAuthManager::handle_callback();
     }
 
-    public function revoke_remote_oauth()
+    public function revoke_remote_oauth(): void
     {
         $this->check_save_settings_privilege();
         $this->check_settings_auth();

@@ -7,6 +7,8 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 abstract class FileSystemAdapter
 {
+    protected const FALLBACK_BUFFER_LIMIT = 1048576;
+
     /** Storage ID this adapter represents (e.g. 'local', 'ftp', 's3'). Set by StorageManager. */
     protected ?string $storage_id = null;
 
@@ -194,6 +196,10 @@ abstract class FileSystemAdapter
     }
     public function stream_contents(string $path): bool
     {
+        if (! $this->can_use_buffered_fallback($path)) {
+            return false;
+        }
+
         $content = $this->get_contents($path);
         if ($content !== false) {
             echo $content; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- binary file stream
@@ -277,6 +283,10 @@ abstract class FileSystemAdapter
      */
     public function download_to_local(string $remote_path, string $local_path): bool
     {
+        if (! $this->can_use_buffered_fallback($remote_path)) {
+            return false;
+        }
+
         $content = $this->get_contents($remote_path);
         if ($content === false) {
             return false;
@@ -359,5 +369,11 @@ abstract class FileSystemAdapter
             return ['status' => 9, 'bytes_copied' => filesize($local_path)];
         }
         return ['status' => 9, 'bytes_copied' => filesize($local_path)];
+    }
+
+    private function can_use_buffered_fallback(string $path): bool
+    {
+        $size = $this->get_size($path);
+        return is_int($size) && $size >= 0 && $size <= self::FALLBACK_BUFFER_LIMIT;
     }
 }

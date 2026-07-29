@@ -22,6 +22,8 @@ namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+// phpcs:disable WordPress.WP.AlternativeFunctions -- Archive restore requires byte-accurate streaming, seeks, atomic renames, and manifest sidecar files.
+
 use Exception;
 
 class ArchiveRestoreEngine {
@@ -45,6 +47,7 @@ class ArchiveRestoreEngine {
     private string $manifest_cache_file;
     private string $manifest_meta_file;
     private string $manifest_entries_file;
+    private string $manifest_path_index_dir;
     private string $manifest_load_state_file;
     private string $state_file;
     private string $lock_file;
@@ -82,6 +85,7 @@ class ArchiveRestoreEngine {
         $this->manifest_cache_file = $this->state_dir . '/manifest.json';
         $this->manifest_meta_file  = $this->state_dir . '/manifest.meta.json';
         $this->manifest_entries_file = $this->state_dir . '/manifest.entries.jsonl';
+        $this->manifest_path_index_dir = $this->state_dir . '/manifest.path-index';
         $this->manifest_load_state_file = $this->state_dir . '/manifest.load-state.json';
         $this->state_file          = $this->state_dir . '/state.json';
         $this->lock_file           = $this->state_dir . '/lock';
@@ -558,7 +562,9 @@ class ArchiveRestoreEngine {
     }
 
     public function manifest_cache_ready(): bool {
-        return file_exists( $this->manifest_meta_file ) && file_exists( $this->manifest_entries_file );
+        return file_exists( $this->manifest_meta_file )
+            && file_exists( $this->manifest_entries_file )
+            && is_dir( $this->manifest_path_index_dir );
     }
 
     public function prepare_manifest_cache_step( ?string $password = null ): array {
@@ -605,16 +611,19 @@ class ArchiveRestoreEngine {
         $key = self::resolve_key( $password, $key_material, $header['password_protected'] );
         $tmp_entries = $this->manifest_entries_file . '.tmp';
         $tmp_meta    = $this->manifest_meta_file . '.tmp';
+        $tmp_index_dir = $this->manifest_path_index_dir . '.tmp';
 
         $state = $this->load_manifest_prepare_state( $header );
         $is_new = empty( $state['started'] );
-        if ( ! $is_new && ! file_exists( $tmp_entries ) ) {
+        if ( ! $is_new && ( ! file_exists( $tmp_entries ) || ! is_dir( $tmp_index_dir ) ) ) {
             $state = $this->load_manifest_prepare_state( array_merge( $header, array( 'force_new' => true ) ) );
             $is_new = true;
         }
         if ( $is_new ) {
             wp_delete_file( $tmp_entries );
             wp_delete_file( $tmp_meta );
+            $this->delete_manifest_path_index_dir( $tmp_index_dir );
+            $this->ensure_manifest_path_index_dir( $tmp_index_dir );
             $state['started'] = true;
         }
 
@@ -626,6 +635,7 @@ class ArchiveRestoreEngine {
         $fh = fopen( $this->archive, 'rb' );
         if ( ! $fh ) {
             fclose( $entries_fh );
+            $this->delete_manifest_path_index_dir( $tmp_index_dir );
             throw new Exception( 'Failed to open archive manifest' );
         }
 
@@ -655,7 +665,7 @@ class ArchiveRestoreEngine {
                 }
 
                 $state['carry'] = (string) ( $state['carry'] ?? '' ) . $plaintext;
-                $this->consume_manifest_prepare_lines( $state, $entries_fh );
+                $this->consume_manifest_prepare_lines( $state, $entries_fh, $tmp_index_dir );
 
                 if ( ( microtime( true ) - $start ) > $budget ) {
                     $this->save_manifest_prepare_state( $state );
@@ -669,7 +679,7 @@ class ArchiveRestoreEngine {
 
             if ( (string) ( $state['carry'] ?? '' ) !== '' ) {
                 $state['carry'] .= "\n";
-                $this->consume_manifest_prepare_lines( $state, $entries_fh );
+                $this->consume_manifest_prepare_lines( $state, $entries_fh, $tmp_index_dir );
             }
 
             fclose( $fh );
@@ -689,8 +699,14 @@ class ArchiveRestoreEngine {
                 throw new Exception( 'Failed to cache streaming manifest metadata' );
             }
 
-            rename( $tmp_entries, $this->manifest_entries_file );
-            rename( $tmp_meta, $this->manifest_meta_file );
+            if ( ! rename( $tmp_entries, $this->manifest_entries_file )
+                || ! rename( $tmp_meta, $this->manifest_meta_file ) ) {
+                throw new Exception( 'Failed to finalize streaming manifest cache' );
+            }
+            $this->delete_manifest_path_index_dir( $this->manifest_path_index_dir );
+            if ( ! rename( $tmp_index_dir, $this->manifest_path_index_dir ) ) {
+                throw new Exception( 'Failed to finalize backup manifest path index' );
+            }
             wp_delete_file( $this->manifest_load_state_file );
 
             return $this->manifest_prepare_result( true, $state );
@@ -703,6 +719,7 @@ class ArchiveRestoreEngine {
             }
             wp_delete_file( $tmp_entries );
             wp_delete_file( $tmp_meta );
+            $this->delete_manifest_path_index_dir( $tmp_index_dir );
             wp_delete_file( $this->manifest_load_state_file );
             throw $e;
         }
@@ -848,20 +865,60 @@ class ArchiveRestoreEngine {
             return null;
         }
 
-        $fh = fopen( $this->manifest_entries_file, 'rb' );
-        if ( ! $fh ) {
+        $indexed_entry = $this->find_manifest_entry_from_index( $name );
+        if ( is_array( $indexed_entry ) ) {
+            return $indexed_entry;
+        }
+
+        return null;
+    }
+
+    private function find_manifest_entry_from_index( string $name ): ?array {
+        $bucket = $this->manifest_index_bucket_file( $name, $this->manifest_path_index_dir );
+        if ( ! is_file( $bucket ) ) {
+            return null;
+        }
+
+        $hash = hash( 'sha256', $name );
+        $bucket_fh = fopen( $bucket, 'rb' );
+        if ( ! $bucket_fh ) {
+            return null;
+        }
+
+        $entries_fh = fopen( $this->manifest_entries_file, 'rb' );
+        if ( ! $entries_fh ) {
+            fclose( $bucket_fh );
             throw new Exception( 'Failed to open backup manifest index' );
         }
 
-        while ( ( $line = fgets( $fh ) ) !== false ) {
-            $entry = $this->decode_manifest_entry_line( $line );
+        while ( ( $line = fgets( $bucket_fh ) ) !== false ) {
+            $row = json_decode( trim( $line ), true );
+            if ( ! is_array( $row )
+                || (string) ( $row['hash'] ?? '' ) !== $hash
+                || (string) ( $row['name'] ?? '' ) !== $name ) {
+                continue;
+            }
+
+            $offset = (int) ( $row['offset'] ?? -1 );
+            if ( $offset < 0 || fseek( $entries_fh, $offset ) !== 0 ) {
+                continue;
+            }
+
+            $entry_line = fgets( $entries_fh );
+            if ( $entry_line === false ) {
+                continue;
+            }
+
+            $entry = $this->decode_manifest_entry_line( $entry_line );
             if ( is_array( $entry ) && (string) ( $entry['name'] ?? '' ) === $name ) {
-                fclose( $fh );
+                fclose( $entries_fh );
+                fclose( $bucket_fh );
                 return $entry;
             }
         }
 
-        fclose( $fh );
+        fclose( $entries_fh );
+        fclose( $bucket_fh );
         return null;
     }
 
@@ -973,7 +1030,7 @@ class ArchiveRestoreEngine {
         );
     }
 
-    private function consume_manifest_prepare_lines( array &$state, $entries_fh ): void {
+    private function consume_manifest_prepare_lines( array &$state, $entries_fh, string $index_dir ): void {
         $buffer = (string) ( $state['carry'] ?? '' );
         while ( ( $pos = strpos( $buffer, "\n" ) ) !== false ) {
             $line = substr( $buffer, 0, $pos );
@@ -1000,12 +1057,65 @@ class ArchiveRestoreEngine {
             }
 
             $entry_json = wp_json_encode( $row );
+            $entry_offset = ftell( $entries_fh );
             if ( ! is_string( $entry_json ) || fwrite( $entries_fh, $entry_json . "\n" ) === false ) {
                 throw new Exception( 'Failed to cache streaming archive manifest entry' );
+            }
+            if ( $entry_offset !== false ) {
+                $this->index_manifest_entry( $row, (int) $entry_offset, $index_dir );
             }
             $state['entries'] = (int) ( $state['entries'] ?? 0 ) + 1;
         }
         $state['carry'] = $buffer;
+    }
+
+    private function ensure_manifest_path_index_dir( string $dir ): void {
+        if ( is_dir( $dir ) ) {
+            return;
+        }
+        if ( ! wp_mkdir_p( $dir ) ) {
+            throw new Exception( 'Failed to prepare backup manifest path index' );
+        }
+    }
+
+    private function delete_manifest_path_index_dir( string $dir ): void {
+        if ( ! is_dir( $dir ) ) {
+            return;
+        }
+
+        $files = glob( rtrim( $dir, '/' ) . '/*.jsonl' );
+        if ( is_array( $files ) ) {
+            foreach ( $files as $file ) {
+                if ( is_file( $file ) ) {
+                    wp_delete_file( $file );
+                }
+            }
+        }
+
+        @rmdir( $dir ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir
+    }
+
+    private function index_manifest_entry( array $entry, int $offset, string $index_dir ): void {
+        $name = (string) ( $entry['name'] ?? '' );
+        if ( $name === '' || str_ends_with( $name, '/' ) ) {
+            return;
+        }
+
+        $hash = hash( 'sha256', $name );
+        $bucket = $this->manifest_index_bucket_file( $name, $index_dir );
+        $line = wp_json_encode( array(
+            'hash'   => $hash,
+            'name'   => $name,
+            'offset' => $offset,
+        ) );
+        if ( ! is_string( $line ) || @file_put_contents( $bucket, $line . "\n", FILE_APPEND | LOCK_EX ) === false ) {
+            throw new Exception( 'Failed to write backup manifest path index' );
+        }
+    }
+
+    private function manifest_index_bucket_file( string $name, string $index_dir ): string {
+        $hash = hash( 'sha256', $name );
+        return rtrim( $index_dir, '/' ) . '/' . substr( $hash, 0, 2 ) . '.jsonl';
     }
 
     private function prepare_legacy_manifest_entries(): void {
@@ -1016,8 +1126,12 @@ class ArchiveRestoreEngine {
         $manifest = anibas_fm_read_small_json_file( $this->manifest_cache_file );
         $files = is_array( $manifest['files'] ?? null ) ? $manifest['files'] : array();
         $tmp_entries = $this->manifest_entries_file . '.tmp';
+        $tmp_index_dir = $this->manifest_path_index_dir . '.tmp';
+        $this->delete_manifest_path_index_dir( $tmp_index_dir );
+        $this->ensure_manifest_path_index_dir( $tmp_index_dir );
         $entries_fh = fopen( $tmp_entries, 'wb' );
         if ( ! $entries_fh ) {
+            $this->delete_manifest_path_index_dir( $tmp_index_dir );
             throw new Exception( 'Failed to prepare legacy backup manifest index' );
         }
         foreach ( $files as $entry ) {
@@ -1026,7 +1140,11 @@ class ArchiveRestoreEngine {
             }
             $encoded = wp_json_encode( $entry );
             if ( is_string( $encoded ) ) {
+                $entry_offset = ftell( $entries_fh );
                 fwrite( $entries_fh, $encoded . "\n" );
+                if ( $entry_offset !== false ) {
+                    $this->index_manifest_entry( $entry, (int) $entry_offset, $tmp_index_dir );
+                }
             }
         }
         fclose( $entries_fh );
@@ -1040,10 +1158,18 @@ class ArchiveRestoreEngine {
         $encoded_meta = wp_json_encode( $meta );
         if ( ! is_string( $encoded_meta ) || @file_put_contents( $this->manifest_meta_file . '.tmp', $encoded_meta ) === false ) {
             wp_delete_file( $tmp_entries );
+            $this->delete_manifest_path_index_dir( $tmp_index_dir );
             throw new Exception( 'Failed to prepare legacy backup manifest metadata' );
         }
-        rename( $tmp_entries, $this->manifest_entries_file );
-        rename( $this->manifest_meta_file . '.tmp', $this->manifest_meta_file );
+        if ( ! rename( $tmp_entries, $this->manifest_entries_file )
+            || ! rename( $this->manifest_meta_file . '.tmp', $this->manifest_meta_file ) ) {
+            $this->delete_manifest_path_index_dir( $tmp_index_dir );
+            throw new Exception( 'Failed to finalize legacy backup manifest index' );
+        }
+        $this->delete_manifest_path_index_dir( $this->manifest_path_index_dir );
+        if ( ! rename( $tmp_index_dir, $this->manifest_path_index_dir ) ) {
+            throw new Exception( 'Failed to finalize backup manifest path index' );
+        }
     }
 
     private function normalize_manifest_directory( string $directory ): string {
@@ -1126,14 +1252,19 @@ class ArchiveRestoreEngine {
     private function load_streaming_archive_manifest( array $header, string $key ): array {
         $tmp_entries = $this->manifest_entries_file . '.tmp';
         $tmp_meta    = $this->manifest_meta_file . '.tmp';
+        $tmp_index_dir = $this->manifest_path_index_dir . '.tmp';
+        $this->delete_manifest_path_index_dir( $tmp_index_dir );
+        $this->ensure_manifest_path_index_dir( $tmp_index_dir );
         $entries_fh  = fopen( $tmp_entries, 'wb' );
         if ( ! $entries_fh ) {
+            $this->delete_manifest_path_index_dir( $tmp_index_dir );
             throw new Exception( 'Failed to prepare streaming manifest cache' );
         }
 
         $fh = fopen( $this->archive, 'rb' );
         if ( ! $fh ) {
             fclose( $entries_fh );
+            $this->delete_manifest_path_index_dir( $tmp_index_dir );
             throw new Exception( 'Failed to open archive manifest' );
         }
 
@@ -1164,12 +1295,12 @@ class ArchiveRestoreEngine {
             }
 
             $carry .= $plaintext;
-            $this->consume_manifest_lines( $carry, $meta, $entries_fh );
+            $this->consume_manifest_lines( $carry, $meta, $entries_fh, $tmp_index_dir );
         }
 
         if ( $carry !== '' ) {
             $carry .= "\n";
-            $this->consume_manifest_lines( $carry, $meta, $entries_fh );
+            $this->consume_manifest_lines( $carry, $meta, $entries_fh, $tmp_index_dir );
         }
 
         fclose( $fh );
@@ -1177,17 +1308,26 @@ class ArchiveRestoreEngine {
 
         if ( ! is_array( $meta ) ) {
             wp_delete_file( $tmp_entries );
+            $this->delete_manifest_path_index_dir( $tmp_index_dir );
             throw new Exception( 'Streaming archive manifest metadata is missing' );
         }
 
         $encoded = wp_json_encode( $meta );
         if ( ! is_string( $encoded ) || @file_put_contents( $tmp_meta, $encoded ) === false ) {
             wp_delete_file( $tmp_entries );
+            $this->delete_manifest_path_index_dir( $tmp_index_dir );
             throw new Exception( 'Failed to cache streaming manifest metadata' );
         }
 
-        rename( $tmp_entries, $this->manifest_entries_file );
-        rename( $tmp_meta, $this->manifest_meta_file );
+        if ( ! rename( $tmp_entries, $this->manifest_entries_file )
+            || ! rename( $tmp_meta, $this->manifest_meta_file ) ) {
+            $this->delete_manifest_path_index_dir( $tmp_index_dir );
+            throw new Exception( 'Failed to finalize streaming manifest cache' );
+        }
+        $this->delete_manifest_path_index_dir( $this->manifest_path_index_dir );
+        if ( ! rename( $tmp_index_dir, $this->manifest_path_index_dir ) ) {
+            throw new Exception( 'Failed to finalize backup manifest path index' );
+        }
 
         return [
             'total'      => (int) ( $meta['total'] ?? 0 ),
@@ -1195,7 +1335,7 @@ class ArchiveRestoreEngine {
         ];
     }
 
-    private function consume_manifest_lines( string &$buffer, ?array &$meta, $entries_fh ): void {
+    private function consume_manifest_lines( string &$buffer, ?array &$meta, $entries_fh, string $index_dir ): void {
         while ( ( $pos = strpos( $buffer, "\n" ) ) !== false ) {
             $line = substr( $buffer, 0, $pos );
             $buffer = substr( $buffer, $pos + 1 );
@@ -1224,7 +1364,13 @@ class ArchiveRestoreEngine {
             if ( ! is_string( $entry_json ) ) {
                 throw new Exception( 'Failed to cache streaming archive manifest entry' );
             }
-            fwrite( $entries_fh, $entry_json . "\n" );
+            $entry_offset = ftell( $entries_fh );
+            if ( fwrite( $entries_fh, $entry_json . "\n" ) === false ) {
+                throw new Exception( 'Failed to cache streaming archive manifest entry' );
+            }
+            if ( $entry_offset !== false ) {
+                $this->index_manifest_entry( $row, (int) $entry_offset, $index_dir );
+            }
         }
     }
 
@@ -1581,6 +1727,8 @@ class ArchiveRestoreEngine {
                 wp_delete_file( $f );
             }
         }
+        $this->delete_manifest_path_index_dir( $this->manifest_path_index_dir );
+        $this->delete_manifest_path_index_dir( $this->manifest_path_index_dir . '.tmp' );
         if ( is_dir( $this->state_dir ) ) {
             @rmdir( $this->state_dir );
         }

@@ -221,12 +221,7 @@ class DatabaseAjaxHandler extends AjaxHandler
 
     private function request_json_array(string $key): array
     {
-        $raw = anibas_fm_fetch_request_variable('request', $key, '{}');
-        if (is_array($raw)) {
-            return $raw;
-        }
-
-        $decoded = json_decode((string) $raw, true);
+        $decoded = json_decode($this->request_raw_string($key, '{}'), true);
         if (! is_array($decoded)) {
             throw new \InvalidArgumentException('Invalid request payload.');
         }
@@ -234,18 +229,32 @@ class DatabaseAjaxHandler extends AjaxHandler
         return $decoded;
     }
 
-    private function request_json_value(string $key)
+    private function request_json_value(string $key): mixed
     {
-        $raw = anibas_fm_fetch_request_variable('request', $key, 'null');
-        if (is_array($raw)) {
-            throw new \InvalidArgumentException('Invalid request payload.');
-        }
-
-        $decoded = json_decode((string) $raw, true);
+        $decoded = json_decode($this->request_raw_string($key, 'null'), true);
         if (json_last_error() !== JSON_ERROR_NONE) {
             throw new \InvalidArgumentException('Invalid request payload.');
         }
 
         return $decoded;
+    }
+
+    private function request_raw_string(string $key, string $default): string
+    {
+        if (array_key_exists($key, $_POST)) { // phpcs:ignore WordPress.Security.NonceVerification.Missing -- AJAX actions validate nonce/auth before decoding raw JSON fields.
+            // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- raw JSON must be decoded before validating database cell values.
+            $value = wp_unslash($_POST[$key]);
+        } elseif (array_key_exists($key, $_GET)) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- AJAX actions validate nonce/auth before decoding raw JSON fields.
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- raw JSON must be decoded before validating database cell values.
+            $value = wp_unslash($_GET[$key]);
+        } else {
+            return $default;
+        }
+
+        if (is_array($value)) {
+            throw new \InvalidArgumentException('Invalid request payload.');
+        }
+
+        return (string) $value;
     }
 }

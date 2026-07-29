@@ -2,7 +2,7 @@
 
 A full-featured, secure, and modern file manager for WordPress. Manage local files and cloud storage, edit code, preview media, create archives, browse guarded database tables, and run site backups directly from your WordPress dashboard.
 
-**Version:** 1.2.0<br>
+**Version:** 1.3.0<br>
 **Author:** Diwakar Dahal<br>
 **License:** GPL-2.0+<br>
 **Requires:** WordPress 6.0+, PHP 8.0+
@@ -21,13 +21,13 @@ A full-featured, secure, and modern file manager for WordPress. Manage local fil
 
 ## ✨ Features
 
-### What's New in 1.2.0
-- **Opt-in database browser:** Browse current-site and multisite/network tables from a dedicated **Database** tab when explicitly enabled from `wp-config.php` and Settings.
-- **Guarded database editing:** Edit individual cells and add rows behind database-specific nonces, optional database password sessions, primary-key checks, and protected-column rules.
-- **Safer table UX:** Numbered pagination, schema/index views, refresh-persistent table/page state, metadata-aware add-row defaults, and explicit redaction for `user_pass` plus protected URL/cron/rewrite option values.
-- **Cloud availability truth:** Remote storage settings now live-check availability, keep enabled/offline state separate, and prevent newly enabled or changed providers from being saved as active until the connection passes.
-- **SFTP reliability fixes:** SFTP can fall back from cURL to phpseclib on SSH-layer failures, and binary uploads avoid `data://` null-byte failures.
-- **Searchable backup inspection:** Full-site backups can be indexed in chunks, browsed as a tree, searched, and used to download an individual file directly from the encrypted ANFM package.
+### What's New in 1.3.0
+- **Full-site restore:** Restore ANFM backups with staged file/database restore, preserve-old-data choices, fallback handling, and guarded critical stages.
+- **Searchable backup inspection:** Scan large ANFM backups in chunks, browse them as a tree, search contents, and download individual files.
+- **Cloud backup flow:** Send full-site backups to cloud storage and import remote ANFM backups into local backup storage before restore.
+- **Database polish:** Saved table/page state, safer add-row defaults, smoother password recovery, explicit redaction, and no destructive row-delete UI.
+- **Remote reliability:** Live availability checks, disabled offline destinations, SFTP fallback fixes, and safer binary/cloud transfers.
+- **Security and timeout hardening:** Validated upload sessions, fail-closed encrypted credential saves, server-side editor checks, raw JSON preservation, and streamed archive/database manifests.
 
 ### What's New in 1.1.0
 - **New cloud providers:** Google Drive, OneDrive, and Dropbox support with OAuth connection flows.
@@ -41,7 +41,7 @@ A full-featured, secure, and modern file manager for WordPress. Manage local fil
 - **Full Control:** Create, rename, duplicate, copy, move, and delete files or folders.
 - **Conflict Resolution:** Seamlessly handle file conflicts during transfers (skip, overwrite, or auto-rename).
 - **Rich Previews:** Preview images, videos, audio, PDFs, and text files inline.
-- **Cross-Storage Transfers:** Move files between different storage backends (for example, Local to S3 or Dropbox to Local) using the "Send To" modal.
+- **Cross-Storage Transfers:** Move files between local storage and a remote backend using the "Send To" modal. Direct remote-to-remote transfers are blocked for safety.
 - **Remote Pagination:** Large remote folders are paginated in the UI and scanned incrementally by background jobs.
 
 ### 🗑️ Smart Trash System
@@ -67,10 +67,11 @@ A full-featured, secure, and modern file manager for WordPress. Manage local fil
 ### 🗜️ Archive & Backup Management
 - **Archives:** Create and extract ZIP, TAR, and custom ANFM archives directly in the browser.
 - **Resumable Archive Jobs:** Archive creation and extraction run in bounded steps, with status tracking and resume/cancel controls for interrupted work.
-- **Site Backups:** Generate database + file full-site backups as ANFM packages with phase-based execution, optional password protection, streaming encrypted manifests, and top/header plus EOF/footer metadata checks before restore.
+- **Site Backups:** Generate and restore database + file full-site backups as ANFM packages with phase-based execution, optional password protection, streaming encrypted manifests, and header/footer completeness checks.
 - **Runtime Preflight:** Backup and restore check conservative PHP memory headroom and disk availability before starting. If disk space cannot be determined, the operation reports that to the admin instead of assuming it is safe.
 - **File Backups:** Maintain a rolling backup history for individual files (default: 5 snapshots per file).
-- **Dedicated Backup Browser:** View, restore, and delete file backups from **Settings -> Backups -> Single File Backups**; inspect, search, download individual files from, and delete full-site ANFM archives from **Full Site Backups**. Full-site restore remains hidden until explicitly enabled.
+- **Dedicated Backup Browser:** View, restore, and delete file backups from **Settings -> Backups**. Full-site backups can be inspected, searched, sent to cloud storage, imported from cloud storage, restored, or deleted. Full-site restore remains hidden until explicitly enabled.
+- **Cloud Restore Path:** Remote full-site ANFM backups can be imported into local backup storage before restore.
 - **Protected Storage:** Backup files are stored in a hidden, protected directory under `wp-content/.anibas-backups-{random}` and are excluded from normal file-manager browsing.
 
 ### ☁️ Multi-Storage Backends
@@ -85,9 +86,9 @@ Switch between storage providers natively without leaving the WordPress dashboar
 - **Dropbox:** OAuth-backed Dropbox storage support, including folder traversal and upload sessions.
 - **Live Availability:** Settings and storage pickers show whether each remote connection is currently reachable, dim offline providers, and block sending files to unavailable destinations.
 
-### 🚀 Resumable Chunked Uploads
-- **Reliable Uploads:** Large files are uploaded in chunks (1–20 MB) with parallel assembly.
-- **Resumable:** Interrupted uploads automatically continue where they left off.
+### 🚀 Chunked Uploads
+- **Reliable Uploads:** Large files are uploaded in chunks (1–20 MB) with background assembly.
+- **Validated Sessions:** Upload chunks are checked against server-issued session metadata before assembly.
 - **Cloud Integration:** Remote uploads use provider-aware chunking/multipart sessions for S3, Google Drive, OneDrive, and Dropbox where supported.
 - **Empty File Support:** Zero-byte files are handled consistently across local and remote storage.
 
@@ -99,7 +100,7 @@ Switch between storage providers natively without leaving the WordPress dashboar
 - **Bounded Memory Reads:** Internal metadata reads are capped, archive manifests are streamed, and large file/chunk operations use `fread`/streaming paths instead of full-file reads.
 - **Worker Dispatch:** Upload assembly and background operations dispatch workers immediately, so jobs do not depend on a later status poll to begin.
 
-### 🛡️ Iron-clad Security
+### 🛡️ Security
 - **Strict Capabilities:** `manage_options` check on all operations.
 - **Nonces & Tokens:** Action-specific WordPress nonces, file-manager/session tokens, settings tokens, and storage-bound one-time delete tokens.
 - **Path Protection:** Multi-layer validation prevents directory traversal. Hardcoded blocked paths protect critical WP files (`wp-config.php`, `.git`, etc.).
@@ -112,23 +113,21 @@ Switch between storage providers natively without leaving the WordPress dashboar
 
 ## Release Notes
 
+### 1.3.0
+- Added opt-in full-site restore with staged file/database restore, preserve-old-data choices, critical-stage cancellation rules, and overwrite fallback when staging cannot continue.
+- Added searchable ANFM backup inspection with chunked indexing, tree browsing, search, and single-file downloads.
+- Added cloud backup send/import flows, including remote full-site backup detection and import into local backup storage before restore.
+- Improved database tools with saved table/page state, safer add-row defaults, password-expiry recovery, explicit redaction, and no destructive row-delete UI.
+- Hardened backup, archive, and database streams with ANFM header/footer validation, JSONL manifests, conservative memory/disk preflight, and URL rewriting during restore.
+- Hardened AJAX and security paths for raw JSON values, encrypted credential saves, editor permissions, storage-bound tokens, and upload-session validation.
+- Improved remote storage reliability with live availability checks, disabled offline destinations, SFTP fallback/binary-upload fixes, bounded previews/downloads, and clearer cloud status.
+- Added reusable custom dialogs for sensitive backup/restore/send flows and cleaned up PHP 8 typing/WPCS handling.
+
 ### 1.2.0
-- Added an opt-in Database tab with scoped table browsing, schema/index inspection, numbered pagination, and refresh-persistent table/page navigation.
-- Added chunked database backup/restore with typed manifest validation, base64 JSONL row streams, keyset pagination, and staging-table restore mode.
-- Made full-site backups ANFM-only, embedded the database payload in the package, and added restore package validation for extension, ANFM header metadata, EOF footer metadata, recorded package size, and encrypted manifest hash.
-- Added opt-in full-site restore from the Backups page with staged archive extraction, database restore, plugin deactivation/recovery snapshot, and final wp-content/root-file swap.
-- Added runtime backup/restore preflight for conservative PHP memory headroom and disk availability, with explicit admin-facing errors when disk availability cannot be determined safely.
-- Updated ANFM packages to stream encrypted JSONL archive manifests, avoiding full-manifest memory loads on very large sites while keeping restore metadata validated at EOF.
-- Added chunked backup inspection that builds a protected searchable manifest index, browses full-site backups as folders, searches large manifests, and streams individual files by encrypted offset/chunk metadata.
-- Rewrote backed-up `home`/`siteurl` values and source URL occurrences in every non-binary restored database value, including serialized, JSON escaped-slash, and URL-encoded payloads.
-- Tightened chunking rules so filesystem files are streamed or bounded to small plugin-owned metadata files rather than loaded wholesale.
-- Added guarded database cell editing and row insertion behind explicit constants, settings toggles, nonces, optional database password sessions, and primary-key validation.
-- Added database safety rules for explicit redaction of `user_pass` and protected WordPress option/site-meta values, while allowing normal developer debugging fields to remain visible.
-- Added metadata-aware add-row defaults for SQL defaults, current date/time columns, numeric fields, JSON/text, and enum values.
-- Removed destructive row-delete UI and blocked users/usermeta deletion at the backend policy layer.
-- Improved database password expiry recovery so the active table can continue after re-authentication without requiring a full page refresh.
-- Improved remote-storage availability checks, disabled offline destinations in storage pickers, and prevented unavailable newly enabled cloud connections from being saved as active.
-- Fixed SFTP SSH-layer fallback and binary upload handling for cURL/phpseclib backends.
+- Added the guarded Database tab with scoped table access, schema/index inspection, numbered pagination, and optional cell editing/add-row controls.
+- Added protected ANFM full-site backup creation with database payloads, encrypted manifests, and hidden backup storage.
+- Improved large-operation queues for remote pagination, archives, delete/empty-folder, upload assembly, and zero-byte files.
+- Hardened delete/trash tokens, archive restore state storage, remote path confinement, and backup browsing.
 
 ### 1.1.0
 - Added Google Drive, OneDrive, and Dropbox storage providers with OAuth connection, refresh, and disconnect flows.

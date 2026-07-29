@@ -1498,7 +1498,7 @@ if ( ! function_exists( 'anibas_fm_secret_key' ) ) {
      * so rotating those WP salts will invalidate previously encrypted blobs —
      * which is the intended behaviour (credentials get re-entered).
      */
-    function anibas_fm_secret_key() {
+    function anibas_fm_secret_key(): string {
         return hash( 'sha256', wp_salt( 'auth' ) . '|anibas-fm-creds', true );
     }
 }
@@ -1507,26 +1507,33 @@ if ( ! function_exists( 'anibas_fm_encrypt_value' ) ) {
     /**
      * Encrypt a short string with AES-256-GCM. Returns a base64 blob with
      * an "afm1:" prefix so decrypt can detect already-encrypted values.
-     * Returns the input unchanged on failure (non-blocking best effort).
+     * Throws on encryption failure so new or changed secrets are never saved
+     * as plaintext. Decryption still accepts legacy plaintext values.
      *
      * @param string $plaintext
      * @return string
      */
-    function anibas_fm_encrypt_value( $plaintext ) {
-        if ( ! is_string( $plaintext ) || $plaintext === '' ) {
+    function anibas_fm_encrypt_value( string $plaintext ): string {
+        if ( $plaintext === '' ) {
             return $plaintext;
         }
         if ( strpos( $plaintext, 'afm1:' ) === 0 ) {
             return $plaintext;
         }
         if ( ! function_exists( 'openssl_encrypt' ) ) {
-            return $plaintext;
+            throw new \RuntimeException( __( 'OpenSSL is required to encrypt remote storage credentials.', 'anibas-file-manager' ) );
         }
-        $iv  = random_bytes( 12 );
+
+        try {
+            $iv = random_bytes( 12 );
+        } catch ( \Throwable $e ) {
+            throw new \RuntimeException( __( 'Could not generate secure encryption bytes for remote storage credentials.', 'anibas-file-manager' ), 0, $e );
+        }
+
         $tag = '';
         $ct  = openssl_encrypt( $plaintext, 'aes-256-gcm', anibas_fm_secret_key(), OPENSSL_RAW_DATA, $iv, $tag );
-        if ( $ct === false ) {
-            return $plaintext;
+        if ( $ct === false || ! is_string( $tag ) || $tag === '' ) {
+            throw new \RuntimeException( __( 'Could not encrypt remote storage credentials.', 'anibas-file-manager' ) );
         }
         // base64_encode() here makes AES-256-GCM binary ciphertext safe to store as
         // an option string; it is not logic obfuscation.
@@ -1971,10 +1978,7 @@ if ( ! function_exists( 'anibas_fm_encrypt_remote_settings' ) ) {
      * @param array $settings
      * @return array
      */
-    function anibas_fm_encrypt_remote_settings( $settings ) {
-        if ( ! is_array( $settings ) ) {
-            return array();
-        }
+    function anibas_fm_encrypt_remote_settings( array $settings ): array {
         foreach ( $settings as $storage => $conn ) {
             if ( ! is_array( $conn ) ) continue;
             $secret_fields = anibas_fm_remote_secret_fields( $storage );
@@ -1995,10 +1999,7 @@ if ( ! function_exists( 'anibas_fm_decrypt_remote_settings' ) ) {
      * @param array $settings
      * @return array
      */
-    function anibas_fm_decrypt_remote_settings( $settings ) {
-        if ( ! is_array( $settings ) ) {
-            return array();
-        }
+    function anibas_fm_decrypt_remote_settings( array $settings ): array {
         foreach ( $settings as $storage => $conn ) {
             if ( ! is_array( $conn ) ) continue;
             $secret_fields = anibas_fm_remote_secret_fields( $storage );
@@ -2016,8 +2017,11 @@ if ( ! function_exists( 'anibas_fm_get_remote_settings' ) ) {
     /**
      * Load & decrypt the saved remote-storage connection settings.
      */
-    function anibas_fm_get_remote_settings() {
+    function anibas_fm_get_remote_settings(): array {
         $raw = get_option( 'anibas_fm_remote_connections', array() );
+        if ( ! is_array( $raw ) ) {
+            return array();
+        }
         return anibas_fm_decrypt_remote_settings( $raw );
     }
 }
@@ -2032,7 +2036,7 @@ if ( ! function_exists( 'anibas_fm_sanitize_remote_settings' ) ) {
      * @param mixed $input Decoded JSON from the client.
      * @return array
      */
-    function anibas_fm_sanitize_remote_settings( $input ) {
+    function anibas_fm_sanitize_remote_settings( mixed $input ): array {
         if ( ! is_array( $input ) ) {
             return array();
         }

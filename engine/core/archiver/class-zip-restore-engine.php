@@ -11,6 +11,8 @@ namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+// phpcs:disable WordPress.WP.AlternativeFunctions -- Zip restore requires byte-accurate streaming, seeks, atomic renames, and manifest sidecar files.
+
 use Exception, ZipArchive;
 
 class ZipRestoreEngine {
@@ -20,6 +22,8 @@ class ZipRestoreEngine {
 
     private string $state_dir;
     private string $manifest_file;
+    private string $manifest_entries_file;
+    private string $manifest_scan_state_file;
     private string $state_file;
     private string $lock_file;
 
@@ -55,6 +59,8 @@ class ZipRestoreEngine {
         }
         $this->state_dir     = $state_dir;
         $this->manifest_file = $this->state_dir . '/manifest.json';
+        $this->manifest_entries_file = $this->state_dir . '/manifest.entries.jsonl';
+        $this->manifest_scan_state_file = $this->state_dir . '/manifest.scan-state.json';
         $this->state_file    = $this->state_dir . '/state.json';
         $this->lock_file     = $this->state_dir . '/lock';
 
@@ -118,43 +124,203 @@ class ZipRestoreEngine {
      * Uses atomic write (tmp + rename) so a crash mid-write
      * won't leave a corrupt manifest.
      */
-    public function build_manifest() {
-        if ( file_exists( $this->manifest_file ) ) {
-            return;
+    public function build_manifest(): void {
+        do {
+            $result = $this->build_manifest_step( PHP_INT_MAX );
+        } while ( empty( $result['complete'] ) );
+    }
+
+    public function build_manifest_step( ?int $time_budget = null ): array {
+        if ( $this->manifest_ready() ) {
+            $meta = $this->load_manifest_meta();
+            return $this->manifest_scan_progress( true, $meta );
+        }
+
+        if ( file_exists( $this->manifest_file ) && ! file_exists( $this->manifest_entries_file ) ) {
+            wp_delete_file( $this->manifest_file );
+        }
+
+        $budget = $time_budget ?? ( function_exists( 'anibas_fm_safe_time_budget' )
+            ? max( 2, anibas_fm_safe_time_budget( 10, 0.45 ) )
+            : 8 );
+        $start = microtime( true );
+        $state = $this->load_manifest_scan_state();
+        $tmp_entries = $this->manifest_entries_file . '.tmp';
+        $tmp_meta = $this->manifest_file . '.tmp';
+
+        if ( ! empty( $state['started'] ) && ! file_exists( $tmp_entries ) ) {
+            wp_delete_file( $this->manifest_scan_state_file );
+            $state = $this->load_manifest_scan_state();
+        }
+
+        if ( empty( $state['started'] ) ) {
+            wp_delete_file( $tmp_entries );
+            wp_delete_file( $tmp_meta );
+            $state['started'] = true;
         }
 
         $zip = new ZipArchive();
-
         if ( $zip->open( $this->zip ) !== true ) {
             throw new Exception( 'Cannot open zip file' );
         }
 
-        $entries = [];
-
-        for ( $i = 0; $i < $zip->numFiles; $i++ ) {
-            $stat = $zip->statIndex( $i );
-
-            // Skip directories
-            if ( substr( $stat['name'], -1 ) === '/' ) {
-                continue;
-            }
-
-            $entries[] = [
-                'i' => $i,
-                'n' => $stat['name'],
-                's' => $stat['size'],
-            ];
+        $entries_fh = fopen( $tmp_entries, 'ab' );
+        if ( ! $entries_fh ) {
+            $zip->close();
+            throw new Exception( 'Failed to prepare zip manifest' );
         }
 
-        $zip->close();
+        $total_items = (int) $zip->numFiles;
+        try {
+            for ( $i = (int) ( $state['index'] ?? 0 ); $i < $total_items; $i++ ) {
+                $stat = $zip->statIndex( $i );
+                if ( is_array( $stat ) && isset( $stat['name'] ) && substr( (string) $stat['name'], -1 ) !== '/' ) {
+                    $entry = array(
+                        'i' => $i,
+                        'n' => (string) $stat['name'],
+                        's' => (int) ( $stat['size'] ?? 0 ),
+                    );
+                    $encoded = wp_json_encode( $entry );
+                    if ( ! is_string( $encoded ) || fwrite( $entries_fh, $encoded . "\n" ) === false ) {
+                        throw new Exception( 'Failed to write zip manifest entry' );
+                    }
+                    $state['total'] = (int) ( $state['total'] ?? 0 ) + 1;
+                    $state['total_size'] = (int) ( $state['total_size'] ?? 0 ) + (int) $entry['s'];
+                }
 
-        // Atomic write: write to tmp file, then rename
-        $tmp = $this->manifest_file . '.tmp';
-        file_put_contents( $tmp, wp_json_encode( [
-            'total'   => count( $entries ),
-            'entries' => $entries,
-        ] ) );
-        rename( $tmp, $this->manifest_file );
+                $state['index'] = $i + 1;
+                $state['total_items'] = $total_items;
+                if ( ( microtime( true ) - $start ) > $budget ) {
+                    fclose( $entries_fh );
+                    $zip->close();
+                    $this->save_manifest_scan_state( $state );
+                    return $this->manifest_scan_progress( false, $state );
+                }
+            }
+
+            fclose( $entries_fh );
+            $entries_fh = null;
+            $zip->close();
+            $zip = null;
+
+            $meta = array(
+                'total'       => (int) ( $state['total'] ?? 0 ),
+                'total_size'  => (int) ( $state['total_size'] ?? 0 ),
+                'index'       => $total_items,
+                'total_items' => $total_items,
+            );
+            $encoded_meta = wp_json_encode( $meta );
+            if ( ! is_string( $encoded_meta ) || @file_put_contents( $tmp_meta, $encoded_meta ) === false ) {
+                throw new Exception( 'Failed to write zip manifest metadata' );
+            }
+            if ( ! rename( $tmp_entries, $this->manifest_entries_file )
+                || ! rename( $tmp_meta, $this->manifest_file ) ) {
+                throw new Exception( 'Failed to finalize zip manifest' );
+            }
+            wp_delete_file( $this->manifest_scan_state_file );
+            return $this->manifest_scan_progress( true, $meta );
+        } catch ( \Throwable $e ) {
+            if ( is_resource( $entries_fh ) ) {
+                fclose( $entries_fh );
+            }
+            if ( $zip instanceof ZipArchive ) {
+                $zip->close();
+            }
+            throw $e;
+        }
+    }
+
+    private function manifest_ready(): bool {
+        return file_exists( $this->manifest_file ) && file_exists( $this->manifest_entries_file );
+    }
+
+    private function load_manifest_meta(): array {
+        $meta = anibas_fm_read_small_json_file( $this->manifest_file );
+        return is_array( $meta ) ? $meta : array();
+    }
+
+    private function load_manifest_scan_state(): array {
+        if ( file_exists( $this->manifest_scan_state_file ) ) {
+            $state = anibas_fm_read_small_json_file( $this->manifest_scan_state_file );
+            if ( is_array( $state ) && isset( $state['index'] ) ) {
+                return $state;
+            }
+        }
+
+        return array(
+            'started'     => false,
+            'index'       => 0,
+            'total'       => 0,
+            'total_size'  => 0,
+            'total_items' => 0,
+        );
+    }
+
+    private function save_manifest_scan_state( array $state ): void {
+        $tmp = $this->manifest_scan_state_file . '.tmp';
+        $encoded = wp_json_encode( $state );
+        if ( ! is_string( $encoded ) || @file_put_contents( $tmp, $encoded ) === false ) {
+            throw new Exception( 'Failed to save zip manifest scan state' );
+        }
+        rename( $tmp, $this->manifest_scan_state_file );
+    }
+
+    private function manifest_scan_progress( bool $complete, array $state ): array {
+        $total_items = max( 1, (int) ( $state['total_items'] ?? 1 ) );
+        $processed = min( $total_items, (int) ( $state['index'] ?? 0 ) );
+
+        return array(
+            'complete'    => $complete,
+            'total'       => (int) ( $state['total'] ?? 0 ),
+            'total_size'  => (int) ( $state['total_size'] ?? 0 ),
+            'processed'   => $processed,
+            'total_items' => $total_items,
+            'percent'     => round( min( 100, ( $processed / $total_items ) * 100 ), 2 ),
+        );
+    }
+
+    private function read_manifest_entry_at_offset( $entries_fh, int $offset ): array {
+        if ( fseek( $entries_fh, $offset ) !== 0 ) {
+            throw new Exception( 'Failed to seek zip manifest entry' );
+        }
+
+        $line = fgets( $entries_fh );
+        if ( $line === false ) {
+            throw new Exception( 'Failed to read zip manifest entry' );
+        }
+
+        $next_offset = ftell( $entries_fh );
+        $entry = json_decode( trim( $line ), true );
+        if ( ! is_array( $entry ) || ! isset( $entry['n'] ) ) {
+            throw new Exception( 'Invalid zip manifest entry' );
+        }
+
+        return array( $entry, is_int( $next_offset ) ? $next_offset : $offset );
+    }
+
+    private function manifest_offset_for_cursor( int $cursor ): int {
+        if ( $cursor <= 0 ) {
+            return 0;
+        }
+
+        $fh = fopen( $this->manifest_entries_file, 'rb' );
+        if ( ! $fh ) {
+            return 0;
+        }
+
+        $offset = 0;
+        for ( $i = 0; $i < $cursor; $i++ ) {
+            if ( fgets( $fh ) === false ) {
+                break;
+            }
+            $pos = ftell( $fh );
+            if ( is_int( $pos ) ) {
+                $offset = $pos;
+            }
+        }
+        fclose( $fh );
+
+        return $offset;
     }
 
     /* ------------------------------------- */
@@ -164,22 +330,24 @@ class ZipRestoreEngine {
     private function load_state(): array {
         if ( ! file_exists( $this->state_file ) ) {
             return [
-                'cursor' => 0,
-                'file'   => null,
-                'offset' => 0,
+                'cursor'       => 0,
+                'file'         => null,
+                'offset'       => 0,
+                'entry_offset' => 0,
             ];
         }
 
         $data = anibas_fm_read_small_json_file( $this->state_file );
 
         return is_array( $data ) ? $data : [
-            'cursor' => 0,
-            'file'   => null,
-            'offset' => 0,
+            'cursor'       => 0,
+            'file'         => null,
+            'offset'       => 0,
+            'entry_offset' => 0,
         ];
     }
 
-    private function save_state( array $state ) {
+    private function save_state( array $state ): void {
         $tmp = $this->state_file . '.tmp';
         file_put_contents( $tmp, wp_json_encode( $state ) );
         rename( $tmp, $this->state_file );
@@ -238,21 +406,20 @@ class ZipRestoreEngine {
      */
     public function run_step(): bool {
         $lock = $this->acquire_lock();
+        $zip = null;
+        $entries_fh = null;
 
         try {
-            if ( ! file_exists( $this->manifest_file ) ) {
+            if ( ! $this->manifest_ready() ) {
                 throw new Exception( 'Manifest not built. Call build_manifest() first.' );
             }
 
-            $manifest = anibas_fm_read_small_json_file( $this->manifest_file );
-
-            if ( ! is_array( $manifest ) || ! isset( $manifest['entries'] ) ) {
-                throw new Exception( 'Invalid manifest file' );
-            }
-
-            $entries = $manifest['entries'];
-            $total   = count( $entries );
+            $manifest = $this->load_manifest_meta();
+            $total   = (int) ( $manifest['total'] ?? 0 );
             $state   = $this->load_state();
+            if ( ! array_key_exists( 'entry_offset', $state ) ) {
+                $state['entry_offset'] = $this->manifest_offset_for_cursor( (int) ( $state['cursor'] ?? 0 ) );
+            }
 
             if ( $state['cursor'] >= $total ) {
                 $this->release_lock( $lock );
@@ -265,10 +432,13 @@ class ZipRestoreEngine {
             }
 
             $start = microtime( true );
+            $entries_fh = fopen( $this->manifest_entries_file, 'rb' );
+            if ( ! $entries_fh ) {
+                throw new Exception( 'Failed to open zip manifest entries' );
+            }
 
             while ( $state['cursor'] < $total ) {
-
-                $entry = $entries[ $state['cursor'] ];
+                [ $entry, $next_entry_offset ] = $this->read_manifest_entry_at_offset( $entries_fh, (int) ( $state['entry_offset'] ?? 0 ) );
                 $name  = $entry['n'];
 
                 $target = $this->safe_path( $name );
@@ -279,6 +449,7 @@ class ZipRestoreEngine {
                     $state['cursor']++;
                     $state['file']   = null;
                     $state['offset'] = 0;
+                    $state['entry_offset'] = $next_entry_offset;
                     $this->save_state( $state );
                     continue;
                 }
@@ -323,6 +494,7 @@ class ZipRestoreEngine {
                     if ( ( microtime( true ) - $start ) > $this->time_budget ) {
                         fclose( $stream );
                         fclose( $out );
+                        fclose( $entries_fh );
                         $this->save_state( $state );
                         $zip->close();
                         $this->release_lock( $lock );
@@ -337,14 +509,22 @@ class ZipRestoreEngine {
                 $state['cursor']++;
                 $state['file']   = null;
                 $state['offset'] = 0;
+                $state['entry_offset'] = $next_entry_offset;
                 $this->save_state( $state );
             }
 
+            fclose( $entries_fh );
             $zip->close();
             $this->release_lock( $lock );
             return false;
 
-        } catch ( Exception $e ) {
+        } catch ( \Throwable $e ) {
+            if ( is_resource( $entries_fh ) ) {
+                fclose( $entries_fh );
+            }
+            if ( $zip instanceof ZipArchive ) {
+                $zip->close();
+            }
             $this->release_lock( $lock );
             throw $e;
         }
@@ -360,11 +540,11 @@ class ZipRestoreEngine {
      * @return array{ current: int, total: int, percent: float }
      */
     public function progress(): array {
-        if ( ! file_exists( $this->manifest_file ) ) {
+        if ( ! $this->manifest_ready() ) {
             return [ 'current' => 0, 'total' => 0, 'percent' => 0 ];
         }
 
-        $manifest = anibas_fm_read_small_json_file( $this->manifest_file );
+        $manifest = $this->load_manifest_meta();
         $state    = $this->load_state();
         $total    = isset( $manifest['total'] ) ? (int) $manifest['total'] : 0;
         $current  = isset( $state['cursor'] ) ? (int) $state['cursor'] : 0;
@@ -385,6 +565,8 @@ class ZipRestoreEngine {
      */
     public function cleanup() {
         $files = [ $this->manifest_file, $this->state_file, $this->lock_file,
+                   $this->manifest_entries_file, $this->manifest_entries_file . '.tmp',
+                   $this->manifest_scan_state_file, $this->manifest_scan_state_file . '.tmp',
                    $this->manifest_file . '.tmp', $this->state_file . '.tmp' ];
 
         foreach ( $files as $file ) {
@@ -401,11 +583,11 @@ class ZipRestoreEngine {
      * Check if extraction is complete (all entries processed).
      */
     public function is_complete(): bool {
-        if ( ! file_exists( $this->manifest_file ) ) {
+        if ( ! $this->manifest_ready() ) {
             return false;
         }
 
-        $manifest = anibas_fm_read_small_json_file( $this->manifest_file );
+        $manifest = $this->load_manifest_meta();
         $state    = $this->load_state();
         $total    = isset( $manifest['total'] ) ? (int) $manifest['total'] : 0;
 

@@ -176,7 +176,11 @@ class RemoteOAuthManager
         }
 
         $settings[$provider_id] = self::clear_tokens($config);
-        update_option('anibas_fm_remote_connections', anibas_fm_sanitize_remote_settings($settings));
+        try {
+            update_option('anibas_fm_remote_connections', anibas_fm_sanitize_remote_settings($settings));
+        } catch (\RuntimeException $e) {
+            return new \WP_Error('credential_encryption_failed', $e->getMessage());
+        }
 
         $result['provider'] = $provider_id;
         $result['revocation_supported'] = $supported;
@@ -258,7 +262,11 @@ class RemoteOAuthManager
         }
 
         if ($changed) {
-            update_option('anibas_fm_remote_connections', anibas_fm_sanitize_remote_settings($settings));
+            try {
+                update_option('anibas_fm_remote_connections', anibas_fm_sanitize_remote_settings($settings));
+            } catch (\RuntimeException $e) {
+                set_transient('anibas_fm_oauth_refresh_error_encryption', $e->getMessage(), HOUR_IN_SECONDS);
+            }
         }
     }
 

@@ -124,8 +124,17 @@ class SiteRestoreEngine
                 $archive = (string) $state['archive_path'];
                 $staging = (string) $state['staging_dir'];
                 $archive_engine = ArchiveRestoreEngine::get_instance($archive, $staging);
-                $state['archive_info'] = $archive_engine->load_archive_manifest($password);
-                $state['archive_progress'] = $archive_engine->progress();
+                $scan = $archive_engine->prepare_manifest_cache_step($password);
+                $state['archive_progress'] = $scan;
+                if (empty($scan['complete'])) {
+                    $state['updated_at'] = time();
+                    $this->save_state($state);
+                    return $this->progress($state);
+                }
+                $state['archive_info'] = [
+                    'total'      => (int) ($scan['total'] ?? 0),
+                    'total_size' => (int) ($scan['total_size'] ?? 0),
+                ];
                 $state['phase'] = 'extract';
                 $state['updated_at'] = time();
                 $this->save_state($state);
@@ -993,7 +1002,11 @@ class SiteRestoreEngine
 
     private static function serialized_active_plugins_with_current(string $serialized_value): string
     {
-        $active = maybe_unserialize($serialized_value);
+        $active = [];
+        if (function_exists('is_serialized') && is_serialized($serialized_value)) {
+            $decoded = @unserialize($serialized_value, ['allowed_classes' => false]);
+            $active = is_array($decoded) ? $decoded : [];
+        }
         $active = is_array($active) ? array_values(array_filter($active, 'is_string')) : [];
         $current = self::current_plugin_basename();
         if (! in_array($current, $active, true)) {
