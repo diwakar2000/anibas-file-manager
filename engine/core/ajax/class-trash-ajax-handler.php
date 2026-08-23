@@ -1,5 +1,12 @@
 <?php
 
+/**
+ * AJAX handler exposing local-storage trash bin endpoints (list, restore,
+ * empty).
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;
@@ -10,6 +17,9 @@ if (! defined('ABSPATH')) exit;
  */
 class TrashAjaxHandler extends AjaxHandler
 {
+    /**
+     * Register the trash list/restore/empty/delete-item AJAX actions.
+     */
     public function __construct()
     {
         parent::__construct();
@@ -21,6 +31,14 @@ class TrashAjaxHandler extends AjaxHandler
         ]);
     }
 
+    /**
+     * List one page of items currently in the trash, newest first.
+     *
+     * Requires standard privilege. Prefers the trash/index.json ledger for
+     * accurate original-path tracking; when the index is missing or empty,
+     * falls back to scanning the trash directory and parsing legacy
+     * `{timestamp}_{basename}` entry names (whose original path is unknown).
+     */
     public function list_trash()
     {
         $this->check_privilege();
@@ -117,6 +135,19 @@ class TrashAjaxHandler extends AjaxHandler
         ));
     }
 
+    /**
+     * Restore a trashed item back to its original location (or, for legacy
+     * entries with no recorded original path, to the WordPress root).
+     *
+     * Requires delete privilege. Rejects trash names containing path
+     * traversal sequences and re-confirms containment within the trash
+     * directory via realpath(). If the restore target already exists, the
+     * restored item is renamed with a `-restored-N` suffix instead of
+     * overwriting. The actual move uses anibas_fm_safe_move(), which
+     * renames when trash and target share a filesystem or falls back to a
+     * chunked background move job otherwise — the response carries a
+     * `job_id` in the async case.
+     */
     public function restore_trash()
     {
         $this->check_delete_privilege();
@@ -218,6 +249,15 @@ class TrashAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Permanently delete everything in the trash.
+     *
+     * Requires delete privilege and, if a delete password is configured, a
+     * valid delete-auth token. Always runs as a background delete job (via
+     * BackgroundProcessor) rather than synchronously, since trash contents
+     * can be arbitrarily large; the trash root itself is recreated after
+     * deletion so it stays a valid mount point for future trashing.
+     */
     public function empty_trash()
     {
         $this->check_delete_privilege();
@@ -259,6 +299,18 @@ class TrashAjaxHandler extends AjaxHandler
         ));
     }
 
+    /**
+     * Permanently delete a single item from the trash.
+     *
+     * Requires delete privilege, rejects trash names with path traversal
+     * sequences, re-confirms containment within the trash directory via
+     * realpath() (catches symlink tricks the string check can't), and
+     * enforces the delete-password token when one is configured. The index
+     * entry is removed up front under an exclusive lock so concurrent trash
+     * operations can't race it. Directories are deleted via a background
+     * job (a trashed folder can be an arbitrarily large subtree); a single
+     * file or symlink is unlinked synchronously.
+     */
     public function delete_trash_item()
     {
         $this->check_delete_privilege();

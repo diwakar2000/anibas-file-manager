@@ -1,5 +1,12 @@
 <?php
 
+/**
+ * AJAX handler exposing plugin settings and remote-storage connection
+ * management endpoints.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;
@@ -11,6 +18,11 @@ if (! defined('ABSPATH')) exit;
  */
 class SettingsAjaxHandler extends AjaxHandler
 {
+    /**
+     * Register the settings and remote-storage AJAX actions, plus the
+     * admin-post OAuth callback route (used by the browser redirect flow,
+     * not by AJAX).
+     */
     public function __construct()
     {
         parent::__construct();
@@ -25,6 +37,21 @@ class SettingsAjaxHandler extends AjaxHandler
         add_action('admin_post_' . ANIBAS_FM_REMOTE_OAUTH_CALLBACK, array($this, 'remote_oauth_callback'));
     }
 
+    /**
+     * Save the plugin's general settings, including several sensitive
+     * password/toggle changes that each carry their own extra checks.
+     *
+     * Requires the settings-save privilege. If a settings password is
+     * already configured, requires either a valid settings session token or
+     * the current password before any change is accepted; changing or
+     * removing the settings password additionally requires re-confirming
+     * the current password even when a valid session token is present.
+     * Changing the delete, file-manager, or database passwords each
+     * require their own current password (when one exists) and clear the
+     * corresponding session transient so old sessions are invalidated.
+     * Excluded paths are sanitized and deduplicated, and any path already
+     * covered by the hardcoded blocked-paths list is dropped as redundant.
+     */
     public function save_settings(): void
     {
         $this->check_save_settings_privilege();
@@ -165,6 +192,19 @@ class SettingsAjaxHandler extends AjaxHandler
         $this->send_success(array('message' => esc_html__('Settings saved successfully', 'anibas-file-manager')));
     }
 
+    /**
+     * Return the configured remote-storage connections, at one of two
+     * privilege levels depending on which nonce was presented.
+     *
+     * A settings nonce (plus admin + settings auth) grants the full
+     * per-field settings — with secret fields (API keys, tokens, etc.)
+     * replaced by a `{field}_set` boolean instead of their real value, and
+     * OAuth credential fields stripped entirely once a token has been
+     * obtained — or, if `summary` is requested, just an
+     * enabled/available/label summary per storage. A file-manager-list
+     * nonce (plus admin + FM token) only ever gets the summary, never raw
+     * connection fields. Any other nonce is rejected as invalid.
+     */
     public function get_remote_settings(): void
     {
         $nonce = anibas_fm_fetch_request_variable('request', 'nonce');
@@ -257,6 +297,18 @@ class SettingsAjaxHandler extends AjaxHandler
         return $status;
     }
 
+    /**
+     * Save the remote-storage connection settings for all providers.
+     *
+     * Requires the settings-save privilege and a valid settings session.
+     * The `settings` POST field is raw JSON (decoded manually since it must
+     * be validated before use, not auto-sanitized); it is whitelisted and
+     * normalized by anibas_fm_sanitize_remote_settings(), then any
+     * newly-enabled or changed connection that fails a live connectivity
+     * test is forced back to disabled rather than saved as enabled —
+     * disable_new_unavailable_remote_connections() reports which
+     * connections were held back so the UI can surface it.
+     */
     public function save_remote_settings(): void
     {
         $this->check_save_settings_privilege();
@@ -294,6 +346,16 @@ class SettingsAjaxHandler extends AjaxHandler
         ));
     }
 
+    /**
+     * Test connectivity to a remote storage provider with the given config,
+     * without saving it.
+     *
+     * Requires the settings-save privilege and a valid settings session.
+     * Reads `type` and a raw JSON `config` from POST. Blank secret/OAuth
+     * credential fields fall back to the already-stored (decrypted) value
+     * for that provider, so an admin can re-test a saved connection without
+     * re-entering credentials.
+     */
     public function test_remote_connection(): void
     {
         $this->check_save_settings_privilege();
@@ -328,6 +390,14 @@ class SettingsAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Begin the OAuth authorization flow for a remote storage provider.
+     *
+     * Requires the settings-save privilege and a valid settings session.
+     * Delegates to RemoteOAuthManager::start(), which is expected to return
+     * the authorization URL (and any state) the frontend should redirect
+     * the admin to; the browser then returns via remote_oauth_callback().
+     */
     public function start_remote_oauth(): void
     {
         $this->check_save_settings_privilege();
@@ -342,11 +412,27 @@ class SettingsAjaxHandler extends AjaxHandler
         $this->send_success($result);
     }
 
+    /**
+     * Handle the OAuth provider's redirect back to WordPress after the
+     * admin authorizes (or denies) access, completing the flow started by
+     * start_remote_oauth().
+     *
+     * Registered as an `admin_post_*` action rather than a `wp_ajax_*`
+     * action, since it's reached via a full-page browser redirect, not an
+     * AJAX call; authentication/state validation is handled inside
+     * RemoteOAuthManager::handle_callback() using the OAuth state
+     * parameter rather than this class's usual nonce/privilege helpers.
+     */
     public function remote_oauth_callback(): void
     {
         RemoteOAuthManager::handle_callback();
     }
 
+    /**
+     * Revoke a remote storage provider's OAuth token and disconnect it.
+     *
+     * Requires the settings-save privilege and a valid settings session.
+     */
     public function revoke_remote_oauth(): void
     {
         $this->check_save_settings_privilege();

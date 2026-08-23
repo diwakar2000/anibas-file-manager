@@ -15,6 +15,11 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 use Exception, ZipArchive;
 
+/**
+ * Time-budgeted engine that extracts a standard zip archive across
+ * multiple requests using ZipArchive, with flock-based concurrency control
+ * and atomic state writes for crash safety.
+ */
 class ZipRestoreEngine {
 
     private string $zip;

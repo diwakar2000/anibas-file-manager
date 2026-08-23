@@ -1,5 +1,12 @@
 <?php
 
+/**
+ * S3-compatible filesystem adapter with chunked multipart uploads and
+ * ranged downloads, built on AnibasS3Client.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;

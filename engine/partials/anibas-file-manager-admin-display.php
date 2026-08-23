@@ -1,7 +1,5 @@
 <?php
 
-if ( ! defined( 'ABSPATH' ) ) exit;
-
 /**
  * Provide a admin area view for the plugin
  *
@@ -13,5 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) exit;
  * @package    Anibas_File_Manager
  * @subpackage Anibas_File_Manager/admin/partials
  */
+
+if ( ! defined( 'ABSPATH' ) ) exit;
 ?>
 <div id="anibas-file-manager-app"></div>

@@ -1,5 +1,13 @@
 <?php
 
+/**
+ * AJAX handlers backing the in-browser file editor: session tokens,
+ * chunked file reads, and saving edited content back through the active
+ * storage adapter.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;

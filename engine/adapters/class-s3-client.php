@@ -1,5 +1,13 @@
 <?php
 
+/**
+ * Lightweight S3 client with AWS Signature V4 request signing, supporting
+ * AWS S3 and S3-compatible services (MinIO, DigitalOcean Spaces, Wasabi,
+ * etc.) using only PHP cURL and SimpleXML — no external dependencies.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -8,6 +16,10 @@ if ( ! defined( 'ABSPATH' ) ) exit;
  * Lightweight S3 client with AWS Signature V4
  * Supports AWS S3 and S3-compatible services (MinIO, DigitalOcean Spaces, Wasabi, etc.)
  * No external dependencies — uses PHP cURL and SimpleXML.
+ */
+/**
+ * Exception thrown for S3 API errors, carrying the AWS error code alongside
+ * the human-readable message.
  */
 class S3Exception extends \RuntimeException
 {
@@ -25,6 +37,11 @@ class S3Exception extends \RuntimeException
 	}
 }
 
+/**
+ * Signs and sends S3 REST API requests (object PUT/GET/DELETE, multipart
+ * uploads, bucket listing) using AWS Signature Version 4, with support for
+ * custom endpoints and path-style addressing for S3-compatible services.
+ */
 class AnibasS3Client
 {
 	private string $access_key;

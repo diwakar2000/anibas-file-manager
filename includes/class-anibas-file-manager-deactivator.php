@@ -1,9 +1,5 @@
 <?php
 
-if ( ! defined( 'ABSPATH' ) ) {
-	exit;
-}
-
 /**
  * Fired during plugin deactivation
  *
@@ -13,6 +9,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  * @package    Anibas_File_Manager
  * @subpackage Anibas_File_Manager/includes
  */
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
 
 /**
  * Fired during plugin deactivation.

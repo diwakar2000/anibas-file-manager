@@ -1,5 +1,11 @@
 <?php
 
+/**
+ * AJAX handler exposing filesystem create/read/update/delete endpoints.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;
@@ -10,6 +16,10 @@ if (! defined('ABSPATH')) exit;
  */
 class FileCrudAjaxHandler extends AjaxHandler
 {
+    /**
+     * Register the filesystem CRUD AJAX actions (list, create, delete,
+     * empty, rename, details, download, preview).
+     */
     public function __construct()
     {
         parent::__construct();
@@ -26,6 +36,15 @@ class FileCrudAjaxHandler extends AjaxHandler
         ]);
     }
 
+    /**
+     * List one page of a directory's contents for the given storage backend.
+     *
+     * For local storage, a request signed with the settings nonce bypasses
+     * the normal file-manager privilege check in favor of admin + settings
+     * auth (used by the settings screen's own folder picker); all other
+     * requests require standard privilege. Decorates returned items with
+     * derived metadata (e.g. flags for .anfm archive/backup entries).
+     */
     public function get_file_list()
     {
         $dir = anibas_fm_fetch_request_variable('get', 'dir', '/');
@@ -79,6 +98,14 @@ class FileCrudAjaxHandler extends AjaxHandler
         $this->check_privilege();
     }
 
+    /**
+     * Create a new folder under a parent path.
+     *
+     * Requires create privilege and is throttled with a short-lived
+     * per-user transient lock plus a retry counter that aborts after 3
+     * attempts within its window, to prevent rapid repeated submissions.
+     * Rejects names containing `..`, `/`, or `\`.
+     */
     public function create_folder()
     {
         $this->check_create_privilege();
@@ -160,6 +187,14 @@ class FileCrudAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Create a new file under a parent path with the given content.
+     *
+     * Requires create privilege and is throttled the same way as
+     * create_folder() (per-user lock + 3-attempt retry counter). Content is
+     * capped at 1MB or the site's max upload size, whichever is smaller,
+     * and names containing `..`, `/`, or `\` are rejected.
+     */
     public function create_file()
     {
         $this->check_create_privilege();
@@ -248,6 +283,18 @@ class FileCrudAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Delete a file or folder (or move it to trash, when trash is enabled
+     * for local storage) on the given storage backend.
+     *
+     * Requires delete privilege, a short-lived per-user lock to prevent
+     * duplicate submissions, a one-time `delete_token` matching the token
+     * previously issued for this exact path (guards against stale/replayed
+     * delete confirmations), and — if a delete password is configured — a
+     * valid delete-auth token. A remote delete may run as a background job,
+     * in which case the response carries a `job_id` instead of completing
+     * synchronously.
+     */
     public function delete_file()
     {
         $this->check_delete_privilege();
@@ -313,6 +360,15 @@ class FileCrudAjaxHandler extends AjaxHandler
         ), null, [$lock_key]);
     }
 
+    /**
+     * Remove all contents of a folder while keeping the folder itself.
+     *
+     * Requires delete privilege and, if a delete password is configured, a
+     * valid delete-auth token. Local storage empties synchronously (with
+     * trash applied if enabled); remote storage is emptied via a queued
+     * background delete job (recreating the root after deletion), and the
+     * response carries `job_ids`/`group_id` for the frontend to poll.
+     */
     public function empty_folder()
     {
         $this->check_delete_privilege();
@@ -401,6 +457,16 @@ class FileCrudAjaxHandler extends AjaxHandler
        RENAME FILE / FOLDER
     ========================================================= */
 
+    /**
+     * Rename a file or folder in place, keeping it in the same directory.
+     *
+     * Requires create privilege. The new name must not contain path
+     * separators or null bytes, and must not collide with an existing item.
+     * Local rename happens synchronously via PHP's rename(); remote rename
+     * is dispatched as a background move job (since a remote "rename" is
+     * really a copy + delete, which can be slow), and the response carries
+     * a `job_id` for the frontend to poll instead of a final result.
+     */
     public function rename_file(): void
     {
         $this->check_create_privilege();
@@ -525,6 +591,20 @@ class FileCrudAjaxHandler extends AjaxHandler
        DOWNLOAD FILE — streams a file to the browser
     ========================================================= */
 
+    /**
+     * Stream a file to the browser as a download or inline response, and
+     * exit — this is not a JSON AJAX endpoint.
+     *
+     * Requires standard privilege. Local files are read via readfile()
+     * after MIME-sniffing with a fallback chain (finfo, then
+     * mime_content_type()) so a missing extension doesn't break output.
+     * Remote files redirect to the adapter's temporary link when one is
+     * available for attachment downloads; otherwise (inline previews, or
+     * backends without temp links such as FTP/SFTP) they are streamed
+     * through PHP via the adapter's stream_contents(). Missing files or
+     * directories requested directly call wp_die() with the appropriate
+     * HTTP status instead of returning JSON.
+     */
     public function download_file(): void
     {
         $this->check_privilege();
@@ -627,6 +707,15 @@ class FileCrudAjaxHandler extends AjaxHandler
        PREVIEW FILE — extracts a chunk for previewing
     ========================================================= */
 
+    /**
+     * Read up to 100KB from the start of a file for inline preview.
+     *
+     * Requires standard privilege. For remote storage, prefers the
+     * adapter's read_chunk() when available; otherwise falls back to a
+     * full get_contents() but only after confirming the file size is
+     * within the preview limit (or refusing to preview it, when size can't
+     * be determined, to avoid pulling an oversized file into memory).
+     */
     public function preview_file(): void
     {
         $this->check_privilege();

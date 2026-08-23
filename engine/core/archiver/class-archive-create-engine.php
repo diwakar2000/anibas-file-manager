@@ -41,6 +41,12 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 use Exception;
 
+/**
+ * Time-budgeted engine that builds an AES-256-GCM encrypted .anfm archive
+ * from a source path across multiple requests, deriving the encryption key
+ * from an optional password via PBKDF2 and writing the binary
+ * header/data/manifest/footer format described above.
+ */
 class ArchiveCreateEngine {
 
     const MAGIC             = 'ANFM';

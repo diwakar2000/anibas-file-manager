@@ -1,10 +1,24 @@
 <?php
 
+/**
+ * Base contract for filesystem adapters, plus shared default implementations
+ * (delete/trash routing, chunked cross-storage transfer fallbacks, ownership
+ * and failure-reason diagnostics) that concrete storage adapters extend.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 
+/**
+ * Abstract base class defining the operations every storage backend
+ * (local, FTP, SFTP, S3, Google Drive, OneDrive, Dropbox) must implement,
+ * along with shared default behaviour for delete, chunked transfer, and
+ * metadata helpers.
+ */
 abstract class FileSystemAdapter
 {
     protected const FALLBACK_BUFFER_LIMIT = 1048576;
@@ -12,22 +26,91 @@ abstract class FileSystemAdapter
     /** Storage ID this adapter represents (e.g. 'local', 'ftp', 's3'). Set by StorageManager. */
     protected ?string $storage_id = null;
 
+    /**
+     * Record which storage backend this adapter instance represents.
+     * Called by StorageManager immediately after instantiation.
+     *
+     * @param string $id Storage identifier (e.g. 'local', 'ftp', 's3').
+     */
     public function set_storage_id(string $id): void
     {
         $this->storage_id = $id;
     }
 
+    /**
+     * The storage identifier previously set via set_storage_id(), or null
+     * if this adapter was never assigned one.
+     *
+     * @return string|null Storage identifier, or null if unset.
+     */
     public function get_storage_id(): ?string
     {
         return $this->storage_id;
     }
 
+    /**
+     * Resolve and validate a user-supplied path against this backend's
+     * bounded root. Implementations must reject traversal outside the
+     * root and any backend-specific blocked paths.
+     *
+     * @param string $path Raw path as supplied by the caller.
+     * @return string|false The resolved, validated path, or false if it is invalid or out of bounds.
+     */
     abstract public function validate_path(string $path): string|false;
+
+    /**
+     * Whether a file or folder exists at the given (already validated) path.
+     *
+     * @param string $path Validated path on this adapter.
+     * @return bool True if the path exists.
+     */
     abstract public function exists(string $path): bool;
+
+    /**
+     * Whether the given (already validated) path is a regular file.
+     *
+     * @param string $path Validated path on this adapter.
+     * @return bool True if the path exists and is a file.
+     */
     abstract public function is_file(string $path): bool;
+
+    /**
+     * Whether the given (already validated) path is a folder.
+     *
+     * @param string $path Validated path on this adapter.
+     * @return bool True if the path exists and is a folder.
+     */
     abstract public function is_dir(string $path): bool;
+
+    /**
+     * Create a folder at the given (already validated) path. Implementations
+     * should create any missing intermediate folders as needed.
+     *
+     * @param string $path Validated path on this adapter.
+     * @return bool True on success.
+     */
     abstract public function mkdir(string $path): bool;
+
+    /**
+     * List the immediate entry names of a folder, unfiltered and unpaginated.
+     * Intended for lightweight internal checks; UI listings should use
+     * listDirectory() instead.
+     *
+     * @param string $path Validated path on this adapter.
+     * @return array List of entry names.
+     */
     abstract public function scandir(string $path): array;
+
+    /**
+     * List one page of a folder's contents with display metadata, for the
+     * file manager UI. Implementations decide their own item shape but
+     * must support pagination via $page/$pageSize.
+     *
+     * @param string $path     Validated path on this adapter.
+     * @param int    $page     1-indexed page number.
+     * @param int    $pageSize Maximum items to return for this page.
+     * @return array Paginated listing (items plus pagination metadata).
+     */
     abstract public function listDirectory(string $path, int $page = 1, int $pageSize = 100): array;
 
     /**
@@ -76,12 +159,75 @@ abstract class FileSystemAdapter
             'has_more'    => false,
         ];
     }
+    /**
+     * Remove an empty (or, per-adapter, recursively populated) folder at
+     * the given (already validated) path.
+     *
+     * @param string $path Validated path on this adapter.
+     * @return bool True on success.
+     */
     abstract public function rmdir(string $path): bool;
+
+    /**
+     * Copy a file or folder within this storage backend. Implementations
+     * must not leave a partial destination behind on failure.
+     *
+     * @param string $source Validated source path on this adapter.
+     * @param string $target Validated destination path on this adapter.
+     * @return bool True on success.
+     */
     abstract public function copy(string $source, string $target): bool;
+
+    /**
+     * Move (rename) a file or folder within this storage backend.
+     * Implementations must not leave the item in a lost or duplicated
+     * state if the operation fails partway through.
+     *
+     * @param string $source Validated source path on this adapter.
+     * @param string $target Validated destination path on this adapter.
+     * @return bool True on success.
+     */
     abstract public function move(string $source, string $target): bool;
+
+    /**
+     * Delete a single file at the given (already validated) path.
+     * Implementations should not attempt to delete folders here — that is
+     * handled via rmdir()/delete().
+     *
+     * @param string $path Validated path on this adapter.
+     * @return bool True on success.
+     */
     abstract public function unlink(string $path): bool;
+
+    /**
+     * Write $content to a file at the given (already validated) path,
+     * creating or overwriting it as needed.
+     *
+     * @param string $path    Validated path on this adapter.
+     * @param string $content Full file contents to write.
+     * @return bool True on success.
+     */
     abstract public function put_contents(string $path, string $content): bool;
+
+    /**
+     * Append $content to the end of an existing file at the given
+     * (already validated) path, creating it if it does not exist.
+     *
+     * @param string $path    Validated path on this adapter.
+     * @param string $content Content to append.
+     * @return bool True on success.
+     */
     abstract public function append_contents(string $path, string $content): bool;
+
+    /**
+     * Read the full contents of a file at the given (already validated)
+     * path into memory. Implementations are not required to bound the
+     * size read — callers are responsible for size-checking large files
+     * before calling this.
+     *
+     * @param string $path Validated path on this adapter.
+     * @return string|false File contents, or false on failure.
+     */
     abstract public function get_contents(string $path): string|false;
 
     /**
@@ -194,6 +340,16 @@ abstract class FileSystemAdapter
 
         return $hints ? ' ' . implode(' ', $hints) : '';
     }
+    /**
+     * Stream a file's contents directly to output, for download responses.
+     * Implementations should override this with true chunked streaming;
+     * this default fallback buffers the whole file via get_contents() and
+     * only succeeds when the file is small enough (see
+     * can_use_buffered_fallback()) to hold in memory.
+     *
+     * @param string $path Validated path on this adapter.
+     * @return bool True if the file was streamed successfully.
+     */
     public function stream_contents(string $path): bool
     {
         if (! $this->can_use_buffered_fallback($path)) {
@@ -208,14 +364,42 @@ abstract class FileSystemAdapter
         }
         return false;
     }
+
+    /**
+     * Get a temporary, directly-accessible URL for a file, when this
+     * backend supports it (e.g. a pre-signed S3 URL). Implementations that
+     * can't produce one should return false; the base default always
+     * returns false so callers fall back to streaming through PHP.
+     *
+     * @param string $path     Validated path on this adapter.
+     * @param int    $duration How long the link should remain valid, in seconds.
+     * @return string|false Temporary URL, or false if unsupported.
+     */
     public function get_temporary_link(string $path, int $duration = 3600): string|false
     {
         return false;
     }
+
+    /**
+     * Get the size in bytes of a file. Implementations should override
+     * this; the base default always returns false (size unknown), which
+     * callers must treat as "cannot safely assume a size" rather than 0.
+     *
+     * @param string $path Validated path on this adapter.
+     * @return int|false File size in bytes, or false if unknown/unsupported.
+     */
     public function get_size(string $path): int|false
     {
         return false;
     }
+
+    /**
+     * Whether a folder has no entries. Implementations should override
+     * this with a real check; the base default always returns false.
+     *
+     * @param string $path Validated path on this adapter.
+     * @return bool True if the folder exists and is empty.
+     */
     public function is_empty(string $path): bool
     {
         return false;
@@ -268,6 +452,15 @@ abstract class FileSystemAdapter
         return false;
     }
 
+    /**
+     * Whether a chunked upload's parts must be assembled into a single
+     * local temp file before being handed to this adapter, rather than
+     * being uploaded to the backend chunk-by-chunk. Adapters whose remote
+     * API supports true multipart/resumable uploads should override this
+     * to return false and stream chunks directly instead.
+     *
+     * @return bool True if assembly must happen locally first.
+     */
     public function requires_local_upload_assembly(): bool
     {
         return false;

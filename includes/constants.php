@@ -1,4 +1,13 @@
 <?php
+
+/**
+ * Central registry of AJAX action names and default configuration constants
+ * used throughout the plugin (file listing, uploads, trash, backups, database
+ * browser, editor limits, and OAuth defaults).
+ *
+ * @package Anibas_File_Manager
+ */
+
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 if ( ! defined( 'ANIBAS_FILE_MANAGER_DEFAULT_FILELIST_PAGE_SIZE' ) ) {

@@ -1,9 +1,20 @@
 <?php
 
+/**
+ * OAuth provider configuration for connecting Microsoft OneDrive as a
+ * storage backend.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * OAuthProvider implementation supplying Microsoft identity platform
+ * authorization/token endpoints (tenant-aware) and default Graph API scopes.
+ */
 class OneDriveOAuthProvider extends OAuthProvider
 {
     public function id(): string

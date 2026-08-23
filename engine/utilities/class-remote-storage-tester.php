@@ -1,9 +1,22 @@
 <?php
 
+/**
+ * Static connection-test helpers for each supported remote storage type,
+ * used by the Settings screen to validate credentials before saving a
+ * connection.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * Provides one static test_*() method per remote storage type (FTP, SFTP,
+ * S3, Google Drive, OneDrive, Dropbox) that attempts a lightweight
+ * connection/authentication check and returns a success/message result.
+ */
 class RemoteStorageTester
 {
 

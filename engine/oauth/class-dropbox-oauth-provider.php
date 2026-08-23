@@ -1,9 +1,20 @@
 <?php
 
+/**
+ * OAuth provider configuration for connecting Dropbox as a storage backend.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * OAuthProvider implementation supplying Dropbox's authorization/token
+ * endpoints; Dropbox uses an app key in place of a traditional client
+ * secret, so requires_client_secret() is disabled.
+ */
 class DropboxOAuthProvider extends OAuthProvider
 {
     public function id(): string

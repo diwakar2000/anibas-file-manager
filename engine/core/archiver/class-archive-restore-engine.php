@@ -26,6 +26,11 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 use Exception;
 
+/**
+ * Time-budgeted engine that decrypts and extracts an AES-256-GCM encrypted
+ * .anfm archive across multiple requests, verifying the header/footer and
+ * deriving the decryption key from an optional password.
+ */
 class ArchiveRestoreEngine {
 
     const MAGIC             = 'ANFM';

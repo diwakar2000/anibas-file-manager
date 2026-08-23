@@ -1,4 +1,12 @@
 <?php
+/**
+ * Chunked, memory-bounded engine that exports the WordPress database to a
+ * manifest plus per-table JSONL row streams, using keyset pagination where
+ * possible.
+ *
+ * @package Anibas_File_Manager
+ */
+
 declare(strict_types=1);
 
 namespace Anibas;

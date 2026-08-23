@@ -1,5 +1,12 @@
 <?php
 
+/**
+ * AJAX handler exposing chunked file upload endpoints (token issue and
+ * per-chunk receive).
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;
@@ -12,6 +19,9 @@ if (! defined('ABSPATH')) exit;
  */
 class UploadAjaxHandler extends AjaxHandler
 {
+    /**
+     * Register the chunked upload init/receive AJAX actions.
+     */
     public function __construct()
     {
         parent::__construct();
@@ -21,6 +31,15 @@ class UploadAjaxHandler extends AjaxHandler
         ]);
     }
 
+    /**
+     * Start a new chunked upload session and issue an upload token.
+     *
+     * Requires create privilege. Computes the chunk size and total chunk
+     * count for the given `file_name`/`file_size`, and stores the session
+     * (including the token) in a per-user transient keyed by a fresh
+     * `upload_id`; subsequent upload_chunk() calls must present this token
+     * to be accepted.
+     */
     public function init_upload(): void
     {
         $this->check_create_privilege();
@@ -56,6 +75,20 @@ class UploadAjaxHandler extends AjaxHandler
         ));
     }
 
+    /**
+     * Receive one chunk of a file upload previously started with
+     * init_upload(), and trigger assembly once the final chunk arrives.
+     *
+     * Requires create privilege, and validates the destination path (local
+     * via validate_path(), remote via the storage adapter's validate_path())
+     * to prevent traversal. Verifies the upload session/token, the chunk's
+     * index and byte size against the expected chunk size, and PHP's own
+     * upload error code before writing the chunk to a temp directory under
+     * uploads/anibas_fm_temp. When the last chunk completes the set, it
+     * confirms all chunks are present with correct sizes, then hands off to
+     * a background assembly job via AsyncWorkerDispatcher rather than
+     * assembling the file inline.
+     */
     public function upload_chunk(): void
     {
         $this->check_create_privilege();

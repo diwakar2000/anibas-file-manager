@@ -1,5 +1,13 @@
 <?php
 
+/**
+ * Base AJAX handler shared by every domain-specific AJAX handler class,
+ * providing privilege/nonce checks, path validation, storage adapter
+ * lookup, and action registration.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;
@@ -14,6 +22,12 @@ class AjaxHandler
 {
     protected string|false $root_path;
 
+    /**
+     * Resolve and cache the real filesystem path of the WordPress root.
+     *
+     * Every path-validation check in this class is anchored to this value,
+     * so it is resolved once up front rather than recomputed per request.
+     */
     public function __construct()
     {
         $this->root_path = realpath(ABSPATH);

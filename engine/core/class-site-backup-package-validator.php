@@ -1,4 +1,12 @@
 <?php
+/**
+ * Structural validator for full-site backup (.anfm) packages, checking the
+ * binary header/footer, size, and manifest hash before a restore is allowed
+ * to trust the file.
+ *
+ * @package Anibas_File_Manager
+ */
+
 declare(strict_types=1);
 
 namespace Anibas;

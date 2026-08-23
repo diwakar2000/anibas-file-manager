@@ -1,5 +1,12 @@
 <?php
 
+/**
+ * First operation phase run for a job: validates that the source path
+ * exists before any subsequent phase runs.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -7,6 +14,10 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 
 
+/**
+ * Validates the job's source root exists (raising a fatal exception
+ * otherwise) before handing off to ListPhase.
+ */
 class InitializePhase extends OperationPhase
 {
     public function execute(&$job, &$work_queue, $manager, &$context)

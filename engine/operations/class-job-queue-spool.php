@@ -1,5 +1,13 @@
 <?php
 
+/**
+ * Append-only JSONL spool storing background-job work queues on disk so the
+ * wp_options-stored job row stays small regardless of how many files a job
+ * touches.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;

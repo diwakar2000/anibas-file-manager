@@ -1,4 +1,12 @@
 <?php
+/**
+ * Time-budgeted coordinator for restoring a full-site ANFM backup package:
+ * staged extraction, database restore via DatabaseRestoreEngine, and final
+ * file swap into place.
+ *
+ * @package Anibas_File_Manager
+ */
+
 declare(strict_types=1);
 
 namespace Anibas;

@@ -1,11 +1,24 @@
 <?php
 
+/**
+ * Operation phase that finalizes a chunked upload after all chunks have
+ * been assembled, including storage-specific post-processing for S3-style
+ * backends.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 
 
+/**
+ * Runs after AssemblyPhase to complete a chunked upload job: verifies the
+ * assembled file and performs any storage-specific finalization (e.g. S3
+ * multipart completion).
+ */
 class FinalizeAssemblyPhase extends OperationPhase
 {
     private function is_s3_storage($storage)

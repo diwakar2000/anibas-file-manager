@@ -22,6 +22,11 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 use Exception, ZipArchive;
 
+/**
+ * Time-budgeted engine that builds a standard zip archive from a source
+ * path across multiple requests using ZipArchive, with flock-based
+ * concurrency control and atomic state writes for crash safety.
+ */
 class ZipCreateEngine {
 
     private string $source;

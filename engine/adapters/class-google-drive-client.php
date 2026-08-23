@@ -1,11 +1,26 @@
 <?php
 
+/**
+ * Low-level Google Drive REST API v3 client handling authenticated
+ * requests, OAuth token refresh, and resumable/multipart upload sessions.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * Exception thrown for Google Drive API errors.
+ */
 class GoogleDriveException extends \RuntimeException {}
 
+/**
+ * Thin wrapper around the Google Drive v3 REST API used by
+ * GoogleDriveFileSystemAdapter, handling request signing/authorization,
+ * URL building, and file upload/download endpoints.
+ */
 class AnibasGoogleDriveClient
 {
     private const API_BASE    = 'https://www.googleapis.com/drive/v3';

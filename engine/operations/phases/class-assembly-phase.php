@@ -1,10 +1,23 @@
 <?php
 
+/**
+ * Operation phase that assembles a chunked upload's individual chunk files
+ * into the final destination file, verifying the assembly token and chunk
+ * completeness before assembling.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 
+/**
+ * Reassembles the chunks of an upload job into the final file, one chunk
+ * per invocation, verifying the assembly token and that all chunks exist
+ * before starting.
+ */
 class AssemblyPhase extends OperationPhase
 {
     public function execute(&$job, &$work_queue, $manager, &$context)

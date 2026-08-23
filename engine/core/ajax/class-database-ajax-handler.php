@@ -1,5 +1,12 @@
 <?php
 
+/**
+ * AJAX handler exposing database browser endpoints (scopes, tables, schema,
+ * rows, and gated edit operations).
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;
@@ -10,6 +17,9 @@ if (! defined('ABSPATH')) exit;
  */
 class DatabaseAjaxHandler extends AjaxHandler
 {
+    /**
+     * Register the database browser/edit AJAX actions.
+     */
     public function __construct()
     {
         parent::__construct();
@@ -26,6 +36,18 @@ class DatabaseAjaxHandler extends AjaxHandler
         ]);
     }
 
+    /**
+     * Verify the database browser password and, on success, issue a
+     * short-lived database session token.
+     *
+     * Requires database browsing to be enabled, a valid database nonce,
+     * admin privilege, and the file manager token. If no database password
+     * is configured, immediately reports success with an empty token
+     * (nothing to gate). Otherwise the submitted `password` POST field is
+     * checked against the stored hash, and on match a random token is
+     * generated and its hash stored in a per-user transient for later
+     * verification by has_valid_database_token().
+     */
     public function verify_password(): void
     {
         $this->check_database_view_enabled();
@@ -56,6 +78,14 @@ class DatabaseAjaxHandler extends AjaxHandler
         ]);
     }
 
+    /**
+     * Check whether the current user's database session token is still
+     * valid, so the UI can decide whether to show the password gate again.
+     *
+     * Requires database browsing to be enabled, a valid database nonce,
+     * admin privilege, and the file manager token. Reports valid
+     * immediately if no database password is configured.
+     */
     public function check_auth(): void
     {
         $this->check_database_view_enabled();
@@ -78,6 +108,14 @@ class DatabaseAjaxHandler extends AjaxHandler
         ]);
     }
 
+    /**
+     * List the available database scopes (e.g. current site vs. network)
+     * a user can browse.
+     *
+     * Requires database view privilege (view enabled, nonce, admin, file
+     * manager token, and database session token if a database password is
+     * configured).
+     */
     public function list_scopes(): void
     {
         $this->check_database_view_privilege();
@@ -95,6 +133,12 @@ class DatabaseAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * List the tables within the requested database scope.
+     *
+     * Requires database view privilege. Reads `scope` from the request
+     * (defaults to 'current').
+     */
     public function list_tables(): void
     {
         $this->check_database_view_privilege();
@@ -111,6 +155,12 @@ class DatabaseAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Get column/schema information for a table.
+     *
+     * Requires database view privilege. Reads `scope` (default 'current')
+     * and `table` from the request.
+     */
     public function get_schema(): void
     {
         $this->check_database_view_privilege();
@@ -128,6 +178,13 @@ class DatabaseAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Fetch one page of rows from a table.
+     *
+     * Requires database view privilege. Reads `scope` (default 'current'),
+     * `table`, and pagination via `page_size` (default 50) and `page`
+     * (default 1) from the request.
+     */
     public function get_rows(): void
     {
         $this->check_database_view_privilege();
@@ -150,6 +207,17 @@ class DatabaseAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Update a single cell's value in a table row.
+     *
+     * Requires database edit privilege (view privilege plus the edit
+     * feature being enabled by both the wp-config constant and settings).
+     * Reads `scope`, `table`, `column` as text, and `row_key`/`old_value`/
+     * `value` as raw JSON payloads (row_key must decode to an array; an
+     * invalid payload throws and is reported as a DatabaseUpdateFailed
+     * error). The old value is passed through so the manager can detect a
+     * concurrent modification before applying the write.
+     */
     public function update_cell(): void
     {
         $this->check_database_edit_privilege();
@@ -172,6 +240,14 @@ class DatabaseAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Delete a single row from a table by its primary key.
+     *
+     * Requires database edit privilege. Reads `scope`, `table`, and
+     * `row_key` (raw JSON, must decode to an array) from the request; the
+     * underlying manager also enforces a table-level delete policy that can
+     * block deletion for protected tables.
+     */
     public function delete_row(): void
     {
         $this->check_database_edit_privilege();
@@ -191,6 +267,13 @@ class DatabaseAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Insert a new row into a table.
+     *
+     * Requires database edit privilege. Reads `scope`, `table`, and
+     * `values` (raw JSON, must decode to an array of column => value) from
+     * the request.
+     */
     public function insert_row(): void
     {
         $this->check_database_edit_privilege();

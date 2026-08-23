@@ -1,9 +1,21 @@
 <?php
 
+/**
+ * Registry and factory for the cloud storage OAuth providers supported by
+ * the plugin.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * Resolves a provider id (e.g. 'gdrive', 'onedrive', 'dropbox') to its
+ * OAuthProvider implementation, and exposes the filterable provider
+ * registry via the `anibas_fm_oauth_providers` filter.
+ */
 class RemoteOAuthManager
 {
     public static function provider(string $provider_id, array $config): ?OAuthProvider

@@ -22,6 +22,11 @@ namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * Coordinates full-site backups by exporting the database into a hidden
+ * payload directory, building a manifest from the configured backup scope,
+ * and delegating archiving to ArchiveCreateEngine.
+ */
 class BackupEngine {
 
     private $format;
