@@ -184,6 +184,7 @@ abstract class OAuthProvider
     {
         return array(
             'revoked' => false,
+            /* translators: %s: OAuth provider display name */
             'message' => sprintf(__('%s does not support app-scoped token revocation here.', 'anibas-file-manager'), $this->label()),
         );
     }

@@ -20,6 +20,7 @@ class WorkerAjaxHandler
     public function handle_worker()
     {
         ActivityLogger::log_message('[WorkerAjaxHandler] handle_worker() triggered via AJAX.');
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended -- this is a nopriv server-to-server loopback endpoint (dispatched by the background processor itself, not a logged-in browser session), so a WP nonce doesn't apply; auth is the shared-secret check in AsyncWorkerDispatcher::verify_secret() below.
         $secret = isset($_POST['worker_secret']) ? wp_unslash($_POST['worker_secret']) : '';
 
         // 1. Verify authorization securely (server-to-server token)

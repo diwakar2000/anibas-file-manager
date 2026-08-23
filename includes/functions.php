@@ -337,6 +337,7 @@ if ( ! function_exists( 'anibas_fm_runtime_preflight' ) ) {
 
 if ( ! function_exists( 'anibas_fm_fetch_request_variable' ) ) {
     function anibas_fm_fetch_request_variable( $from = 'request', $key = false, $default = null ) {
+        // phpcs:disable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended -- this is a generic low-level request-variable accessor used by many AJAX handlers; nonce verification is each handler's responsibility at its own dispatch point, not this shared utility's.
         if ( 'get' === $from ) {
             $input = $_GET;
         } elseif ( 'post' === $from ) {
@@ -344,6 +345,7 @@ if ( ! function_exists( 'anibas_fm_fetch_request_variable' ) ) {
         } else {
             $input = $_REQUEST;
         }
+        // phpcs:enable WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended
 
         if ( empty( $input ) ) {
             $raw = file_get_contents('php://input');
@@ -1557,7 +1559,7 @@ if ( ! function_exists( 'anibas_fm_decrypt_value' ) ) {
         if ( ! function_exists( 'openssl_decrypt' ) ) {
             return $value;
         }
-        $raw = base64_decode( substr( $value, 5 ), true );
+        $raw = base64_decode( substr( $value, 5 ), true ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- decodes the AES-256-GCM ciphertext blob encoded by base64_encode() above, not obfuscated code.
         if ( $raw === false || strlen( $raw ) < 28 ) {
             return $value;
         }

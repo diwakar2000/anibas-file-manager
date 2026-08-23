@@ -130,6 +130,7 @@ class ListPhase extends OperationPhase
                 $current['had_entries'] = true;
             }
 
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_var_export -- formats a boolean for the internal ActivityLogger audit log, not left-over debug output.
             ActivityLogger::get_instance()->log_message('ListPhase: iterateDirectory(' . $current['path'] . ') returned ' . count($entries) . ' items, has_more=' . var_export(! empty($page['has_more']), true));
 
             foreach ($entries as $idx => $item) {

@@ -131,8 +131,8 @@ class UploadAjaxHandler extends AjaxHandler
 
         // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- PHP upload error metadata is validated against UPLOAD_ERR_OK before the chunk is accepted.
         if (! isset($_FILES['chunk']['error']) || $_FILES['chunk']['error'] !== UPLOAD_ERR_OK) {
-            /* translators: %s: PHP upload error code */
             // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- error code is escaped for display and not trusted for control flow beyond UPLOAD_ERR_OK check above.
+            /* translators: %s: PHP upload error code */
             $error_msg = isset($_FILES['chunk']['error']) ? sprintf(esc_html__('Upload error code: %s', 'anibas-file-manager'), esc_html($_FILES['chunk']['error'])) : esc_html__('No file uploaded', 'anibas-file-manager');
             $this->send_error(array('error' => $error_msg));
         }

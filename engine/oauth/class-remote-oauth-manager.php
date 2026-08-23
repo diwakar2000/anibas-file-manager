@@ -43,6 +43,7 @@ class RemoteOAuthManager
             'startAction'         => ANIBAS_FM_REMOTE_OAUTH_START,
             'revokeAction'        => ANIBAS_FM_REMOTE_OAUTH_REVOKE,
             'redirectUrl'         => $provider->redirect_uri(),
+            /* translators: %s: OAuth provider display name (e.g. Google Drive, Dropbox) */
             'buttonLabel'         => sprintf(__('Connect with %s', 'anibas-file-manager'), $provider->label()),
             'connectedLabel'      => __('Connected', 'anibas-file-manager'),
             'requiredFields'      => self::required_fields($provider_id),
@@ -66,6 +67,7 @@ class RemoteOAuthManager
         if (! $provider->has_required_client_credentials()) {
             return new \WP_Error(
                 'missing_client_credentials',
+                /* translators: %s: OAuth provider display name */
                 sprintf(__('%s OAuth app credentials are not configured.', 'anibas-file-manager'), $provider->label())
             );
         }
@@ -92,8 +94,11 @@ class RemoteOAuthManager
             wp_die(esc_html__('Unauthorized', 'anibas-file-manager'), esc_html__('Unauthorized', 'anibas-file-manager'), array('response' => 403));
         }
 
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- this is an OAuth 2.0 provider redirect callback, not a same-site form submission; CSRF protection is the single-use random $state transient generated in start_auth() and checked below, the standard OAuth substitute for a WP nonce.
         $state = sanitize_text_field(wp_unslash($_GET['state'] ?? ''));
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- see justification above.
         $error = sanitize_text_field(wp_unslash($_GET['error'] ?? ''));
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- see justification above.
         $code  = sanitize_text_field(wp_unslash($_GET['code'] ?? ''));
         $stored = $state !== '' ? get_transient(self::state_key($state)) : false;
 
@@ -129,6 +134,7 @@ class RemoteOAuthManager
             $settings[$provider_id] = self::merge_tokens($provider_settings, $tokens);
             update_option('anibas_fm_remote_connections', anibas_fm_sanitize_remote_settings($settings));
 
+            /* translators: %s: OAuth provider display name */
             self::redirect_result($provider_id, 'success', sprintf(__('%s connected.', 'anibas-file-manager'), $provider->label()));
         } catch (\Throwable $e) {
             self::redirect_result($provider_id, 'error', $e->getMessage());
@@ -156,6 +162,7 @@ class RemoteOAuthManager
         $supported = $provider->supports_token_revocation();
         $result = array(
             'revoked' => false,
+            /* translators: %s: OAuth provider display name */
             'message' => sprintf(__('%s local connection removed.', 'anibas-file-manager'), $provider->label()),
         );
 
@@ -165,11 +172,13 @@ class RemoteOAuthManager
             } catch (\Throwable $e) {
                 return new \WP_Error(
                     'oauth_revoke_failed',
+                    /* translators: 1: OAuth provider display name, 2: error message */
                     sprintf(__('Could not revoke %1$s token: %2$s', 'anibas-file-manager'), $provider->label(), $e->getMessage())
                 );
             }
         } elseif (! $supported) {
             $result['message'] = sprintf(
+                /* translators: %s: OAuth provider display name */
                 __('%s does not expose app-scoped token revocation here. Local connection removed.', 'anibas-file-manager'),
                 $provider->label()
             );

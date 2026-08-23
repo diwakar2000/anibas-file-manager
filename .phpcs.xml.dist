@@ -1,0 +1,237 @@
+<?xml version="1.0"?>
+<ruleset name="Anibas File Manager">
+	<description>Coding standard for the Anibas File Manager plugin, scoped to WordPress.org Plugin Check (PCP) concerns: security, internationalization, and discouraged/deprecated APIs. See the exclusions below for the deliberate exceptions this plugin needs.</description>
+
+	<file>.</file>
+	<exclude-pattern>*/vendor/*</exclude-pattern>
+	<exclude-pattern>*/dist/*</exclude-pattern>
+	<exclude-pattern>*/bootstrap/*</exclude-pattern>
+	<exclude-pattern>*/languages/*</exclude-pattern>
+
+	<arg value="sp"/>
+	<arg name="extensions" value="php"/>
+
+	<config name="minimum_supported_wp_version" value="6.0"/>
+	<config name="testVersion" value="8.0-"/>
+
+	<rule ref="WordPress-Extra"/>
+	<rule ref="WordPress-Docs"/>
+
+	<rule ref="WordPress.WP.I18n">
+		<properties>
+			<property name="text_domain" type="array">
+				<element value="anibas-file-manager"/>
+			</property>
+		</properties>
+	</rule>
+
+	<!--
+	This codebase uses 4-space indentation and a brace/spacing style that predates
+	adoption of WPCS, rather than WordPress-Core's tabs-and-Allman conventions. A
+	full reformat would touch nearly every line of all 76 PHP files for no
+	functional or Plugin-Check benefit, so the whitespace/brace/array-formatting
+	and cosmetic naming-convention sniffs below are excluded. Everything relevant
+	to security, i18n, and WordPress.org Plugin Check stays active.
+	-->
+	<rule ref="Generic.WhiteSpace.DisallowSpaceIndent.SpacesUsed">
+		<severity>0</severity>
+	</rule>
+	<rule ref="PEAR.Functions.FunctionCallSignature">
+		<severity>0</severity>
+	</rule>
+	<rule ref="WordPress.WhiteSpace.ControlStructureSpacing">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Generic.Formatting.MultipleStatementAlignment">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Universal.Arrays.DisallowShortArraySyntax">
+		<severity>0</severity>
+	</rule>
+	<rule ref="WordPress.PHP.YodaConditions">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Generic.Functions.OpeningFunctionBraceKernighanRitchie">
+		<severity>0</severity>
+	</rule>
+	<rule ref="WordPress.Arrays.MultipleStatementAlignment">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Squiz.Functions.FunctionDeclarationArgumentSpacing">
+		<severity>0</severity>
+	</rule>
+	<rule ref="NormalizedArrays.Arrays.ArrayBraceSpacing">
+		<severity>0</severity>
+	</rule>
+	<rule ref="NormalizedArrays.Arrays.CommaAfterLast">
+		<severity>0</severity>
+	</rule>
+	<rule ref="WordPress.WhiteSpace.OperatorSpacing">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Generic.WhiteSpace.ArbitraryParenthesesSpacing">
+		<severity>0</severity>
+	</rule>
+	<rule ref="WordPress.Arrays.ArrayDeclarationSpacing">
+		<severity>0</severity>
+	</rule>
+	<rule ref="WordPress.Arrays.ArrayKeySpacingRestrictions">
+		<severity>0</severity>
+	</rule>
+	<rule ref="WordPress.Arrays.ArrayIndentation">
+		<severity>0</severity>
+	</rule>
+	<rule ref="WordPress.NamingConventions.ValidVariableName">
+		<severity>0</severity>
+	</rule>
+	<rule ref="WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Generic.ControlStructures.InlineControlStructure">
+		<severity>0</severity>
+	</rule>
+	<rule ref="WordPress.WhiteSpace.CastStructureSpacing">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Generic.Formatting.SpaceAfterCast">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Universal.Operators.DisallowShortTernary">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Universal.Operators.DisallowStandalonePostIncrementDecrement">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Modernize.FunctionCalls.Dirname">
+		<severity>0</severity>
+	</rule>
+	<rule ref="WordPress.Files.FileName.InvalidClassFileName">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Generic.Classes.OpeningBraceSameLine">
+		<severity>0</severity>
+	</rule>
+	<rule ref="PSR2.Classes.ClassDeclaration.CloseBraceAfterBody">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Squiz.WhiteSpace.SuperfluousWhitespace">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Universal.WhiteSpace.PrecisionAlignment">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Squiz.Strings.DoubleQuoteUsage.NotRequired">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Squiz.Strings.ConcatenationSpacing">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Generic.CodeAnalysis.AssignmentInCondition">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Generic.Functions.FunctionCallArgumentSpacing">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Generic.CodeAnalysis.UnusedFunctionParameter">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Squiz.Functions.MultiLineFunctionDeclaration">
+		<severity>0</severity>
+	</rule>
+	<rule ref="PSR2.Methods.FunctionClosingBrace">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Generic.Formatting.DisallowMultipleStatements">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Generic.Files.OneObjectStructurePerFile">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Universal.NamingConventions.NoReservedKeywordParameterNames">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Squiz.PHP.DisallowMultipleAssignments">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Squiz.PHP.CommentedOutCode">
+		<severity>0</severity>
+	</rule>
+	<rule ref="PSR2.Files.EndFileNewline">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Squiz.PHP.DisallowSizeFunctionsInLoops">
+		<severity>0</severity>
+	</rule>
+	<rule ref="PEAR.NamingConventions.ValidClassName">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Generic.WhiteSpace.ScopeIndent">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Generic.CodeAnalysis.ForLoopWithTestFunctionCall">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Generic.PHP.LowerCaseConstant">
+		<severity>0</severity>
+	</rule>
+	<rule ref="Universal.ControlStructures.DisallowLonelyIf">
+		<severity>0</severity>
+	</rule>
+	<rule ref="PSR12.Functions.ReturnTypeDeclaration">
+		<severity>0</severity>
+	</rule>
+
+	<!--
+	Known, reviewed, out-of-scope-for-this-pass findings, kept active but not
+	yet addressed:
+	- WordPress.PHP.NoSilencedErrors: the codebase uses @-suppression on
+	  operations it already checks via return value (@rename(), @unserialize(),
+	  @mysqli_query(), @set_time_limit()). Broad (148 hits); left for a
+	  dedicated follow-up rather than suppressed wholesale here.
+	- WordPress.PHP.StrictInArray, Generic.CodeAnalysis.EmptyStatement (empty
+	  catch blocks): each needs individual case-by-case review to confirm
+	  intent (best-effort cleanup vs. a real swallowed error) rather than a
+	  ruleset-level judgment call; tracked as follow-up work, not suppressed.
+	-->
+
+	<!--
+	This plugin's entire purpose is direct local-filesystem and cloud-storage
+	I/O (engine/adapters/) — WP_Filesystem and wp_remote_*() are not viable
+	substitutes for the low-level streaming/multipart operations the adapters
+	need (chunked reads/writes, FTP/SFTP transport, S3/OAuth multipart
+	uploads). See README.md's "Storage Backends" section.
+	-->
+	<rule ref="WordPress.WP.AlternativeFunctions">
+		<severity>0</severity>
+	</rule>
+
+	<!--
+	WordPress.Security.EscapeOutput.ExceptionNotEscaped fires on every
+	`throw new Exception($var)`, but a thrown message is internal PHP control
+	flow, not output — every call site that surfaces a caught exception's
+	message to a client already runs it through esc_html()/esc_html__() at
+	that point (see e.g. engine/core/ajax/class-file-crud-ajax-handler.php).
+	-->
+	<rule ref="WordPress.Security.EscapeOutput.ExceptionNotEscaped">
+		<severity>0</severity>
+	</rule>
+
+	<!--
+	engine/database/ (and the same restore/rewrite step in
+	engine/core/class-site-restore-engine.php) build SQL by combining
+	DatabaseSafetyPolicy::quote_identifier() (backtick-escaped identifiers —
+	table/column names can't use $wpdb->prepare() placeholders) with
+	$wpdb->prepare() for value placeholders. WordPress.DB.PreparedSQL and
+	PreparedSQLPlaceholders can't recognize that pattern across the
+	multi-line $sql construction it's built with, and flag it as unprepared
+	even where it already is. Reviewed line-by-line for this pass.
+	-->
+	<rule ref="WordPress.DB.PreparedSQL">
+		<exclude-pattern>engine/database/*</exclude-pattern>
+		<exclude-pattern>engine/core/class-site-restore-engine.php</exclude-pattern>
+	</rule>
+	<rule ref="WordPress.DB.PreparedSQLPlaceholders">
+		<exclude-pattern>engine/database/*</exclude-pattern>
+		<exclude-pattern>engine/core/class-site-restore-engine.php</exclude-pattern>
+	</rule>
+</ruleset>

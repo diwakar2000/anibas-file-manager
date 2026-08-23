@@ -655,12 +655,14 @@ class DatabaseManager
         }
 
         try {
+            // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_query -- $dbh is $wpdb's own mysqli handle (not a separate connection); MYSQLI_USE_RESULT streams rows unbuffered, which $wpdb->query() cannot do, for memory-safe reads of large database-browser tables. $sql is built via DatabaseSafetyPolicy::quote_identifier() and $wpdb->prepare().
             $result = @mysqli_query($dbh, $sql, MYSQLI_USE_RESULT);
         } catch (\Throwable $e) {
             throw new \RuntimeException($e->getMessage());
         }
 
         if (! $result instanceof \mysqli_result) {
+            // phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_error -- reads the driver error for the same $wpdb mysqli handle used above.
             $message = mysqli_error($dbh);
             throw new \RuntimeException($message !== '' ? $message : 'Failed to open memory-safe database row stream.');
         }

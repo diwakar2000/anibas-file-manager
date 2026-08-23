@@ -246,7 +246,7 @@ class EditorAjax extends AjaxHandler
             $this->send_error(['error' => 'ReadOnly', 'message' => esc_html__('You do not have permission to edit this file.', 'anibas-file-manager')], 403);
         }
 
-        $content = base64_decode($content_b64, true);
+        $content = base64_decode($content_b64, true); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- decodes a base64-transported file chunk (see class comment above), not obfuscated code.
         if ($content === false) {
             $this->send_error(['error' => 'InvalidContent']);
         }

@@ -25,8 +25,8 @@ if (is_multisite()) {
 	global $wpdb;
 	$anibas_fm_blog_ids = $wpdb->get_col("SELECT blog_id FROM {$wpdb->blogs}");
 
-	foreach ($anibas_fm_blog_ids as $blog_id) {
-		switch_to_blog($blog_id);
+	foreach ($anibas_fm_blog_ids as $anibas_fm_site_id) {
+		switch_to_blog($anibas_fm_site_id);
 		anibas_fm_delete_plugin_data();
 		restore_current_blog();
 	}
