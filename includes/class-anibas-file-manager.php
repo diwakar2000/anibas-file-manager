@@ -222,7 +222,10 @@ class Anibas_File_Manager {
 	private function set_locale() {
 		$plugin_i18n = new Anibas_File_Manager_i18n();
 
-		$this->loader->add_action( 'plugins_loaded', $plugin_i18n, 'load_plugin_textdomain' );
+		// Hooked on init (not plugins_loaded): WordPress 6.7+ flags translation
+		// loading that happens before init with a "too early" _doing_it_wrong
+		// notice, since core's just-in-time translation loading expects it there.
+		$this->loader->add_action( 'init', $plugin_i18n, 'load_plugin_textdomain' );
 	}
 
 	/**

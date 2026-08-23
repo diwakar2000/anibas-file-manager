@@ -1,9 +1,9 @@
 === Anibas File Manager ===
-Contributors: diwakar2000
+Contributors: diwakar2000, alkesh7
 Donate link: https://diwakar2000.com.np/
 Tags: file manager, database browser, cloud storage, backups, s3
 Requires at least: 6.0
-Tested up to: 6.9
+Tested up to: 7.1
 Stable tag: 1.3.0
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
