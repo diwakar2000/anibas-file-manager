@@ -300,6 +300,7 @@ class SettingsAjaxHandler extends AjaxHandler
         $this->check_settings_auth();
 
         $type   = sanitize_text_field(wp_unslash($_POST['type'] ?? ''));
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- this is a structured JSON settings payload (host/port/credential fields per provider), not free text; it's decoded here and each field is used individually below and in test_remote_storage(), not output or stored as-is. Running sanitize_text_field() on the raw JSON string would corrupt it before it can even be decoded.
         $config = json_decode(wp_unslash($_POST['config'] ?? ''), true);
         if (! is_array($config)) {
             $this->send_error(esc_html__('Invalid config', 'anibas-file-manager'));

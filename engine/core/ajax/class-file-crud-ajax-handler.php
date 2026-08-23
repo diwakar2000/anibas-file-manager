@@ -188,7 +188,7 @@ class FileCrudAjaxHandler extends AjaxHandler
 
         $parent = anibas_fm_fetch_request_variable('post', 'parent', '/');
         $name = anibas_fm_fetch_request_variable('post', 'name', '');
-        // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended -- nonce is verified in check_create_privilege() above (AjaxHandler::check_create_privilege() -> wp_verify_nonce()), which the sniff can't trace across methods.
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- nonce is verified in check_create_privilege() above (AjaxHandler::check_create_privilege() -> wp_verify_nonce()), which the sniff can't trace across methods; $content is the literal file body being written (arbitrary text/code), so running it through a text sanitizer would corrupt the file being created.
         $content = isset($_POST['content']) ? wp_unslash($_POST['content']) : '';
         $storage = anibas_fm_fetch_request_variable('post', 'storage', 'local');
 

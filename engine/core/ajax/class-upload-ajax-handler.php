@@ -130,10 +130,10 @@ class UploadAjaxHandler extends AjaxHandler
         }
 
         // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- PHP upload error metadata is validated against UPLOAD_ERR_OK before the chunk is accepted.
-        if (! isset($_FILES['chunk']['error']) || $_FILES['chunk']['error'] !== UPLOAD_ERR_OK) {
-            // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- error code is escaped for display and not trusted for control flow beyond UPLOAD_ERR_OK check above.
+        $upload_error_code = isset($_FILES['chunk']['error']) ? $_FILES['chunk']['error'] : null;
+        if ($upload_error_code === null || $upload_error_code !== UPLOAD_ERR_OK) {
             /* translators: %s: PHP upload error code */
-            $error_msg = isset($_FILES['chunk']['error']) ? sprintf(esc_html__('Upload error code: %s', 'anibas-file-manager'), esc_html($_FILES['chunk']['error'])) : esc_html__('No file uploaded', 'anibas-file-manager');
+            $error_msg = $upload_error_code !== null ? sprintf(esc_html__('Upload error code: %s', 'anibas-file-manager'), esc_html($upload_error_code)) : esc_html__('No file uploaded', 'anibas-file-manager');
             $this->send_error(array('error' => $error_msg));
         }
 
@@ -145,8 +145,8 @@ class UploadAjaxHandler extends AjaxHandler
         }
 
         $chunk_file = $temp_dir . '/chunk_' . $chunk_index;
-        // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- tmp_name is provided by PHP's upload subsystem after UPLOAD_ERR_OK and session size validation.
-        if (! move_uploaded_file($_FILES['chunk']['tmp_name'], $chunk_file)) {
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, Generic.PHP.ForbiddenFunctions.Found -- tmp_name is provided by PHP's upload subsystem after UPLOAD_ERR_OK and session size validation. move_uploaded_file() is the correct primitive here: it only accepts a path PHP itself recorded as a genuine HTTP upload (rejecting any other path, unlike a generic filesystem move), and the destination is server-built from validated session state, not user input. wp_handle_upload() validates one complete file against registered mime types and doesn't fit assembling raw mid-stream chunks.
+        if (! isset($_FILES['chunk']['tmp_name']) || ! move_uploaded_file($_FILES['chunk']['tmp_name'], $chunk_file)) {
             $error = error_get_last();
             ActivityLogger::log_message(sprintf('[Upload] Failed to save chunk %d/%d for "%s": %s', $chunk_index + 1, $total_chunks, $file_name, $error['message'] ?? 'Unknown error'));
             /* translators: %s: error message */
