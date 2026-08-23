@@ -462,8 +462,8 @@ if ( ! function_exists( 'anibas_fm_is_development_site' ) ) {
      * @return bool
      */
     function anibas_fm_is_development_site() {
-        $server_name = isset( $_SERVER['SERVER_NAME'] ) ? strtolower( $_SERVER['SERVER_NAME'] ) : '';
-        $remote_addr = isset( $_SERVER['REMOTE_ADDR'] ) ? $_SERVER['REMOTE_ADDR'] : '';
+        $server_name = isset( $_SERVER['SERVER_NAME'] ) ? strtolower( sanitize_text_field( wp_unslash( $_SERVER['SERVER_NAME'] ) ) ) : '';
+        $remote_addr = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '';
 
         $local_hosts = array( 'localhost', '127.0.0.1', '::1' );
         $dev_tlds = [
