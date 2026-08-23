@@ -1,5 +1,12 @@
 <?php
 
+/**
+ * AJAX handler exposing the asynchronous background worker loopback
+ * endpoint used to drive queued jobs.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;
@@ -9,6 +16,12 @@ if (! defined('ABSPATH')) exit;
  */
 class WorkerAjaxHandler
 {
+    /**
+     * Register the worker loopback action on both the authenticated and
+     * nopriv AJAX hooks (bypassing the shared AjaxHandler base, since the
+     * worker loopback authenticates via a shared secret rather than a
+     * logged-in WordPress user).
+     */
     public function __construct()
     {
         // We use standard WordPress ajax hooks manually because this needs nopriv support
@@ -17,6 +30,23 @@ class WorkerAjaxHandler
         add_action('wp_ajax_nopriv_anibas_fm_run_worker', [$this, 'handle_worker']);
     }
 
+    /**
+     * Process one time-sliced chunk of queued background jobs, triggered by
+     * the async loopback request that AsyncWorkerDispatcher fires after
+     * enqueuing work.
+     *
+     * Verifies the `worker_secret` POST field against
+     * AsyncWorkerDispatcher's shared secret and dies with 401 if it
+     * doesn't match — this endpoint is nopriv, so the secret is the only
+     * authentication. On success, disables user-abort and the PHP time
+     * limit so the slice can't be cut short by the client disconnecting or
+     * a request timeout, releases any PHP session lock so it doesn't block
+     * concurrent polling requests, then delegates to
+     * BackgroundProcessor::run_worker() (which itself no-ops if another
+     * worker already holds the processing lock). If no other worker is
+     * running afterward, re-dispatches itself to continue any remaining
+     * queued work; always ends with wp_die() to close the request cleanly.
+     */
     public function handle_worker()
     {
         ActivityLogger::log_message('[WorkerAjaxHandler] handle_worker() triggered via AJAX.');

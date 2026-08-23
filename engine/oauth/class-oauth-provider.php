@@ -1,9 +1,21 @@
 <?php
 
+/**
+ * Base contract and shared authorization-code-flow logic for cloud storage
+ * OAuth providers (Google Drive, OneDrive, Dropbox).
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * Abstract base class implementing the OAuth 2.0 authorization code flow
+ * shared by all cloud storage providers; concrete providers supply their
+ * endpoints, scopes, and identifying details.
+ */
 abstract class OAuthProvider
 {
     protected array $config;

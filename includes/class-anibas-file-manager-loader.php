@@ -1,7 +1,5 @@
 <?php
 
-if ( ! defined( 'ABSPATH' ) ) exit;
-
 /**
  * Register all actions and filters for the plugin
  *
@@ -11,6 +9,8 @@ if ( ! defined( 'ABSPATH' ) ) exit;
  * @package    Anibas_File_Manager
  * @subpackage Anibas_File_Manager/includes
  */
+
+if ( ! defined( 'ABSPATH' ) ) exit;
 
 /**
  * Register all actions and filters for the plugin.

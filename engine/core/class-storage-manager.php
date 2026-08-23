@@ -1,9 +1,22 @@
 <?php
 
+/**
+ * Central registry that resolves storage ids to configured filesystem
+ * adapter instances (local and remote/cloud), lazily instantiating them
+ * from stored connection settings.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * Singleton responsible for holding adapter configuration and lazily
+ * creating/caching FileSystemAdapter instances for each configured storage
+ * id (local or a remote connection).
+ */
 class StorageManager {
     private static $instance = null;
     private $adapters = [];

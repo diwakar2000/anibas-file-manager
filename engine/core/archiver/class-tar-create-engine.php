@@ -30,6 +30,11 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 use Exception;
 
+/**
+ * Time-budgeted engine that builds a standard POSIX TAR (UStar) archive
+ * from a source path across multiple requests, writing headers and file
+ * data sequentially with flock-based concurrency control.
+ */
 class TarCreateEngine {
 
     private string $source;

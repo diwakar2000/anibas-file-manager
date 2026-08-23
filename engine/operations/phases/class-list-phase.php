@@ -1,5 +1,12 @@
 <?php
 
+/**
+ * Operation phase that walks the source tree of a transfer/delete job and
+ * buffers discovered files and folders into the job's work queue.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -7,6 +14,10 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 
 
+/**
+ * Builds the file/folder work list for a job by scanning the source path,
+ * buffering entries for the phases that follow (assembly/transfer/delete).
+ */
 class ListPhase extends OperationPhase
 {
     private $is_delete = false;

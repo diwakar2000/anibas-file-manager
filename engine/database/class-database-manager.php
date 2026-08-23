@@ -1,5 +1,13 @@
 <?php
 
+/**
+ * Backing queries for the database browser UI: scope/table listing, schema
+ * introspection, paginated row reads, and tightly scoped, policy-gated row
+ * edits.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;

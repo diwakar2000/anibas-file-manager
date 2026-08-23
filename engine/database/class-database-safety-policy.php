@@ -1,5 +1,13 @@
 <?php
 
+/**
+ * Central safety rules gating the database browser's edit mode: core table
+ * classification, identifier validation, per-table mutation allow-lists,
+ * and redaction of WordPress-critical values.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;

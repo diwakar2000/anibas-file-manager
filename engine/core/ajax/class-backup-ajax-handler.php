@@ -1,5 +1,11 @@
 <?php
 
+/**
+ * AJAX handler exposing per-file and full-site backup endpoints.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;
@@ -10,6 +16,9 @@ if (! defined('ABSPATH')) exit;
  */
 class BackupAjaxHandler extends AjaxHandler
 {
+    /**
+     * Register the per-file and full-site backup/restore AJAX actions.
+     */
     public function __construct()
     {
         parent::__construct();
@@ -40,6 +49,18 @@ class BackupAjaxHandler extends AjaxHandler
 
     // ── Per-file backups (snapshot-before-edit / restore like trash) ──
 
+    /**
+     * Snapshot a single file into the file-backup history before it is
+     * edited, driven as a resumable chunked-copy job.
+     *
+     * Requires create privilege. When `job_id` is present, resumes that job
+     * instead of starting a new one (see continue_file_backup_job()). Local
+     * files are copied directly; remote files are downloaded through a
+     * chunked copy job, since a single request may not have time to
+     * transfer a large file. The response is either a `running` progress
+     * update or a `complete` result, depending on whether the copy finishes
+     * within this request's time budget.
+     */
     public function backup_single_file()
     {
         $this->check_create_privilege();
@@ -99,6 +120,15 @@ class BackupAjaxHandler extends AjaxHandler
         $this->process_file_backup_job($job);
     }
 
+    /**
+     * List all per-file backup groups and their available versions.
+     *
+     * Requires backup privilege. Each backup group lives in its own
+     * directory under the file-backups root, identified by a `.source`
+     * marker file recording the original storage + path; groups with no
+     * remaining versions or a missing/unreadable marker are skipped.
+     * Results are sorted newest-first by each group's latest version.
+     */
     public function list_file_backups()
     {
         $this->check_backup_privilege();
@@ -153,6 +183,20 @@ class BackupAjaxHandler extends AjaxHandler
         $this->send_success(array('items' => $items, 'total_items' => count($items)));
     }
 
+    /**
+     * Restore a specific version of a per-file backup to its original
+     * location, driven as a resumable chunked-copy job.
+     *
+     * Requires backup privilege. When `job_id` is present, resumes that job
+     * instead of starting a new one. `key` must be a 32-hex-char backup
+     * group id and `version` must not contain path separators or `..`
+     * (guards against traversal via the stored filename). The original
+     * target path is read from the group's `.source` marker; for local
+     * targets it is re-validated against the site root and blocked-path
+     * rules before restoring. The response is a `running` progress update
+     * or a `complete` result depending on whether the copy finishes within
+     * this request's time budget.
+     */
     public function restore_file_backup()
     {
         $this->check_backup_privilege();
@@ -794,6 +838,14 @@ class BackupAjaxHandler extends AjaxHandler
             : 20;
     }
 
+    /**
+     * Delete a single version of a per-file backup.
+     *
+     * Requires backup privilege. `key` must be a 32-hex-char backup group
+     * id and `version` must not contain path separators or `..`. If this
+     * was the last remaining version in the group, the whole group
+     * directory (including its `.source` marker) is removed.
+     */
     public function delete_file_backup()
     {
         $this->check_backup_privilege();
@@ -846,6 +898,16 @@ class BackupAjaxHandler extends AjaxHandler
         $this->send_success(array('message' => esc_html__('Backup deleted', 'anibas-file-manager')));
     }
 
+    /**
+     * Delete an entire per-file backup group (all versions and its
+     * `.source` marker), driven as a resumable job.
+     *
+     * Requires backup privilege. When `job_id` is present, resumes that
+     * job. `key` must be a 32-hex-char backup group id. Deletion walks the
+     * group directory iteratively (not recursively) so it can pause and
+     * resume within the request's time/entry budget for very large
+     * histories.
+     */
     public function delete_file_backup_tree()
     {
         $this->check_backup_privilege();
@@ -881,6 +943,14 @@ class BackupAjaxHandler extends AjaxHandler
         $this->process_file_backup_job($job);
     }
 
+    /**
+     * List full-site backup archives (.tar and .anfm) in the backup
+     * directory, newest first.
+     *
+     * Requires backup privilege. Only .anfm backups are marked
+     * restore_supported, and restorable is additionally gated on the
+     * ANIBAS_FM_ENABLE_SITE_RESTORE constant.
+     */
     public function list_site_backups()
     {
         $this->check_backup_privilege();
@@ -913,6 +983,16 @@ class BackupAjaxHandler extends AjaxHandler
         $this->send_success(array('items' => $items, 'total_items' => count($items)));
     }
 
+    /**
+     * Permanently delete a full-site backup archive.
+     *
+     * Requires backup privilege. `name` is restricted to a bare filename
+     * (no path separators or `..`) with a .tar/.anfm extension, and the
+     * resolved real path is re-confirmed to live inside the backup
+     * directory. Refuses to delete a backup that is currently being
+     * created or is currently being restored (checked against the active
+     * backup/restore locks).
+     */
     public function delete_site_backup()
     {
         $this->check_backup_privilege();
@@ -954,6 +1034,18 @@ class BackupAjaxHandler extends AjaxHandler
         $this->send_success(array('message' => esc_html__('Backup deleted', 'anibas-file-manager')));
     }
 
+    /**
+     * Start (or poll) uploading a full-site backup archive to a remote
+     * storage backend.
+     *
+     * Requires backup privilege. When `job_id` is present, delegates to
+     * send_site_backup_cloud_status() to report progress instead of
+     * starting a new upload. Otherwise resolves and validates the backup
+     * file, refuses local storage as a destination, checks the storage
+     * pair is a valid cross-storage transfer, creates (or reuses) a
+     * dedicated backup folder on the destination, and enqueues the upload
+     * as a background cross-storage copy job.
+     */
     public function send_site_backup_to_cloud()
     {
         $this->check_backup_privilege();
@@ -1041,6 +1133,17 @@ class BackupAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Import a full-site .anfm backup archive from a remote storage
+     * backend into the local backup directory.
+     *
+     * Requires backup privilege. Refuses local storage as a source, checks
+     * the storage pair is a valid cross-storage transfer, and requires the
+     * source file to live in an Anibas site-backup cloud folder with a
+     * .anfm extension (guards against importing arbitrary remote files as
+     * if they were trusted backups). The copy is enqueued as a background
+     * cross-storage job; the response carries a `job_id` for polling.
+     */
     public function import_site_backup_from_cloud()
     {
         $this->check_backup_privilege();
@@ -1121,6 +1224,15 @@ class BackupAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Validate a full-site backup archive and return a shallow manifest
+     * preview (up to `limit` entries) for the pre-restore confirmation UI.
+     *
+     * Requires backup privilege. If the archive is password-protected and
+     * no `password` was supplied, reports password_required instead of
+     * reading the manifest. The restore engine instance used to read the
+     * manifest is always cleaned up afterward, even on error.
+     */
     public function site_backup_preview()
     {
         $this->check_backup_privilege();
@@ -1165,6 +1277,19 @@ class BackupAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Multi-mode inspector for a full-site backup archive's contents:
+     * `prepare` builds/reads the cached manifest, `browse` lists a
+     * directory within it, and `search` queries entries by name.
+     *
+     * Requires backup privilege. If the archive is password-protected and
+     * no `password` was supplied, reports password_required without
+     * touching the manifest. `prepare` reports the manifest build's own
+     * progress if it isn't complete yet, regardless of the requested mode,
+     * so callers must poll `prepare` to completion before `browse`/`search`
+     * can return real results. An unrecognized `mode` is rejected with a
+     * 400 InvalidInspectMode error.
+     */
     public function site_backup_inspect()
     {
         $this->check_backup_privilege();
@@ -1226,6 +1351,16 @@ class BackupAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Stream a single file out of a full-site backup archive's manifest,
+     * and exit — this is not a JSON AJAX endpoint.
+     *
+     * Requires backup privilege. Calls wp_die() (not send_error()) on any
+     * failure, since the response is a raw file stream. Requires the
+     * archive's manifest cache to already be built via site_backup_inspect()
+     * — dies with a 409 if it isn't — and requires the `password` field if
+     * the archive is password-protected.
+     */
     public function site_backup_download_file()
     {
         $this->check_backup_privilege();
@@ -1263,6 +1398,15 @@ class BackupAjaxHandler extends AjaxHandler
         );
     }
 
+    /**
+     * Start a full-site restore from a backup archive.
+     *
+     * Requires backup privilege and site restore to be enabled via the
+     * ANIBAS_FM_ENABLE_SITE_RESTORE constant. Delegates setup (validating
+     * the archive, staging, and locking) to SiteRestoreEngine::start(),
+     * passing through the chosen `db_mode` and whether to preserve old data
+     * during the swap.
+     */
     public function site_restore_start()
     {
         $this->check_backup_privilege();
@@ -1282,6 +1426,14 @@ class BackupAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Advance one step of an in-progress full-site restore job.
+     *
+     * Requires backup privilege and site restore to be enabled. Requires
+     * `job_id`; `password` is passed through for archives that need it
+     * re-supplied mid-restore. The response's `done` flag reflects whether
+     * the step reported the restore as complete.
+     */
     public function site_restore_poll()
     {
         $this->check_backup_privilege();
@@ -1305,6 +1457,14 @@ class BackupAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Cancel an in-progress full-site restore job.
+     *
+     * Requires backup privilege and site restore to be enabled. Requires
+     * `job_id`. If the engine rejects the cancellation (e.g. the restore
+     * has passed a point of no return), responds with a 409
+     * SiteRestoreCancelRejected error carrying the engine's message.
+     */
     public function site_restore_cancel()
     {
         $this->check_backup_privilege();
@@ -1327,6 +1487,15 @@ class BackupAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Switch an in-progress full-site restore job from its current database
+     * mode to a direct-overwrite fallback.
+     *
+     * Requires backup privilege and site restore to be enabled. Requires
+     * `job_id`. Used when the primary db_mode (e.g. staging-swap) can't
+     * proceed and the restore needs to fall back to overwriting the live
+     * database directly.
+     */
     public function site_restore_fallback_overwrite()
     {
         $this->check_backup_privilege();
@@ -1348,6 +1517,15 @@ class BackupAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Report whether a full-site restore is currently running, for polling
+     * on page load without needing a known `job_id`.
+     *
+     * Requires backup privilege and site restore to be enabled. Reads the
+     * active restore lock rather than request input; if the locked job can
+     * no longer be resumed (e.g. its state expired), clears the stale lock
+     * and reports not running instead of erroring.
+     */
     public function site_restore_status()
     {
         $this->check_backup_privilege();

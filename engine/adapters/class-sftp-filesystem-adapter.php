@@ -1,5 +1,13 @@
 <?php
 
+/**
+ * SFTP filesystem adapter with two interchangeable backends: phpseclib
+ * (preferred, supports chunked transfers) and a cURL-based fallback for
+ * environments without phpseclib installed.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -424,6 +432,10 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
     }
 }
 
+/**
+ * SFTP backend built on phpseclib's Net\SFTP, offering true chunked reads
+ * and writes; used by SFTPFileSystemAdapter when phpseclib is available.
+ */
 class SFTPPhpseclibBackend
 {
     private $sftp;
@@ -937,6 +949,11 @@ class SFTPPhpseclibBackend
     }
 }
 
+/**
+ * SFTP backend built on PHP's cURL sftp:// protocol support, used as a
+ * fallback by SFTPFileSystemAdapter when the phpseclib library is not
+ * installed.
+ */
 class SFTPCurlBackend
 {
     private $host;

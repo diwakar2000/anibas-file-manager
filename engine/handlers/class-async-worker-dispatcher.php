@@ -1,5 +1,12 @@
 <?php
 
+/**
+ * Dispatches non-blocking HTTP loopback requests that drive the background
+ * job worker without blocking the requesting page load.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;

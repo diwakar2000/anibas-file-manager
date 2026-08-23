@@ -1,7 +1,5 @@
 <?php
 
-if ( ! defined( 'ABSPATH' ) ) exit;
-
 /**
  * Define the internationalization functionality
  *
@@ -14,6 +12,8 @@ if ( ! defined( 'ABSPATH' ) ) exit;
  * @package    Anibas_File_Manager
  * @subpackage Anibas_File_Manager/includes
  */
+
+if ( ! defined( 'ABSPATH' ) ) exit;
 
 /**
  * Define the internationalization functionality.

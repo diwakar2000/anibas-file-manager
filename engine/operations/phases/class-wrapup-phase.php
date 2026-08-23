@@ -1,5 +1,12 @@
 <?php
 
+/**
+ * Final operation phase that cleans up after a transfer/move job, removing
+ * the now-empty source folder tree for move-style operations.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -7,6 +14,10 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 
 
+/**
+ * Last phase run for a job: for move-style operations, deletes the
+ * now-empty source folder tree left behind by TransferPhase.
+ */
 class WrapupPhase extends OperationPhase
 {
     public function execute(&$job, &$work_queue, $manager, &$context)

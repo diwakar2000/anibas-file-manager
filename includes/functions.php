@@ -1,5 +1,13 @@
 <?php
 
+/**
+ * Global helper functions shared across the plugin, including cross-filesystem
+ * safe file/directory moves and other utility wrappers used outside the
+ * namespaced engine classes.
+ *
+ * @package Anibas_File_Manager
+ */
+
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 if ( ! function_exists( 'anibas_fm_safe_move' ) ) {

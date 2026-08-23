@@ -1,5 +1,11 @@
 <?php
 
+/**
+ * AJAX handler exposing archive create/validate/restore endpoints.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;
@@ -11,6 +17,9 @@ if (! defined('ABSPATH')) exit;
  */
 class ArchiveAjaxHandler extends AjaxHandler
 {
+    /**
+     * Register the archive create/check/restore/cancel AJAX actions.
+     */
     public function __construct()
     {
         parent::__construct();
@@ -87,6 +96,14 @@ class ArchiveAjaxHandler extends AjaxHandler
         return $job;
     }
 
+    /**
+     * Cancel an in-progress archive create job and best-effort clean up its
+     * partial output and engine temp files.
+     *
+     * Requires create privilege. Reads `job_id` from POST; if the job is
+     * already gone from the registry this still reports success, since the
+     * end state (no job, no partial output) is the same either way.
+     */
     public function cancel_archive_job()
     {
         $this->check_create_privilege();
@@ -131,6 +148,20 @@ class ArchiveAjaxHandler extends AjaxHandler
        ARCHIVE CREATE — unified for .zip, .tar and .anfm
     ========================================================= */
 
+    /**
+     * Create a .zip, .tar, or .anfm archive from a source path, driven as a
+     * multi-phase, resumable state machine.
+     *
+     * Requires create privilege and local storage (the archive engines use
+     * the native PHP filesystem). The `phase` POST field selects the step:
+     * `prescan` estimates size/file count without creating engine state;
+     * `scan` detects output-path conflicts, applies the chosen
+     * overwrite/rename resolution, registers a resumable job, and builds
+     * the archive manifest; `run` performs one chunk of archiving work per
+     * call and reports progress; `cleanup` removes engine temp state. Each
+     * call after `scan` resolves the output path from the job registry (via
+     * `job_id`) so a chosen rename is honored consistently across requests.
+     */
     public function archive_create()
     {
         $this->check_create_privilege();
@@ -367,6 +398,16 @@ class ArchiveAjaxHandler extends AjaxHandler
        ARCHIVE CHECK — pre-extract validation for .zip, .tar and .anfm
     ========================================================= */
 
+    /**
+     * Inspect a .zip, .tar, or .anfm file before extraction and report
+     * whether it is readable/valid and, for .anfm, whether it is
+     * password-protected.
+     *
+     * Requires standard privilege and local storage. Corruption or an
+     * unreadable archive is reported as a normal success response with
+     * `valid` set to false, rather than an error, since it's an expected
+     * outcome the UI needs to display.
+     */
     public function archive_check()
     {
         $this->check_privilege();
@@ -463,6 +504,15 @@ class ArchiveAjaxHandler extends AjaxHandler
        ARCHIVE RESTORE — unified extraction for .zip, .tar and .anfm
     ========================================================= */
 
+    /**
+     * Extract a .zip, .tar, or .anfm archive into its containing directory,
+     * driven as a multi-phase state machine (`init` / `run` / `cleanup`).
+     *
+     * Requires create privilege and local storage. Delegates to the
+     * format-specific restore_anfm()/restore_tar()/restore_zip() helper
+     * based on the file extension; an .anfm archive may additionally
+     * require the `password` POST field if it was created encrypted.
+     */
     public function archive_restore()
     {
         $this->check_create_privilege();

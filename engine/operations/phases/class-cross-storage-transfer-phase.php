@@ -1,5 +1,13 @@
 <?php
 
+/**
+ * Operation phase for cross-storage (local <-> remote) directory transfers,
+ * streaming files through local disk in chunks so they can resume across
+ * request time windows.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;

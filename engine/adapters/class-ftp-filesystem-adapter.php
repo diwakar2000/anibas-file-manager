@@ -1,9 +1,20 @@
 <?php
 
+/**
+ * FTP/FTPS filesystem adapter connecting over PHP's ftp:// stream functions.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * Filesystem adapter for FTP and FTPS (explicit/implicit SSL) connections,
+ * supporting passive mode, chunked upload/download, and directory listing
+ * relative to a configured base path.
+ */
 class FTPFileSystemAdapter extends FileSystemAdapter
 {
     private $base_path;

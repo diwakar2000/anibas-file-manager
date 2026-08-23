@@ -1,11 +1,25 @@
 <?php
 
+/**
+ * Low-level Microsoft Graph API client for OneDrive, handling authenticated
+ * requests and raw HTTP calls against the Graph v1.0 endpoint.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * Exception thrown for OneDrive/Microsoft Graph API errors.
+ */
 class OneDriveException extends \RuntimeException {}
 
+/**
+ * Thin wrapper around the Microsoft Graph API used by
+ * OneDriveFileSystemAdapter for authenticated JSON and raw HTTP requests.
+ */
 class AnibasOneDriveClient
 {
     private const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';

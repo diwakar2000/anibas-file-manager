@@ -10,6 +10,11 @@ namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * Writes and reads archive scan results as a JSONL sidecar file plus a
+ * small summary manifest, so building the file list for large archives
+ * never has to hold every entry in PHP memory at once.
+ */
 class ArchiveManifestStore {
 
     private const WRITE_BUFFER_LINE_LIMIT = 250;

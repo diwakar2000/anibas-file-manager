@@ -1,5 +1,13 @@
 <?php
 
+/**
+ * Queues and processes copy/move/delete background jobs, persisting the
+ * job queue in a WP option and coordinating worker locks so only one
+ * request advances a job at a time.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;

@@ -1,11 +1,25 @@
 <?php
 
+/**
+ * Low-level Dropbox API v2 client handling RPC-style calls to the API
+ * endpoint and binary content upload/download calls to the content endpoint.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * Exception thrown for Dropbox API errors.
+ */
 class DropboxException extends \RuntimeException {}
 
+/**
+ * Thin wrapper around the Dropbox API v2 used by DropboxFileSystemAdapter
+ * for JSON RPC calls and raw content upload/download requests.
+ */
 class AnibasDropboxClient
 {
     private const API_BASE     = 'https://api.dropboxapi.com/2';

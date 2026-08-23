@@ -1,4 +1,12 @@
 <?php
+/**
+ * Row encoding/decoding for database backups: a binary-safe, base64-encoded
+ * line-delimited JSON format used by DatabaseBackupEngine and
+ * DatabaseRestoreEngine.
+ *
+ * @package Anibas_File_Manager
+ */
+
 declare(strict_types=1);
 
 namespace Anibas;

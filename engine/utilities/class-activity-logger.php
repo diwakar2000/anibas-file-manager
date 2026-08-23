@@ -1,10 +1,22 @@
 <?php
 
+/**
+ * Singleton logger that writes plugin activity messages to a protected
+ * file under wp-content/, used across handlers and engines for debugging
+ * and audit trails.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;
 
 
+/**
+ * Singleton responsible for writing timestamped log lines to a protected
+ * log file, lazily initializing the file path on first use.
+ */
 class ActivityLogger
 {
     private static $log_file;

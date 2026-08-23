@@ -1,9 +1,20 @@
 <?php
 
+/**
+ * OneDrive filesystem adapter implementing chunked upload sessions and
+ * ranged downloads against Microsoft Graph, via AnibasOneDriveClient.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * Filesystem adapter mapping paths to OneDrive drive items, supporting
+ * chunked resumable transfers and copy/move through the Microsoft Graph API.
+ */
 class OneDriveFileSystemAdapter extends FileSystemAdapter
 {
     public const COPY_ERROR_CREATING_FILE = 1;

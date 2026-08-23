@@ -1,10 +1,22 @@
 <?php
 
+/**
+ * Operation phase that deletes the files and folders queued by ListPhase,
+ * optionally routing through trash when the adapter and job support it.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 
+/**
+ * Deletes the files and folders queued by ListPhase within the current
+ * request's time budget, routing to trash when trash_mode is enabled and
+ * the adapter supports it.
+ */
 class DeletePhase extends OperationPhase
 {
     public function execute(&$job, &$work_queue, $manager, &$context)

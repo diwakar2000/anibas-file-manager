@@ -1,5 +1,13 @@
 <?php
 
+/**
+ * Local filesystem adapter operating directly on the WordPress install path
+ * via WP_Filesystem_Direct, with protected-path guarding for sensitive
+ * directories (wp-config.php, wp-content/uploads, etc.).
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;

@@ -1,5 +1,13 @@
 <?php
 
+/**
+ * Hidden standalone admin page that renders the file editor UI outside the
+ * normal admin chrome, plus static helpers for editor session keys and
+ * editable-file checks.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;

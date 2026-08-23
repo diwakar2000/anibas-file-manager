@@ -1,9 +1,22 @@
 <?php
 
+/**
+ * Google Drive filesystem adapter implementing chunked upload/download,
+ * folder-id-based path resolution, and copy/move over the Drive v3 API via
+ * AnibasGoogleDriveClient.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * Filesystem adapter mapping folder/file paths to Google Drive file IDs,
+ * with chunked resumable transfers and a path-to-id cache to reduce API
+ * round-trips.
+ */
 class GoogleDriveFileSystemAdapter extends FileSystemAdapter
 {
     private const FOLDER_MIME = 'application/vnd.google-apps.folder';

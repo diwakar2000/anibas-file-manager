@@ -1,7 +1,5 @@
 <?php
 
-if ( ! defined( 'ABSPATH' ) ) exit;
-
 /**
  * The file that defines the core plugin class
  *
@@ -14,6 +12,8 @@ if ( ! defined( 'ABSPATH' ) ) exit;
  * @package    Anibas_File_Manager
  * @subpackage Anibas_File_Manager/includes
  */
+
+if ( ! defined( 'ABSPATH' ) ) exit;
 
 /**
  * The core plugin class.

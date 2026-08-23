@@ -1,5 +1,11 @@
 <?php
 
+/**
+ * AJAX handler exposing password authentication and re-validation endpoints.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;
@@ -10,6 +16,10 @@ if (! defined('ABSPATH')) exit;
  */
 class AuthAjaxHandler extends AjaxHandler
 {
+    /**
+     * Register the settings/FM/delete password verification and
+     * re-validation AJAX actions.
+     */
     public function __construct()
     {
         parent::__construct();
@@ -27,6 +37,14 @@ class AuthAjaxHandler extends AjaxHandler
        FM PASSWORD VERIFY — gate the file manager page itself
     ========================================================= */
 
+    /**
+     * Verify the file manager page password and, on success, issue a
+     * session token used to gate access to the FM UI.
+     *
+     * Requires the FM nonce and admin privilege. Locks out further attempts
+     * for 5 minutes after 5 failed tries for this user, with a 1-second
+     * delay on each failure to slow brute-force attempts.
+     */
     public function verify_fm_password(): void
     {
         $this->check_nonce(ANIBAS_FM_NONCE_FM);
@@ -69,6 +87,14 @@ class AuthAjaxHandler extends AjaxHandler
        FM AUTH CHECK — silent re-validation on page load (sessionStorage flow)
     ========================================================= */
 
+    /**
+     * Silently re-validate a previously issued FM session token (e.g. on
+     * page load, restoring the sessionStorage-backed session).
+     *
+     * Requires the FM nonce and admin privilege. Applies a constant
+     * 1-second delay on every check for timing-safety, and locks out
+     * further attempts for 5 minutes after 3 failed retries.
+     */
     public function check_fm_auth(): void
     {
         $this->check_nonce(ANIBAS_FM_NONCE_FM);
@@ -100,6 +126,15 @@ class AuthAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Verify the delete confirmation password and, on success, issue a
+     * short-lived delete-auth token.
+     *
+     * Requires delete privilege. If no delete password is configured, any
+     * submission is treated as valid (nothing to gate). Locks out further
+     * attempts for 5 minutes after 5 failures, with a 1-second delay on
+     * each failure.
+     */
     public function verify_delete_password()
     {
         $this->check_delete_privilege();
@@ -136,6 +171,15 @@ class AuthAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Verify the settings-area password and, on success, issue a session
+     * token used by has_valid_settings_auth().
+     *
+     * Requires the settings-save privilege. If no settings password is
+     * configured, any submission is treated as valid. Locks out further
+     * attempts for 5 minutes after 5 failures, with a 1-second delay on
+     * each failure.
+     */
     public function verify_password()
     {
         $this->check_save_settings_privilege();
@@ -172,6 +216,15 @@ class AuthAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Silently re-validate a previously issued settings session token.
+     *
+     * Checks a per-user lockout transient before even running the
+     * settings-save privilege check, so a locked-out user's requests fail
+     * fast. On success, refreshes the stored token's expiry; on failure,
+     * applies a 1-second delay and locks out further attempts for 5
+     * minutes after 3 failed retries.
+     */
     public function check_auth()
     {
         if (get_transient('anibas_fm_auth_' . get_current_user_id() . '_lock')) {
@@ -201,6 +254,14 @@ class AuthAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Issue a one-time delete confirmation token scoped to a specific
+     * storage + path, consumed by FileCrudAjaxHandler::delete_file().
+     *
+     * Requires delete privilege. The token is stored for 60 seconds keyed
+     * by user, storage, and an md5 hash of the path, so it can only confirm
+     * deletion of the exact item it was requested for.
+     */
     public function request_delete_token()
     {
         $this->check_delete_privilege();

@@ -1,10 +1,24 @@
 <?php
 
+/**
+ * Drives a job's operation phases (list/assembly/transfer/delete/wrapup,
+ * etc.) forward within a bounded time budget per request, advancing to the
+ * next phase once the current one reports completion.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 
+/**
+ * Time-budgeted phase runner for background file operation jobs. Holds the
+ * ordered list of OperationPhase instances for a job's mode (transfer or
+ * delete) and steps through them until the time limit is reached or the
+ * job completes.
+ */
 class PhaseExecutor
 {
     // Fatal exception codes — used to detect job-stopping errors without string matching

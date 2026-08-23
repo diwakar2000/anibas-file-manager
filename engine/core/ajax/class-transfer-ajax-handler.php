@@ -1,5 +1,12 @@
 <?php
 
+/**
+ * AJAX handler exposing copy/move/transfer job endpoints, including
+ * cross-storage transfers and job lifecycle management.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;
@@ -11,6 +18,9 @@ if (! defined('ABSPATH')) exit;
  */
 class TransferAjaxHandler extends AjaxHandler
 {
+    /**
+     * Register the transfer/duplicate/job-lifecycle AJAX actions.
+     */
     public function __construct()
     {
         parent::__construct();
@@ -109,6 +119,17 @@ class TransferAjaxHandler extends AjaxHandler
         return $dir . $sep . $name . '_' . gmdate('Y-m-d_His') . '_' . wp_rand(100000, 999999) . $ext;
     }
 
+    /**
+     * Start a copy or move of a file/folder, routing to same-storage or
+     * cross-storage handling based on the source/destination storage.
+     *
+     * Requires create privilege. Accepts either the newer
+     * `source_storage`/`dest_storage` pair or the legacy single `storage`
+     * field (applied to both sides). When source and destination storage
+     * differ, validates the pairing is a supported cross-storage transfer
+     * before enqueuing a background job; identical storage goes through
+     * the same-storage local/remote transfer path instead.
+     */
     public function transfer_file()
     {
         $this->check_create_privilege();
@@ -332,6 +353,15 @@ class TransferAjaxHandler extends AjaxHandler
         $this->send_success(array('job_id' => $job_id, 'message' => esc_html__('Transfer started', 'anibas-file-manager')));
     }
 
+    /**
+     * Report the current status of a background transfer/archive job.
+     *
+     * Requires standard privilege. As a side effect, if the job is in an
+     * active status but no worker lock is held, this re-dispatches the
+     * async worker — a safety net for when the original async HTTP
+     * loopback that should be driving the job silently failed (e.g. a
+     * firewall or basic-auth prompt blocking the loopback request).
+     */
     public function get_job_status()
     {
         $this->check_privilege();
@@ -361,6 +391,11 @@ class TransferAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Cancel a background transfer/archive job.
+     *
+     * Requires standard privilege. Requires `job_id`.
+     */
     public function cancel_job()
     {
         $this->check_privilege();
@@ -380,6 +415,12 @@ class TransferAjaxHandler extends AjaxHandler
         }
     }
 
+    /**
+     * Check whether copying/moving `source` into `destination` would
+     * collide with an existing item of the same name.
+     *
+     * Requires standard privilege. Requires `source` and `destination`.
+     */
     public function check_conflict()
     {
         $this->check_privilege();
@@ -429,6 +470,17 @@ class TransferAjaxHandler extends AjaxHandler
         $this->send_success(array('has_conflict' => $has_conflict));
     }
 
+    /**
+     * Summarize all currently active background work (transfer/copy jobs,
+     * archive create/restore jobs, and a running site backup) for the
+     * UI's resume banner.
+     *
+     * Requires standard privilege. Copy/move job data is passed through
+     * anibas_fm_convert_paths_in_job_data() to convert absolute paths to
+     * display-safe relative ones; archive jobs are reduced to a
+     * display-safe subset (no absolute source path is returned directly,
+     * only a converted relative one and basenames).
+     */
     public function check_running_tasks()
     {
         $this->check_privilege();
@@ -474,6 +526,15 @@ class TransferAjaxHandler extends AjaxHandler
         ]);
     }
 
+    /**
+     * Resolve a queued upload-assembly job that was flagged for a file
+     * size mismatch, either keeping the assembled file as-is or deleting
+     * it and marking the job failed.
+     *
+     * Requires standard privilege. Requires `job_id` and an `action_type`
+     * of `keep` or `delete`. Clears the upload's assembly transient token
+     * either way, since the job is being finalized one way or the other.
+     */
     public function resolve_size_mismatch()
     {
         $this->check_privilege();

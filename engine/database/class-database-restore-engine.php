@@ -1,10 +1,22 @@
 <?php
+/**
+ * Chunked database restore engine supporting a staging_swap mode (import
+ * into temporary tables, then atomically rename into place) and an
+ * overwrite mode for low-space servers.
+ *
+ * @package Anibas_File_Manager
+ */
+
 declare(strict_types=1);
 
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;
 
+/**
+ * Exception thrown when preparing or swapping staging tables during a
+ * staging_swap database restore fails.
+ */
 class DatabaseRestoreStagingException extends \RuntimeException
 {
 }

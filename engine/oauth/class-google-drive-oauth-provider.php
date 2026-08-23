@@ -1,9 +1,20 @@
 <?php
 
+/**
+ * OAuth provider configuration for connecting Google Drive as a storage
+ * backend.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+/**
+ * OAuthProvider implementation supplying Google's authorization and token
+ * endpoints and default Drive API scopes.
+ */
 class GoogleDriveOAuthProvider extends OAuthProvider
 {
     public function id(): string

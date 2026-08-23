@@ -1,5 +1,12 @@
 <?php
 
+/**
+ * Operation phase that performs same-storage copy/move of the files and
+ * folders queued by ListPhase, within the current request's time budget.
+ *
+ * @package Anibas_File_Manager
+ */
+
 namespace Anibas;
 
 if (! defined('ABSPATH')) exit;
@@ -7,6 +14,11 @@ if (! defined('ABSPATH')) exit;
 
 
 
+/**
+ * Copies or moves the files and folders queued by ListPhase on a single
+ * storage adapter, resuming across requests via the job's work queue
+ * cursor until the time budget for the request is exhausted.
+ */
 class TransferPhase extends OperationPhase
 {
     public function execute(&$job, &$work_queue, $manager, &$context)

@@ -24,6 +24,11 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 
 use Exception;
 
+/**
+ * Time-budgeted engine that extracts a standard POSIX TAR (UStar) archive
+ * across multiple requests, reading headers and file data sequentially in
+ * chunks with flock-based concurrency control.
+ */
 class TarRestoreEngine {
 
     private string $archive;

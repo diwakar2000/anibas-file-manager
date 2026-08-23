@@ -1,7 +1,5 @@
 <?php
 
-if (! defined('ABSPATH')) exit;
-
 /**
  * The main-specific functionality of the plugin.
  *
@@ -11,6 +9,8 @@ if (! defined('ABSPATH')) exit;
  * @package    Anibas_File_Manager
  * @subpackage Anibas_File_Manager/main
  */
+
+if (! defined('ABSPATH')) exit;
 
 use Anibas\ArchiveAjaxHandler;
 use Anibas\AuthAjaxHandler;
