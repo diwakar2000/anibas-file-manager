@@ -4,7 +4,7 @@ Donate link: https://diwakar2000.com.np/
 Tags: file manager, database browser, cloud storage, backups, s3
 Requires at least: 6.0
 Tested up to: 6.9
-Stable tag: 1.3.0
+Stable tag: 1.4.0
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 Requires PHP: 8.0
@@ -93,6 +93,12 @@ https://github.com/diwakar2000/anibas-file-manager
 5. The built-in code editor with syntax highlighting for HTML and other file types.
 
 == Changelog ==
+
+= 1.4.0 =
+* Confirmed compatibility with WordPress 7.1; moved plugin text-domain loading from the plugins_loaded hook to init to match WordPress 6.7+'s translation-loading timing.
+* Reviewed the plugin against the WordPress.org Plugin Check tool: added missing translator comments, fixed a multisite variable name that shadowed a WordPress global, and documented (with in-code reasoning) the direct filesystem/cURL access and identifier-quoted SQL that this file-manager plugin's storage adapters and database tools require.
+* Added file, class, and public-method documentation across the codebase's AJAX handlers and storage-adapter contract.
+* Added alkesh7 as a contributor.
 
 = 1.3.0 =
 * Added opt-in full-site restore with staged file/database restore, preserve-old-data choices, critical-stage cancellation rules, and overwrite fallback when staging cannot continue.
