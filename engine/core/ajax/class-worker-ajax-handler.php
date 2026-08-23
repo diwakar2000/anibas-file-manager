@@ -20,6 +20,7 @@ class WorkerAjaxHandler
     public function handle_worker()
     {
         ActivityLogger::log_message('[WorkerAjaxHandler] handle_worker() triggered via AJAX.');
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- this is a nopriv server-to-server loopback endpoint (dispatched by the background processor itself, not a logged-in browser session), so a WP nonce doesn't apply; the raw secret is only ever compared with hash_equals() in verify_secret() below, never stored or output, so traditional sanitization would just corrupt the comparison.
         $secret = isset($_POST['worker_secret']) ? wp_unslash($_POST['worker_secret']) : '';
 
         // 1. Verify authorization securely (server-to-server token)
@@ -32,6 +33,7 @@ class WorkerAjaxHandler
         // (dispatch uses blocking=false, so the client side won't wait for us).
         ignore_user_abort(true);
         if (function_exists('set_time_limit')) {
+            // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- this endpoint is the background-job worker loopback itself; it intentionally needs to run past the normal request timeout to finish a processing phase, unlike a typical request handler.
             @set_time_limit(0);
         }
 

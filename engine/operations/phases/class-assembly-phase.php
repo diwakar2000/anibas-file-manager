@@ -73,8 +73,8 @@ class AssemblyPhase extends OperationPhase
             $sample = array_slice($missing_chunks, 0, 10);
             // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- $count is int, $sample is array of ints
             throw new \Exception(
-                /* translators: 1: number of missing chunks, 2: sample chunk numbers */
                 sprintf(
+                    /* translators: 1: number of missing chunks, 2: sample chunk numbers */
                     esc_html__('Upload incomplete: %1$d chunk(s) missing (e.g., chunks %2$s). Please re-upload the file.', 'anibas-file-manager'),
                     $count,
                     esc_html(implode(', ', $sample))

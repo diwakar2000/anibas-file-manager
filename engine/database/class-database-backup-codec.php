@@ -70,7 +70,7 @@ class DatabaseBackupCodec
                 throw new \RuntimeException('Invalid database backup value payload.');
             }
 
-            $value = base64_decode($payload['b64'], true);
+            $value = base64_decode($payload['b64'], true); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- decodes a backup row value encoded by base64_encode() above, not obfuscated code.
             if ($value === false) {
                 throw new \RuntimeException('Invalid base64 database backup value.');
             }

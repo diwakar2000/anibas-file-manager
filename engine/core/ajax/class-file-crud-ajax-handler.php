@@ -188,6 +188,7 @@ class FileCrudAjaxHandler extends AjaxHandler
 
         $parent = anibas_fm_fetch_request_variable('post', 'parent', '/');
         $name = anibas_fm_fetch_request_variable('post', 'name', '');
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- nonce is verified in check_create_privilege() above (AjaxHandler::check_create_privilege() -> wp_verify_nonce()), which the sniff can't trace across methods; $content is the literal file body being written (arbitrary text/code), so running it through a text sanitizer would corrupt the file being created.
         $content = isset($_POST['content']) ? wp_unslash($_POST['content']) : '';
         $storage = anibas_fm_fetch_request_variable('post', 'storage', 'local');
 
@@ -589,6 +590,7 @@ class FileCrudAjaxHandler extends AjaxHandler
             // need to stream through WordPress so PDFs/images stay embedded.
             $temp_link = $disposition === 'attachment' ? $adapter->get_temporary_link($full_path, 3600) : false;
             if ($temp_link) {
+                // phpcs:ignore WordPress.Security.SafeRedirect.wp_redirect_wp_redirect -- $temp_link is a server-generated presigned/temporary URL from the already-authorized storage adapter (S3/Dropbox/Google Drive/OneDrive), not user input; wp_safe_redirect() would block it by default since it points off-site and isn't in allowed_redirect_hosts.
                 wp_redirect($temp_link);
                 exit;
             }

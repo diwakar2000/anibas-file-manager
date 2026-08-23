@@ -1125,6 +1125,7 @@ class LocalFileSystemAdapter extends FileSystemAdapter
 
             ActivityLogger::get_instance()->log('trashed', $basename, dirname($validated));
         } else {
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_print_r -- formats the last PHP error for the internal ActivityLogger audit log, not left-over debug output.
             $error_msg = sprintf('Failed to move %s to trash. Reason: %s', $validated, print_r(error_get_last(), true));
             ActivityLogger::get_instance()->log_message($error_msg);
             if ($this->lastFailureReason === '') {

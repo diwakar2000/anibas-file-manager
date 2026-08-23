@@ -571,7 +571,9 @@ class DatabaseRestoreEngine
             $variants[] = [str_replace('/', '\\/', $from), str_replace('/', '\\/', $to)];
             $variants[] = [rawurlencode($from), rawurlencode($to)];
             $variants[] = [$this->lowercase_percent_encoding(rawurlencode($from)), $this->lowercase_percent_encoding(rawurlencode($to))];
+            // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.urlencode_urlencode -- urlencode() variants are intentional here, not a rawurlencode substitute: they match URLs that legacy exporters/serializers encoded with '+' for spaces, alongside the rawurlencode variants above.
             $variants[] = [urlencode($from), urlencode($to)];
+            // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.urlencode_urlencode -- see justification above.
             $variants[] = [$this->lowercase_percent_encoding(urlencode($from)), $this->lowercase_percent_encoding(urlencode($to))];
         }
 
@@ -637,9 +639,9 @@ class DatabaseRestoreEngine
             // of being instantiated for real, which blocks PHP object-injection gadget
             // chains from a crafted backup package while keeping the common case
             // (stdClass, arrays, strings) working exactly as before.
-            $unserialized = @unserialize($value, ['allowed_classes' => ['stdClass']]);
-            if ($unserialized !== false || $value === serialize(false)) {
-                return serialize($this->rewrite_restore_structure($unserialized, $map));
+            $unserialized = @unserialize($value, ['allowed_classes' => ['stdClass']]); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_unserialize -- allowed_classes is restricted to stdClass (see comment above), which blocks PHP object-injection gadget chains.
+            if ($unserialized !== false || $value === serialize(false)) { // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize -- re-serializes the already-decoded, allowlist-restricted structure rewritten below; not attacker-controlled input.
+                return serialize($this->rewrite_restore_structure($unserialized, $map)); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize -- see justification above.
             }
         }
 

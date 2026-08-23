@@ -90,12 +90,12 @@ class SFTPFileSystemAdapter extends FileSystemAdapter
 
         $parts = explode(' ', $key_string, 2);
         $key_b64 = $parts[1] ?? $parts[0];
-        $raw_key = base64_decode($key_b64, true);
+        $raw_key = base64_decode($key_b64, true); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- decodes the SSH host public key blob from its wire format, not obfuscated code.
         if ($raw_key === false) {
             return;
         }
 
-        $fingerprint = 'SHA256:' . rtrim(strtr(base64_encode(hash('sha256', $raw_key, true)), '+/', '-_'), '=');
+        $fingerprint = 'SHA256:' . rtrim(strtr(base64_encode(hash('sha256', $raw_key, true)), '+/', '-_'), '='); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- base64url-encodes a SHA-256 host key fingerprint for display, not obfuscation.
 
         $option_name = 'anibas_fm_sftp_host_keys';
         $known = get_option($option_name, []);

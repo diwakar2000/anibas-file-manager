@@ -176,8 +176,8 @@ class FinalizeAssemblyPhase extends OperationPhase
             ];
             // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- both args are integers used with %d
             throw new \Exception(
-                /* translators: 1: expected size in bytes, 2: actual size in bytes */
                 sprintf(
+                    /* translators: 1: expected size in bytes, 2: actual size in bytes */
                     esc_html__('File size mismatch: expected %1$d bytes, got %2$d bytes', 'anibas-file-manager'),
                     $expected_size,
                     $actual_size

@@ -139,8 +139,8 @@ abstract class FileSystemAdapter
         $owner_name = is_array($owner_info) && isset($owner_info['name']) ? $owner_info['name'] : ('uid=' . $file_uid);
         $proc_name  = is_array($proc_info)  && isset($proc_info['name'])  ? $proc_info['name']  : ('uid=' . $proc_uid);
 
-        /* translators: 1: owner of the file, 2: web server process user */
         return sprintf(
+            /* translators: 1: owner of the file, 2: web server process user */
             __(' Owned by "%1$s" but the web server runs as "%2$s" — change ownership or grant write permissions.', 'anibas-file-manager'),
             $owner_name,
             $proc_name

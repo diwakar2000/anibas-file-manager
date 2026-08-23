@@ -401,6 +401,7 @@ class SiteRestoreEngine
                 if (file_exists($target)) {
                     $old = $this->next_old_path($target);
                     if (! @rename($target, $old)) {
+                        /* translators: %s: root file/folder name being restored */
                         throw new \RuntimeException(sprintf(esc_html__('Failed to preserve existing %s before restore.', 'anibas-file-manager'), $root_file));
                     }
                 }
@@ -409,6 +410,7 @@ class SiteRestoreEngine
                     if ($old !== null) {
                         @rename($old, $target);
                     }
+                    /* translators: %s: root file/folder name being restored */
                     throw new \RuntimeException(sprintf(esc_html__('Failed to restore %s.', 'anibas-file-manager'), $root_file));
                 }
 
@@ -1004,7 +1006,7 @@ class SiteRestoreEngine
     {
         $active = [];
         if (function_exists('is_serialized') && is_serialized($serialized_value)) {
-            $decoded = @unserialize($serialized_value, ['allowed_classes' => false]);
+            $decoded = @unserialize($serialized_value, ['allowed_classes' => false]); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_unserialize -- allowed_classes is false, so no object can be instantiated; blocks PHP object-injection gadget chains.
             $active = is_array($decoded) ? $decoded : [];
         }
         $active = is_array($active) ? array_values(array_filter($active, 'is_string')) : [];

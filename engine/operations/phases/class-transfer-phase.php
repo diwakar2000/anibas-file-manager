@@ -133,6 +133,7 @@ class TransferPhase extends OperationPhase
             if (! $fs->exists($target_dir)) {
                 ActivityLogger::get_instance()->log_message('TransferPhase: creating target dir ' . $target_dir);
                 $mkdir_result = $fs->mkdir($target_dir);
+                // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_var_export -- formats the mkdir() result for the internal ActivityLogger audit log, not left-over debug output.
                 ActivityLogger::get_instance()->log_message('TransferPhase: mkdir result = ' . var_export($mkdir_result, true));
             }
             $job['checked_dirs'][$target_dir] = true;
